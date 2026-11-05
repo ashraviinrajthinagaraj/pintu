@@ -1,0 +1,91 @@
+// Keeps Pintu opening with poor signal. The app's own files come from the
+// network when possible so updates arrive by themselves. Searches and routes
+// are never stored.
+const VERSION = 'pintu-0.1.0';
+const SHELL = `${VERSION}-shell`;
+const LIBS = `${VERSION}-libs`;
+const TILES = 'pintu-tiles-1';
+const MAX_TILES = 2500;
+
+const FILES = [
+  './', 'index.html', 'styles.css', 'manifest.webmanifest',
+  'js/app.js', 'js/config.js', 'js/format.js', 'js/geo.js', 'js/guidance.js', 'js/i18n.js',
+  'js/icons.js', 'js/instructions.js', 'js/location.js', 'js/map.js', 'js/routing.js',
+  'js/search.js', 'js/store.js', 'js/voice.js',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
+];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil((async () => {
+    const keep = new Set([SHELL, LIBS, TILES]);
+    for (const name of await caches.keys()) if (!keep.has(name)) await caches.delete(name);
+    await self.clients.claim();
+  })());
+});
+
+async function networkFirst(request) {
+  const cache = await caches.open(SHELL);
+  try {
+    const res = await fetch(request);
+    if (res.ok) cache.put(request, res.clone());
+    return res;
+  } catch (err) {
+    const hit = await cache.match(request, { ignoreSearch: true });
+    if (hit) return hit;
+    if (request.mode === 'navigate') {
+      const page = await cache.match('index.html');
+      if (page) return page;
+    }
+    throw err;
+  }
+}
+
+async function cacheFirst(cacheName, request) {
+  const cache = await caches.open(cacheName);
+  const hit = await cache.match(request);
+  if (hit) return hit;
+  const res = await fetch(request);
+  if (res.ok) {
+    await cache.put(request, res.clone());
+    if (cacheName === TILES) trim(cache);
+  }
+  return res;
+}
+
+let putsSinceTrim = 0;
+async function trim(cache) {
+  if (++putsSinceTrim < 100) return;
+  putsSinceTrim = 0;
+  const keys = await cache.keys();
+  for (const old of keys.slice(0, Math.max(0, keys.length - MAX_TILES))) await cache.delete(old);
+}
+
+self.addEventListener('fetch', (e) => {
+  const { request } = e;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+
+  if (url.origin === location.origin) {
+    e.respondWith(networkFirst(request));
+  } else if (/\/maplibre-gl@/.test(url.pathname) || url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
+    e.respondWith(cacheFirst(LIBS, request));
+  } else if (url.hostname === 'tiles.openfreemap.org') {
+    // Styles can change; tiles, fonts and sprites sit under versioned paths.
+    if (url.pathname.startsWith('/styles/')) {
+      e.respondWith(fetch(request).then(async (res) => {
+        if (res.ok) (await caches.open(LIBS)).put(request, res.clone());
+        return res;
+      }).catch(async () => {
+        const hit = await caches.match(request);
+        if (hit) return hit;
+        throw new Error('style unavailable');
+      }));
+    } else {
+      e.respondWith(cacheFirst(TILES, request));
+    }
+  }
+});

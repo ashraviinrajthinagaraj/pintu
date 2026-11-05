@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ms" data-theme="day">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pintu</title>
+<meta name="description" content="Peta dan panduan suara untuk kita-kita sahaja.">
+<meta name="theme-color" content="#00693E">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pintu">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;800&display=swap" crossorigin="anonymous">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="map" aria-label="Peta" role="application"></div>
+
+<div id="map-problem" class="notice" hidden>
+  <p id="map-problem-text"></p>
+  <button id="map-retry" class="link-btn" type="button"></button>
+</div>
+
+<!-- Idle: the whole app is one road sign -->
+<main id="idle" class="dock">
+  <div id="resume" class="resume" hidden>
+    <p id="resume-text"></p>
+    <div class="resume-actions">
+      <button id="resume-no" class="link-btn" type="button"></button>
+      <button id="resume-yes" class="plate plate-btn plate-small" type="button"></button>
+    </div>
+  </div>
+  <div class="float-row">
+    <button id="btn-settings" class="round" type="button"></button>
+    <button id="btn-locate" class="round" type="button"></button>
+  </div>
+  <button id="where" class="plate plate-where" type="button">
+    <span class="plate-glyph" id="where-glyph"></span>
+    <span id="where-text"></span>
+  </button>
+</main>
+
+<!-- Search -->
+<section id="search" class="fullpanel" hidden>
+  <div class="search-head">
+    <button id="search-back" class="icon-btn" type="button"></button>
+    <input id="search-input" type="search" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
+  </div>
+  <div id="search-body" class="search-body">
+    <div id="search-status" class="search-status" role="status"></div>
+    <ul id="search-results" class="place-list"></ul>
+    <div id="recents-wrap" hidden>
+      <div class="list-head">
+        <h2 id="recents-title"></h2>
+        <button id="recents-clear" class="link-btn" type="button"></button>
+      </div>
+      <ul id="recents" class="place-list"></ul>
+    </div>
+    <p id="search-tip" class="tip"></p>
+  </div>
+</section>
+
+<!-- Route preview -->
+<section id="preview" class="sheet" hidden>
+  <div class="sheet-head">
+    <button id="preview-back" class="icon-btn" type="button"></button>
+    <div class="dest-title">
+      <h2 id="dest-name"></h2>
+      <p id="dest-detail"></p>
+    </div>
+  </div>
+  <div class="mode-row">
+    <div class="segmented" role="radiogroup" id="mode-group">
+      <button id="mode-car" type="button" role="radio"></button>
+      <button id="mode-moto" type="button" role="radio"></button>
+    </div>
+    <label class="switch" id="toll-wrap">
+      <input id="avoid-tolls" type="checkbox">
+      <span class="switch-track" aria-hidden="true"></span>
+      <span id="avoid-tolls-label"></span>
+    </label>
+  </div>
+  <div id="route-status" class="route-status" role="status"></div>
+  <ul id="route-list" class="route-list"></ul>
+  <p id="route-note" class="tip tip-tight"></p>
+  <button id="start" class="plate plate-btn" type="button" disabled></button>
+  <button id="try-sim" class="link-btn center" type="button"></button>
+</section>
+
+<!-- Navigation -->
+<section id="nav" hidden>
+  <div id="nav-top" class="nav-top">
+    <button id="sign" class="plate sign" type="button">
+      <span id="sign-icon" class="sign-icon"></span>
+      <span class="sign-text">
+        <span id="sign-distance" class="sign-distance"></span>
+        <span id="sign-action" class="sign-action"></span>
+        <span class="sign-road"><span id="sign-ref" class="shield" hidden></span><span id="sign-road"></span></span>
+        <span id="sign-toward" class="sign-toward" hidden></span>
+      </span>
+    </button>
+    <div id="sign-then" class="then" hidden>
+      <span id="then-label"></span><span id="then-icon" class="then-icon"></span>
+    </div>
+    <div id="chips" class="chips" role="status" aria-live="polite"></div>
+  </div>
+  <div class="nav-float">
+    <button id="btn-mute" class="round" type="button"></button>
+    <button id="btn-recenter" class="round" type="button" hidden></button>
+  </div>
+  <div id="nav-bar" class="nav-bar">
+    <div class="nav-eta">
+      <strong id="eta-clock"></strong>
+      <span id="eta-rest"></span>
+    </div>
+    <button id="btn-end" class="end-btn" type="button"></button>
+  </div>
+</section>
+
+<!-- Arrived: the door opens -->
+<section id="arrival" class="arrival" hidden>
+  <div class="door-scene" aria-hidden="true">
+    <div class="door-light"></div>
+    <div class="door-leaf"><span class="door-knob"></span></div>
+  </div>
+  <h2 id="arrival-title"></h2>
+  <p id="arrival-place"></p>
+  <button id="arrival-done" class="plate plate-btn" type="button"></button>
+</section>
+
+<!-- One-time note before the first trip -->
+<section id="safety" class="sheet sheet-modal" hidden>
+  <h2 id="safety-title"></h2>
+  <p id="safety-text"></p>
+  <button id="safety-ok" class="plate plate-btn" type="button"></button>
+</section>
+
+<!-- Settings -->
+<section id="settings" class="fullpanel" hidden>
+  <div class="search-head">
+    <button id="settings-back" class="icon-btn" type="button"></button>
+    <h2 id="settings-title" class="panel-title"></h2>
+  </div>
+  <div class="settings-body">
+    <div class="setting">
+      <h3 id="set-lang-title"></h3>
+      <div class="segmented" role="radiogroup">
+        <button id="lang-ms" type="button" role="radio">Bahasa Melayu</button>
+        <button id="lang-en" type="button" role="radio">English</button>
+      </div>
+    </div>
+    <div class="setting">
+      <h3 id="set-voice-title"></h3>
+      <p id="voice-status" class="tip tip-tight"></p>
+      <button id="voice-test" class="outline-btn" type="button"></button>
+    </div>
+    <div class="setting">
+      <h3 id="set-theme-title"></h3>
+      <div class="segmented" role="radiogroup">
+        <button id="theme-auto" type="button" role="radio"></button>
+        <button id="theme-day" type="button" role="radio"></button>
+        <button id="theme-night" type="button" role="radio"></button>
+      </div>
+    </div>
+    <div class="setting">
+      <h3 id="set-install-title"></h3>
+      <p id="install-text" class="tip tip-tight"></p>
+      <button id="install-btn" class="outline-btn" type="button" hidden></button>
+    </div>
+    <div class="setting">
+      <h3 id="set-privacy-title"></h3>
+      <p id="privacy-text" class="tip tip-tight"></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-credits-title"></h3>
+      <p class="tip tip-tight">
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>,
+        <a href="https://openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a>,
+        <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>,
+        <a href="https://maplibre.org/" target="_blank" rel="noopener">MapLibre</a>,
+        <a href="https://github.com/valhalla/valhalla" target="_blank" rel="noopener">Valhalla</a>,
+        <a href="https://github.com/komoot/photon" target="_blank" rel="noopener">Photon</a>.
+      </p>
+      <p id="version" class="tip tip-tight"></p>
+    </div>
+  </div>
+</section>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="speak-live" class="sr-only" aria-live="polite"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
