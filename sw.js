@@ -1,7 +1,7 @@
 // Keeps Pintu opening with poor signal. The app's own files come from the
 // network when possible so updates arrive by themselves. Searches, routes and
 // stops are never stored here.
-const VERSION = 'pintu-0.3.0';
+const VERSION = 'pintu-0.3.1';
 const SHELL = `${VERSION}-shell`;
 const LIBS = `${VERSION}-libs`;
 const TILES = 'pintu-tiles-1';

@@ -67,7 +67,7 @@ async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia 
       return route.fulfill({ contentType: 'text/javascript', headers: CORS, body: stub });
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
-    if (host === 'overpass-api.de' || host === 'overpass.private.coffee') {
+    if (host === 'overpass-api.de' || host === 'overpass.private.coffee' || host === 'ovp.dresel.systems') {
       log.overpass.push(route.request().postData());
       if (log.overpassFail) return route.abort();
       return route.fulfill({ json: overpass, headers: CORS });
@@ -99,6 +99,11 @@ async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia 
       if (log.searchFail) return route.abort();
       const q = new URL(url).searchParams.get('q');
       if (url.includes('/reverse')) return route.fulfill({ json: { features: [PHOTON.features[0]] }, headers: CORS });
+      if (url.includes('include=')) {
+        log.photonStops = (log.photonStops || 0) + 1;
+        if (log.photonStopsFail) return route.abort();
+        return route.fulfill({ json: { features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [101.7055, 3.1503] }, properties: { name: 'Stesen Dari Photon', osm_type: 'N', osm_id: 9, osm_key: 'amenity', osm_value: 'fuel' } }] }, headers: CORS });
+      }
       return route.fulfill({ json: q === 'zzzz' ? { features: [] } : PHOTON, headers: CORS });
     }
     return route.abort();
@@ -719,6 +724,8 @@ await check('voice status is honest about what the phone has', async () => {
 await check('night colours, by clock and by choice', async () => {
   const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
   await page.click('#btn-settings');
+  // From day first: if the clock already says night, nothing would change.
+  await page.click('#theme-day');
   await page.click('#theme-night');
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'night');
   assert.equal(await page.evaluate(() => window.__map.styleUrl), 'https://tiles.openfreemap.org/styles/dark');
@@ -1161,11 +1168,61 @@ await check('stops: nothing found, and failure, are both explained', async () =>
   await empty.ctx.close();
   const bad = await newApp(browser, quiet);
   bad.log.overpassFail = true;
+  bad.log.photonStopsFail = true;
   await toPreview(bad.page);
   await bad.page.click('#add-stop');
   await bad.page.waitForFunction(() => /tak dapat dimuatkan/.test(document.getElementById('stops-status').textContent));
-  assert.equal(bad.log.overpass.length, 2, 'tried both servers');
+  assert.equal(bad.log.overpass.length, 3, 'tried each server');
+  assert.ok(bad.log.photonStops >= 1, 'and the search service');
+  // Things recover, and the retry button finds them.
+  bad.log.photonStopsFail = false;
+  await bad.page.locator('#stops-status button').click();
+  await bad.page.waitForSelector('#stops-list .place');
+  assert.match(await text(bad.page, '#stops-list'), /Stesen Dari Photon/);
   await bad.ctx.close();
+});
+
+await check('add a stop and start are always there to tap on real phone screens', async () => {
+  // Heights a phone has left once the browser's own bars are showing.
+  for (const viewport of [{ width: 390, height: 664 }, { width: 320, height: 568 }, { width: 360, height: 658 }, { width: 393, height: 727 }, { width: 412, height: 780 }, { width: 844, height: 390 }]) {
+    const { ctx, page } = await newApp(browser, { ...quiet, viewport, storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { kind: 'petrol', consumption: 6, range: 400, level: 60 } } } });
+    await toPreview(page);
+    await page.waitForTimeout(350);
+    const name = `${viewport.width}x${viewport.height}`;
+    const hits = await page.evaluate(() => ['add-stop', 'start', 'try-sim'].map((id) => {
+      const el = document.getElementById(id);
+      const r = el.getBoundingClientRect();
+      const pts = [[0.1, 0.5], [0.5, 0.5], [0.9, 0.5], [0.5, 0.15], [0.5, 0.85]].map(([x, y]) => [r.left + r.width * x, r.top + r.height * y]);
+      return { id, ok: pts.every(([x, y]) => document.elementFromPoint(x, y)?.closest(`#${id}`)), bottom: r.bottom, h: innerHeight };
+    }));
+    for (const hit of hits) {
+      assert.ok(hit.ok, `${name}: ${hit.id} is covered`);
+      assert.ok(hit.bottom <= hit.h + 1, `${name}: ${hit.id} is off the screen`);
+    }
+    // Everything above the buttons can be scrolled clear of them.
+    const clear = await page.evaluate(() => {
+      const sheet = document.getElementById('preview');
+      sheet.scrollTop = sheet.scrollHeight;
+      const bar = document.querySelector('.action-bar').getBoundingClientRect();
+      const last = [...document.querySelectorAll('#plan .plan-row, #route-note')].filter((e) => e.offsetParent).at(-1).getBoundingClientRect();
+      return { bar: bar.top, last: last.bottom };
+    });
+    assert.ok(clear.last <= clear.bar + 1, `${name}: last row ends at ${clear.last}, buttons start at ${clear.bar}`);
+    await page.evaluate(() => { document.getElementById('preview').scrollTop = 0; });
+
+    // And a real finger tap opens the panel.
+    const box = await page.locator('#add-stop').boundingBox();
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForSelector('#stops:not([hidden])');
+    await page.waitForSelector('#stops-list .place');
+    await page.waitForTimeout(350);  // the panel is still rising until then
+    const item = await page.locator('#stops-list .place').first().boundingBox();
+    assert.ok(item.y + item.height <= viewport.height + 1, `${name}: first stop is off the screen`);
+    await page.locator('#stops-list .place').first().tap();
+    await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
+    await page.waitForSelector('.route-opt');
+    await ctx.close();
+  }
 });
 
 await check('stops: another place can be searched for, and back closes the panel', async () => {

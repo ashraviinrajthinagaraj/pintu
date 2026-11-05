@@ -98,11 +98,6 @@
 
   <div id="plan" class="plan" hidden>
     <div id="plan-stops" class="plan-stops"></div>
-    <button id="add-stop" class="plan-row" type="button">
-      <span class="plan-icon" id="add-stop-icon"></span>
-      <span class="plan-main"><strong id="add-stop-label"></strong></span>
-      <span class="plan-chev" id="add-stop-chev"></span>
-    </button>
     <div id="plan-fuel" class="plan-row plan-fuel">
       <span class="plan-icon" id="plan-fuel-icon"></span>
       <div class="plan-main">
@@ -123,10 +118,16 @@
   </div>
 
   <p id="route-note" class="tip tip-note"></p>
-  <div class="start-wrap">
-    <button id="start" class="plate plate-btn" type="button" disabled></button>
+  <!-- Always on screen, however much the rest has to scroll. -->
+  <div class="action-bar">
+    <div class="action-row">
+      <button id="add-stop" class="action-side" type="button" disabled>
+        <span id="add-stop-icon" class="action-icon"></span><span id="add-stop-label"></span>
+      </button>
+      <button id="start" class="plate plate-btn" type="button" disabled></button>
+    </div>
+    <button id="try-sim" class="link-btn center" type="button"></button>
   </div>
-  <button id="try-sim" class="link-btn center" type="button"></button>
 </section>
 
 <!-- Navigation -->

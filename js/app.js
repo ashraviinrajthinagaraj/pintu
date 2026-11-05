@@ -139,9 +139,9 @@ function applyStaticText() {
   $('route-note').textContent = t('routeNote');
   $('start').textContent = t('start');
   $('try-sim').textContent = t('tryIt');
-  $('add-stop-label').textContent = t('addStop');
+  $('add-stop-label').textContent = t('addStopShort');
+  $('add-stop').setAttribute('aria-label', t('addStop'));
   $('add-stop-icon').innerHTML = UI.plus;
-  $('add-stop-chev').innerHTML = UI.chevron;
   $('plan-prayer-icon').innerHTML = UI.surau;
   $('plan-prayer-chev').innerHTML = UI.chevron;
   $('stops-title').textContent = t('addStop');
@@ -861,6 +861,7 @@ function renderRoutes() {
 
   const ready = S.routeState === 'ready' && S.routes.length > 0;
   $('start').disabled = !ready;
+  $('add-stop').disabled = !ready;
   $('try-sim').hidden = !ready;
   $('route-note').hidden = !ready;
   renderPlan();
@@ -1124,7 +1125,14 @@ async function loadStops() {
   } catch {
     if (ctrl.signal.aborted) return;
     status.classList.add('is-error');
-    status.textContent = t('stopsFailed');
+    const msg = document.createElement('p');
+    msg.textContent = t('stopsFailed');
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'link-btn';
+    retry.textContent = t('retry');
+    retry.addEventListener('click', loadStops);
+    status.replaceChildren(msg, retry);
   }
 }
 

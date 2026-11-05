@@ -114,7 +114,7 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
     if (host === 'photon.komoot.io') {
       return route.fulfill({ json: { features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: P.d }, properties: { name: 'Suria KLCC', city: 'Kuala Lumpur', countrycode: 'MY' } }] }, headers: CORS });
     }
-    if (host === 'overpass-api.de') {
+    if (host === 'overpass.private.coffee') {
       return route.fulfill({ json: { elements: [
         { type: 'node', id: 1, lat: 3.1503, lon: 101.7055, tags: { name: 'Petronas Ampang', amenity: 'fuel' } },
         { type: 'node', id: 2, lat: 3.1548, lon: 101.7104, tags: { brand: 'Shell', amenity: 'fuel' } },

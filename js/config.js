@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.3.0',
+  version: '0.3.1',
 
   maplibre: {
     version: '5.24.0',
@@ -29,9 +29,11 @@ export const CONFIG = {
   },
 
   // Stops along the route come from OpenStreetMap through these, tried in order.
+  // The main server is often overloaded, so it isn't asked first.
   overpass: [
-    'https://overpass-api.de/api/interpreter',
     'https://overpass.private.coffee/api/interpreter',
+    'https://ovp.dresel.systems/api/interpreter',
+    'https://overpass-api.de/api/interpreter',
   ],
 
   // JAKIM's prayer times, by zone worked out from where you are.
