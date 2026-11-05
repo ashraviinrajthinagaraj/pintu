@@ -39,6 +39,7 @@ const ACTIONS = {
     rbEnter: 'Masuk bulatan',
     rbNth: (n) => `Di bulatan, ambil jalan keluar ${n}`,
     exitNo: (n) => `Keluar di susur ${n}`,
+    stop: 'Hentian anda', stopR: 'Hentian di sebelah kanan', stopL: 'Hentian di sebelah kiri',
     onto: 'ke', toward: 'menuju',
   },
   en: {
@@ -57,6 +58,7 @@ const ACTIONS = {
     rbEnter: 'Enter the roundabout',
     rbNth: (n) => `At the roundabout, take the ${n} exit`,
     exitNo: (n) => `Take exit ${n}`,
+    stop: 'Your stop', stopR: 'Your stop is on the right', stopL: 'Your stop is on the left',
     onto: 'onto', toward: 'towards',
   },
 };
@@ -79,7 +81,8 @@ const BY_TYPE = {
 // { action: 'Belok kiri', road: 'Jalan Ampang', ref: 'FT2', toward: '' }
 export function describe(m, lang) {
   const a = ACTIONS[lang] || ACTIONS.en;
-  const key = BY_TYPE[m.type];
+  let key = BY_TYPE[m.type];
+  if (m.isStop) key = { dest: 'stop', destR: 'stopR', destL: 'stopL' }[key] || key;
   const { name, ref } = roadNames(m);
   const toward = signText(m, 'exit_toward_elements');
   const branch = signText(m, 'exit_branch_elements');
@@ -93,7 +96,7 @@ export function describe(m, lang) {
   }
   if ((key === 'exitR' || key === 'exitL') && exitNo) action = a.exitNo(exitNo);
 
-  const isDest = key.startsWith('dest');
+  const isDest = key.startsWith('dest') || key.startsWith('stop');
   const road = isDest ? '' : branch || name;
   return { action, road, ref: isDest ? '' : ref, toward: isDest ? '' : toward };
 }
@@ -118,6 +121,8 @@ export function speech(prompt, maneuvers, lang) {
   switch (prompt.kind) {
     case 'arrive':
       return ms ? 'Anda telah sampai.' : 'You have arrived.';
+    case 'stop':
+      return ms ? 'Anda telah sampai di hentian.' : 'You have reached your stop.';
     case 'intro':
     case 'continue':
     case 'repeat': {
@@ -148,4 +153,31 @@ export function speech(prompt, maneuvers, lang) {
     default:
       return '';
   }
+}
+
+// Lane guidance. Valhalla describes each lane with bitmasks of the directions
+// it allows, which of those keep you on the route, and which are best.
+const LANE_BITS = [
+  [2, 'straight'], [16, 'slightLeft'], [32, 'slightRight'], [8, 'left'], [64, 'right'],
+  [4, 'sharpLeft'], [128, 'sharpRight'], [256, 'uturn'], [512, 'mergeLeft'], [1024, 'mergeRight'],
+];
+
+function laneDirection(mask) {
+  for (const [bit, name] of LANE_BITS) if (mask & bit) return name;
+  return null;
+}
+
+// [{ direction: 'left', state: 'best' | 'ok' | 'other' }], or null if there's
+// nothing that would actually help you choose a lane.
+export function laneView(lanes) {
+  if (!Array.isArray(lanes) || lanes.length < 2) return null;
+  const view = lanes.map((l) => {
+    const directions = l.directions || 0;
+    if (l.active) return { direction: laneDirection(l.active) || 'straight', state: 'best' };
+    if (l.valid) return { direction: laneDirection(l.valid) || 'straight', state: 'ok' };
+    return { direction: laneDirection(directions) || 'straight', state: 'other' };
+  });
+  if (!view.some((l) => l.state !== 'other')) return null;
+  if (view.every((l) => l.state === 'best')) return null;
+  return view;
 }

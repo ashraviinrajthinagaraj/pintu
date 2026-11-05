@@ -72,3 +72,21 @@ export const altTrip = () => buildTrip(P.a, [
 ], { has_toll: true, has_highway: true });
 
 export function along(a, b, f) { return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]; }
+
+// Two legs joined at a stop part way along Jalan Tun Razak.
+export function multiLeg() {
+  const stop = [101.7100, 3.1550];
+  const a = buildTrip(P.a, [
+    { to: P.b, type: 1, street: 'Jalan Ampang', kph: 40 },
+    { to: stop, type: 10, street: 'Jalan Tun Razak', kph: 50 },
+  ]);
+  a.legs[0].maneuvers.at(-1).type = 6;
+  const b = buildTrip(stop, [
+    { to: P.c, type: 1, street: 'Jalan Tun Razak', kph: 50 },
+    { to: P.d, type: 15, street: 'Jalan Pinang', kph: 40 },
+  ]);
+  return {
+    legs: [a.legs[0], b.legs[0]],
+    summary: { time: a.summary.time + b.summary.time, length: a.summary.length + b.summary.length },
+  };
+}

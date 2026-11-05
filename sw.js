@@ -1,7 +1,7 @@
 // Keeps Pintu opening with poor signal. The app's own files come from the
-// network when possible so updates arrive by themselves. Searches and routes
-// are never stored.
-const VERSION = 'pintu-0.1.0';
+// network when possible so updates arrive by themselves. Searches, routes and
+// stops are never stored here.
+const VERSION = 'pintu-0.2.0';
 const SHELL = `${VERSION}-shell`;
 const LIBS = `${VERSION}-libs`;
 const TILES = 'pintu-tiles-1';
@@ -10,8 +10,12 @@ const MAX_TILES = 2500;
 const FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/config.js', 'js/format.js', 'js/geo.js', 'js/guidance.js', 'js/i18n.js',
-  'js/icons.js', 'js/instructions.js', 'js/location.js', 'js/map.js', 'js/routing.js',
-  'js/search.js', 'js/store.js', 'js/voice.js',
+  'js/icons.js', 'js/instructions.js', 'js/location.js', 'js/map.js', 'js/motion.js', 'js/places.js',
+  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/vehicle.js', 'js/vehicle-ui.js',
+  'js/voice.js',
+  'fonts/Barlow-Medium.woff', 'fonts/Barlow-SemiBold.woff', 'fonts/Barlow-Bold.woff',
+  'fonts/BarlowSemiCondensed-SemiBold.woff', 'fonts/BarlowSemiCondensed-Bold.woff',
+  'fonts/BarlowSemiCondensed-ExtraBold.woff',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
 ];
 
@@ -71,7 +75,7 @@ self.addEventListener('fetch', (e) => {
 
   if (url.origin === location.origin) {
     e.respondWith(networkFirst(request));
-  } else if (/\/maplibre-gl@/.test(url.pathname) || url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
+  } else if (/\/maplibre-gl@/.test(url.pathname)) {
     e.respondWith(cacheFirst(LIBS, request));
   } else if (url.hostname === 'tiles.openfreemap.org') {
     // Styles can change; tiles, fonts and sprites sit under versioned paths.

@@ -15,16 +15,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function resetRouting() { skipped.clear(); lastCall.clear(); }
 
-function buildBody({ from, to, mode, avoidTolls, heading, alternates }) {
+let nextRouteId = 1;
+
+function buildBody({ from, to, stops = [], mode, avoidTolls, heading, alternates }) {
   const start = { lat: from.lat, lon: from.lng, type: 'break' };
   if (heading != null) { start.heading = Math.round(heading); start.heading_tolerance = 45; }
   const body = {
-    locations: [start, { lat: to.lat, lon: to.lng, type: 'break' }],
+    locations: [
+      start,
+      ...stops.map((p) => ({ lat: p.lat, lon: p.lng, type: 'break' })),
+      { lat: to.lat, lon: to.lng, type: 'break' },
+    ],
     costing: mode === 'motorcycle' ? 'motorcycle' : 'auto',
     units: 'kilometers',
     language: 'en-GB',
+    turn_lanes: true,
   };
-  if (alternates) body.alternates = alternates;
+  // Valhalla can't offer alternatives once a route has stops.
+  if (alternates && !stops.length) body.alternates = alternates;
   if (mode !== 'motorcycle' && avoidTolls) body.costing_options = { auto: { use_tolls: 0 } };
   return body;
 }
@@ -98,17 +106,36 @@ export function parseResponse(data) {
   return trips.map(prepareTrip).filter(Boolean);
 }
 
+const DESTINATION_TYPES = new Set([4, 5, 6]);
+
+// Joins a trip's legs into one line with one list of manoeuvres. Each stop
+// splits a trip into legs, and each leg ends with its own "destination".
 export function prepareTrip(trip) {
-  const leg = trip.legs && trip.legs[0];
-  if (!leg || !leg.shape || !leg.maneuvers || !leg.maneuvers.length) return null;
-  const coords = decodePolyline(leg.shape, 6);
+  const legs = trip.legs || [];
+  if (!legs.length) return null;
+
+  const coords = [];
+  const maneuvers = [];
+  for (let l = 0; l < legs.length; l++) {
+    const leg = legs[l];
+    if (!leg.shape || !leg.maneuvers || !leg.maneuvers.length) return null;
+    const part = decodePolyline(leg.shape, 6);
+    // Each leg starts where the last one ended, so that point is already there.
+    const offset = coords.length ? coords.length - 1 : 0;
+    coords.push(...(offset ? part.slice(1) : part));
+    for (const m of leg.maneuvers) {
+      maneuvers.push({
+        ...m,
+        begin_shape_index: (m.begin_shape_index ?? 0) + offset,
+        end_shape_index: (m.end_shape_index ?? 0) + offset,
+        isStop: l < legs.length - 1 && DESTINATION_TYPES.has(m.type),
+      });
+    }
+  }
   if (coords.length < 2) return null;
   const cum = cumulative(coords);
 
-  const maneuvers = leg.maneuvers.map((m) => ({
-    ...m,
-    beginDist: cum[Math.min(m.begin_shape_index ?? 0, cum.length - 1)],
-  }));
+  for (const m of maneuvers) m.beginDist = cum[Math.min(m.begin_shape_index, cum.length - 1)];
 
   // How long is left from the start of each manoeuvre to the end of the trip.
   let t = 0;
@@ -117,8 +144,9 @@ export function prepareTrip(trip) {
     maneuvers[i].timeFromHere = t;
   }
 
-  const summary = trip.summary || leg.summary || {};
+  const summary = trip.summary || legs[0].summary || {};
   return {
+    id: nextRouteId++,
     coords,
     cum,
     length: cum[cum.length - 1],
@@ -130,6 +158,31 @@ export function prepareTrip(trip) {
     hasFerry: !!summary.has_ferry || maneuvers.some((m) => m.ferry),
     via: mainRoads(maneuvers),
   };
+}
+
+// Seconds of driving between two points along a route.
+export function timeBetween(route, fromS, toS) {
+  const at = (s) => {
+    const { maneuvers } = route;
+    let i = 0;
+    while (i < maneuvers.length - 1 && maneuvers[i + 1].beginDist <= s) i++;
+    const m = maneuvers[i];
+    const next = maneuvers[i + 1];
+    const span = next ? next.beginDist - m.beginDist : 0;
+    const done = span > 0 ? Math.min(1, (s - m.beginDist) / span) : 0;
+    return route.time - m.timeFromHere + (m.time || 0) * done;
+  };
+  return Math.max(0, at(toS) - at(fromS));
+}
+
+// How far along the route you'd be after a given number of seconds.
+export function distanceAfter(route, fromS, seconds) {
+  let lo = fromS, hi = route.length;
+  for (let k = 0; k < 24; k++) {
+    const mid = (lo + hi) / 2;
+    if (timeBetween(route, fromS, mid) < seconds) lo = mid; else hi = mid;
+  }
+  return hi;
 }
 
 // The road you spend the most distance on, to tell routes apart at a glance.

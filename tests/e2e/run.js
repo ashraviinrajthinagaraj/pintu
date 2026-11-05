@@ -6,8 +6,9 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { altTrip, buildTrip, cityTrip, P } from '../helpers/fixtures.js';
-import { decodePolyline, cumulative, bearing } from '../../js/geo.js';
+import { altTrip, buildTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
+import { bearing } from '../../js/geo.js';
+import { prepareTrip } from '../../js/routing.js';
 
 const require = createRequire('/opt/npm-tools/node_modules/');
 const { chromium, devices } = require('playwright');
@@ -39,9 +40,24 @@ const PHOTON = {
   ],
 };
 
-async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY' } = {}) {
+const OVERPASS = { elements: [
+  { type: 'node', id: 1, lat: 3.1502, lon: 101.7055, tags: { amenity: 'fuel', name: 'Petronas Ampang', brand: 'Petronas' } },
+  { type: 'way', id: 2, center: { lat: 3.1548, lon: 101.7102 }, tags: { amenity: 'fuel', brand: 'Shell' } },
+] };
+
+function solatMonth(times) {
+  const d = new Date();
+  const secs = (ms) => Math.floor(ms / 1000);
+  const far = secs(Date.now() + 40 * 86400000);
+  return {
+    zone: 'WLY01', year: d.getFullYear(), month: 'X', month_number: d.getMonth() + 1,
+    prayers: [{ day: d.getDate(), hijri: 'x', imsak: far, fajr: far, syuruk: far, dhuha: far, dhuhr: far, asr: far, maghrib: far, isha: far, ...Object.fromEntries(Object.entries(times).map(([k, v]) => [k, secs(v)])) }],
+  };
+}
+
+async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], errors: [], external: new Set() };
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const host = new URL(url).hostname;
@@ -51,7 +67,16 @@ async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia 
       return route.fulfill({ contentType: 'text/javascript', headers: CORS, body: stub });
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
-    if (host.includes('fonts.')) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
+    if (host === 'overpass-api.de' || host === 'overpass.private.coffee') {
+      log.overpass.push(route.request().postData());
+      if (log.overpassFail) return route.abort();
+      return route.fulfill({ json: overpass, headers: CORS });
+    }
+    if (host === 'api.waktusolat.app') {
+      log.solat.push(url);
+      if (!solat) return route.fulfill({ status: 404, json: { message: 'none' }, headers: CORS });
+      return route.fulfill({ json: solatMonth(solat), headers: CORS });
+    }
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
     if (host === 'api.stadiamaps.com') {
       log.stadia++;
@@ -147,8 +172,7 @@ async function smallTargets(page, name, sels) {
 
 // Runs the fix along a prepared route at a steady speed, with exact timestamps.
 async function driveTo(page, trip, { from = 0, to, kph = 40, t0 } = {}) {
-  const coords = decodePolyline(trip.legs[0].shape);
-  const cum = cumulative(coords);
+  const { coords, cum } = prepareTrip(trip);
   const v = kph / 3.6;
   const end = to ?? cum[cum.length - 1] + 1;
   const pts = [];
@@ -165,6 +189,8 @@ async function driveTo(page, trip, { from = 0, to, kph = 40, t0 } = {}) {
   }, { pts, v });
   return time;
 }
+
+const puckAt = (page) => page.evaluate(() => window.__map.markers.find((m) => m.el.className === 'puck')?.ll);
 
 const results = [];
 async function check(name, fn) {
@@ -256,6 +282,7 @@ await check('route preview: two routes, toll tag, falls back past the unregister
   await smallTargets(page, 'preview', ['#start', '#preview-back', '#mode-car', '.route-opt']);
   const fit = await page.evaluate(() => window.__mapCalls.filter((c) => c[0] === 'fitBounds').at(-1));
   assert.ok(fit[2].padding.bottom > 300, 'the route is framed clear of the sheet');
+  assert.equal(await vis(page, '#preview-strip'), false, 'no trip line when there is nothing to mark');
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${shots}/3-preview.png` });
   assert.deepEqual(log.errors, []);
@@ -606,13 +633,16 @@ await check('dragging the map stops following; recentre brings it back', async (
   assert.equal(await vis(page, '#btn-recenter'), false);
   await page.evaluate(() => window.__map._fire('dragstart', {}));
   assert.equal(await vis(page, '#btn-recenter'), true);
-  const count = () => page.evaluate(() => window.__mapCalls.filter((c) => c[0] === 'easeTo').length);
+  const count = () => page.evaluate(() => window.__map.jumpCount);
+  await page.waitForTimeout(50);
   const n = await count();
   await driveTo(page, cityTrip(), { from: 100, to: 200 });
+  await page.waitForTimeout(300);
   assert.equal(await count(), n, 'map stays where you dragged it');
   await page.click('#btn-recenter');
   assert.equal(await vis(page, '#btn-recenter'), false);
-  assert.equal(await count(), n + 1);
+  await page.waitForTimeout(100);
+  assert.ok(await count() > n, 'following again');
   await ctx.close();
 });
 
@@ -632,8 +662,10 @@ await check('try without driving plays the whole trip and never saves it', async
   assert.equal(words.at(-1), 'Anda telah sampai.');
   await page.click('#arrival-done');
   // You're put back where you really are.
-  const pos = await page.evaluate(() => window.__map.markers[0].ll);
-  assert.deepEqual(pos, P.a);
+  await page.waitForFunction(([lng, lat]) => {
+    const ll = window.__map.markers.find((m) => m.el.className === 'puck').ll;
+    return Math.abs(ll[0] - lng) < 0.0002 && Math.abs(ll[1] - lat) < 0.0002;
+  }, P.a);
   assert.deepEqual(log.errors, []);
   await ctx.close();
 });
@@ -694,7 +726,7 @@ await check('night colours, by clock and by choice', async () => {
   await driveTo(page, cityTrip(), { to: 900 });
   await page.waitForTimeout(100);
   await page.screenshot({ path: `${shots}/11-nav-night.png` });
-  assert.ok(await page.evaluate(() => window.__map.layers.length === 5), 'route layers survive the style change');
+  assert.equal(await page.evaluate(() => window.__map.layers.length), 7, 'route and building layers survive the style change');
   assert.deepEqual(log.errors, []);
   await ctx.close();
 
@@ -811,6 +843,418 @@ await check('long place and road names stay on screen', async () => {
   await ctx.close();
 });
 
+await check('the arrow glides between GPS fixes instead of hopping', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await toNav(page);
+  const v = 14;
+  const samples = await page.evaluate(async ({ v }) => {
+    const puck = () => window.__map.markers.find((m) => m.el.className === 'puck').ll;
+    const out = [];
+    const startJumps = window.__map.jumpCount;
+    const started = performance.now();
+    let sent = 0;
+    await new Promise((resolve) => {
+      const tick = (now) => {
+        const elapsed = now - started;
+        if (elapsed >= sent * 1000) {
+          const s = sent * v;
+          const lng = 101.7 + (s + 300) / 111000;
+          window.__gps.push(lng, 3.15, { speed: v, heading: 90, time: Date.now() });
+          sent++;
+        }
+        out.push(puck()[0]);
+        if (elapsed < 3000) requestAnimationFrame(tick); else resolve();
+      };
+      requestAnimationFrame(tick);
+    });
+    return { lngs: out, jumps: window.__map.jumpCount - startJumps };
+  }, { v });
+  const m = samples.lngs.map((x) => (x - 101.7) * 111000);
+  const later = m.slice(Math.floor(m.length / 3));
+  const distinct = new Set(later.map((x) => x.toFixed(2))).size;
+  assert.ok(distinct > later.length * 0.6, `positions per frame: ${distinct} of ${later.length}`);
+  let worst = 0;
+  for (let i = 1; i < later.length; i++) worst = Math.max(worst, Math.abs(later[i] - later[i - 1]));
+  assert.ok(worst < v * 0.45, `largest hop ${worst.toFixed(1)} m at ${v} m/s`);
+  assert.ok(samples.jumps >= 20, `camera moved ${samples.jumps} times in 3 s`);
+  await ctx.close();
+});
+
+await check('speed shows in km/h', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await toNav(page);
+  await page.evaluate(() => window.__gps.push(101.701, 3.15, { speed: 25, heading: 90, time: Date.now() }));
+  await page.waitForTimeout(50);
+  assert.equal(await text(page, '#speed-value'), '90');
+  assert.equal(await text(page, '#speed span'), 'km/j');
+  await ctx.close();
+});
+
+await check('3D switch: starts tilted with buildings, flattens, and stays as you left it', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  await toNav(page);
+  await driveTo(page, cityTrip(), { to: 300 });
+  await page.waitForFunction(() => window.__map.lastJump && window.__map.lastJump.pitch > 50);
+  assert.equal(await text(page, '#btn-3d'), '3D');
+  const layer = await page.evaluate(() => window.__map.getLayer('pintu-3d'));
+  assert.equal(layer.type, 'fill-extrusion');
+  assert.equal(layer['source-layer'], 'building');
+  await page.click('#btn-3d');
+  assert.equal(await text(page, '#btn-3d'), '2D');
+  assert.equal(await page.evaluate(() => window.__map.layout['pintu-3d']), 'none');
+  await page.waitForFunction(() => window.__map.lastJump.pitch < 3);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).view3d), false);
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  assert.equal(await text(page, '#btn-3d-idle'), '2D');
+  await page.click('#btn-3d-idle');
+  assert.equal(await page.evaluate(() => window.__map.layout['pintu-3d']), 'visible');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('route line goes above every road, not just the first label', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await page.waitForFunction(() => window.__map.getLayer('pintu-route'));
+  // The stub refuses any insertion point except the label after the last road.
+  assert.equal(await page.evaluate(() => window.__map.layers.length), 7);
+  await ctx.close();
+});
+
+await check('lane arrows show near the turn, with the right lane marked', async () => {
+  const lanes = [{ directions: 2 }, { directions: 2 }, { directions: 64, active: 64 }, { directions: 66, valid: 64 }];
+  const tr = buildTrip(P.a, [
+    { to: P.b, type: 1, street: 'Jalan Ampang', kph: 40 },
+    { to: P.c, type: 10, street: 'Jalan Tun Razak', kph: 50, lanes },
+    { to: P.d, type: 15, street: 'Jalan Pinang', kph: 40 },
+  ]);
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, routeResponse: () => ({ trip: tr }) });
+  await toNav(page);
+  assert.equal(log.fossgis[0].turn_lanes, true);
+  await driveTo(page, tr, { to: 200 });
+  await page.waitForTimeout(50);
+  assert.equal(await vis(page, '#lanes'), false, 'too far away to matter');
+  await driveTo(page, tr, { from: 200, to: 800 });
+  await page.waitForTimeout(50);
+  assert.equal(await vis(page, '#lanes'), true);
+  assert.equal(await page.locator('#lanes .lane').count(), 4);
+  assert.equal(await page.locator('#lanes .lane.best').count(), 1);
+  assert.equal(await page.locator('#lanes .lane.ok').count(), 1);
+  assert.equal(await page.locator('#lanes .lane.other').count(), 2);
+  assert.ok(await page.locator('#lanes .lane').nth(2).evaluate((e) => e.classList.contains('best')));
+  await noOverflow(page, 'lanes');
+  await page.screenshot({ path: `${shots}/12-nav-lanes.png` });
+  // Past the turn, the next one has no lane data.
+  await driveTo(page, tr, { from: 800, to: 1300 });
+  await page.waitForTimeout(50);
+  assert.equal(await vis(page, '#lanes'), false);
+  await ctx.close();
+});
+
+await check('stops: searches along the route, adds one, routes through it', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet, scale: 2,
+    routeResponse: (b) => (b.locations.length === 3 ? { trip: multiLeg() } : { trip: cityTrip(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }),
+  });
+  await toPreview(page);
+  assert.equal(await page.locator('.route-opt').count(), 2);
+  await page.click('#add-stop');
+  await page.waitForSelector('#stops-list .place');
+  assert.match(decodeURIComponent(log.overpass[0]), /"amenity"="fuel"/);
+  assert.match(decodeURIComponent(log.overpass[0].replace(/\+/g, ' ')), /around:1500,3\.15000,101\.70000/);
+  assert.equal(await page.locator('.cat').count(), 5);
+  const first = await page.locator('#stops-list .place').first().innerText();
+  assert.match(first, /Petronas Ampang/);
+  assert.match(first, /lagi, sampai \d+:\d\d/);
+  assert.match(first, /ke kiri laluan/);
+  assert.ok(await page.evaluate(() => document.querySelectorAll('.map-pin').length) >= 2, 'pins on the map');
+  await noOverflow(page, 'stops');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/13-stops.png` });
+  await page.locator('#stops-list .place').nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
+  await page.waitForSelector('.route-opt');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.map-pin:not(.is-stop)').length), 0, 'choices cleared');
+  await page.waitForFunction(() => document.querySelectorAll('.map-pin.is-stop').length === 1);
+  const req = log.fossgis.at(-1);
+  assert.equal(req.locations.length, 3);
+  assert.equal(req.locations[1].lat, 3.1548);
+  assert.equal(req.alternates, undefined);
+  assert.equal(await page.locator('.route-opt').count(), 1, 'one route once there is a stop');
+  assert.match(await text(page, '#plan-stops'), /Shell/);
+  assert.deepEqual(log.errors, []);
+
+  // Drive it: the stop is announced, reached, then guidance carries on.
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  const trip = multiLeg();
+  const t1 = await driveTo(page, trip, { to: 1500 });
+  await page.waitForTimeout(50);
+  assert.match(await text(page, '#sign-action'), /Hentian di sebelah kiri/);
+  await page.locator('#btn-add-stop').waitFor();
+  const t2 = await driveTo(page, trip, { from: 1500, to: 1800, t0: t1 });
+  await page.waitForTimeout(50);
+  const words = (await said(page)).map((x) => x.text);
+  assert.ok(words.includes('Anda telah sampai di hentian.'), words.join(' | '));
+  assert.equal(await vis(page, '#nav-bar'), true);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.map-pin.is-stop').length), 0);
+  await driveTo(page, trip, { from: 1800, t0: t2 });
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('adding a stop while driving re-routes straight away', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    routeResponse: (b) => (b.locations.length === 3 ? { trip: buildTrip(P.a, [{ to: [101.7055, 3.15], type: 1, street: 'Jalan Ampang', kph: 40 }, { to: P.d, type: 15, street: 'Jalan Baru', kph: 10 }]) } : { trip: cityTrip() }),
+  });
+  await toNav(page);
+  await driveTo(page, cityTrip(), { to: 200 });
+  await page.click('#btn-add-stop');
+  await page.waitForSelector('#stops-list .place');
+  assert.equal(await vis(page, '#nav-bar'), true);
+  await page.locator('#stops-list .place').first().click();
+  await page.waitForFunction(() => /Hentian ditambah/.test(document.getElementById('toast').textContent), null, { timeout: 8000 });
+  const req = log.fossgis.at(-1);
+  assert.equal(req.locations.length, 3);
+  assert.equal(await vis(page, '#stops'), false);
+  assert.equal(await vis(page, '#nav-bar'), true);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('stops: nothing found, and failure, are both explained', async () => {
+  const empty = await newApp(browser, { ...quiet, overpass: { elements: [] } });
+  await toPreview(empty.page);
+  await empty.page.click('#add-stop');
+  await empty.page.waitForFunction(() => /Tiada dijumpai/.test(document.getElementById('stops-status').textContent));
+  await empty.ctx.close();
+  const bad = await newApp(browser, quiet);
+  bad.log.overpassFail = true;
+  await toPreview(bad.page);
+  await bad.page.click('#add-stop');
+  await bad.page.waitForFunction(() => /tak dapat dimuatkan/.test(document.getElementById('stops-status').textContent));
+  assert.equal(bad.log.overpass.length, 2, 'tried both servers');
+  await bad.ctx.close();
+});
+
+await check('stops: another place can be searched for, and back closes the panel', async () => {
+  const { ctx, page, log } = await newApp(browser, quiet);
+  await toPreview(page);
+  await page.click('#add-stop');
+  await page.waitForSelector('#stops-list .place');
+  await page.goBack();
+  assert.equal(await vis(page, '#stops'), false);
+  assert.equal(await vis(page, '#preview'), true);
+  await page.click('#add-stop');
+  await page.click('#stops-other');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
+  await page.waitForTimeout(100);
+  assert.equal(await vis(page, '#search'), false);
+  assert.equal(await vis(page, '#preview'), true);
+  await page.locator('.stop-row button').click();
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 0);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('my car: enter it, see fuel use and whether the tank is enough', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  await toPreview(page);
+  assert.match(await text(page, '#plan-fuel-title'), /Tambah kenderaan/);
+  await page.click('#plan-fuel-edit');
+  assert.equal(await vis(page, '#vehicle'), true);
+  assert.equal(await text(page, '#veh-title'), 'Kereta saya');
+  await noOverflow(page, 'vehicle');
+  await page.screenshot({ path: `${shots}/14-vehicle.png` });
+
+  await page.click('#veh-save');
+  assert.match(await text(page, '#veh-error'), /Masukkan/);
+
+  await page.selectOption('#veh-preset', { label: 'Perodua Myvi 1.5' });
+  assert.equal(await page.inputValue('#veh-consumption'), '6.3');
+  await page.click('#veh-unit-kml');
+  assert.equal(await page.inputValue('#veh-consumption'), '15.9');
+  await page.fill('#veh-consumption', '20');
+  await page.fill('#veh-range', '600');
+  await page.fill('#veh-price', '2');
+  await page.locator('#veh-level').evaluate((e) => { e.value = 50; e.dispatchEvent(new Event('input')); });
+  assert.equal(await text(page, '#veh-level-value'), '50%');
+  await page.click('#veh-save');
+  await page.waitForFunction(() => document.getElementById('vehicle').hidden);
+  assert.equal(await vis(page, '#preview'), true);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.vehicles')).car);
+  assert.equal(stored.consumption, 5);
+  assert.equal(stored.range, 600);
+  assert.equal(stored.level, 50);
+  assert.match(await text(page, '#plan-fuel-title'), /Guna lebih kurang 0\.2 L, RM0\.31/);
+  assert.match(await text(page, '#plan-fuel-detail'), /Cukup\. Baki lebih kurang 297 km/);
+  await page.locator('#plan-level').evaluate((e) => { e.value = 5; e.dispatchEvent(new Event('input')); });
+  assert.match(await text(page, '#plan-fuel-detail'), /Elok isi minyak dahulu|isi minyak/);
+  await noOverflow(page, 'plan');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/15-plan.png` });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('my car: electric uses battery wording; motorcycle is kept separately', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await toPreview(page);
+  await page.click('#plan-fuel-edit');
+  await page.selectOption('#veh-preset', { label: 'Proton eMas 7 Premium' });
+  assert.equal(await page.inputValue('#veh-range'), '410');
+  assert.equal(await vis(page, '#veh-unit-row'), false);
+  assert.match(await text(page, '#veh-range-label'), /sekali cas/);
+  await page.click('#veh-save');
+  await page.waitForFunction(() => document.getElementById('vehicle').hidden);
+  assert.match(await text(page, '#plan-fuel-title'), /kWh/);
+  await page.click('#mode-moto');
+  await page.waitForFunction(() => /Tambah kenderaan/.test(document.getElementById('plan-fuel-title').textContent) && !document.getElementById('plan').hidden);
+  await page.click('#mode-car');
+  await page.waitForFunction(() => /kWh/.test(document.getElementById('plan-fuel-title').textContent) && !document.getElementById('plan').hidden);
+  await page.click('#plan-fuel-edit');
+  await page.click('#veh-remove');
+  await page.waitForFunction(() => document.getElementById('vehicle').hidden);
+  assert.match(await text(page, '#plan-fuel-title'), /Tambah kenderaan/);
+  await ctx.close();
+});
+
+await check('running low warns once, offers stations, and offers the mark on the trip line', async () => {
+  const long = buildTrip(P.a, [{ to: [101.9, 3.15], type: 1, street: 'Jalan Panjang', kph: 80 }, { to: [101.9, 3.2], type: 10, street: 'Akhir', kph: 60 }]);
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    routeResponse: () => ({ trip: long }),
+    storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { name: 'Myvi', kind: 'petrol', consumption: 6, range: 300, level: 10 } } },
+  });
+  await toPreview(page);
+  assert.match(await text(page, '#plan-fuel-detail'), /Elok isi minyak|Perlu isi minyak|Cukup-cukup/);
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  assert.equal(await page.locator('#nav-strip .mark-fuel').count(), 1);
+  assert.match(await text(page, '#nav-range'), /km/);
+  await driveTo(page, long, { to: 8000, kph: 90 });
+  await page.waitForFunction(() => /Minyak tinggal/.test(document.getElementById('chips').textContent));
+  const words = (await said(page)).map((x) => x.text);
+  assert.equal(words.filter((w) => w.startsWith('Minyak tinggal')).length, 1, 'said once');
+  await page.locator('#chips .chip', { hasText: 'Minyak tinggal' }).click();
+  await page.waitForSelector('#stops:not([hidden])');
+  assert.equal(await page.locator('.cat[aria-checked="true"]').innerText(), 'Minyak');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('a finished trip updates the tank; a refill stop asks and resets it', async () => {
+  const { ctx, page } = await newApp(browser, {
+    ...quiet, scale: 2,
+    routeResponse: (b) => (b.locations.length === 3 ? { trip: multiLeg() } : { trip: cityTrip() }),
+    storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { name: 'Myvi', kind: 'petrol', consumption: 6, range: 100, level: 50 } } },
+  });
+  await toPreview(page);
+  await page.click('#add-stop');
+  await page.waitForSelector('#stops-list .place');
+  await page.locator('#stops-list .place').nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
+  await page.waitForSelector('.route-opt');
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  const trip = multiLeg();
+  const t1 = await driveTo(page, trip, { to: 1800 });
+  await page.waitForSelector('#refill:not([hidden])');
+  assert.match(await text(page, '#refill-text'), /Dah isi minyak/);
+  await noOverflow(page, 'refill');
+  await page.screenshot({ path: `${shots}/16-refill.png` });
+  await page.click('#refill-yes');
+  assert.equal(await vis(page, '#refill'), false);
+  await driveTo(page, trip, { from: 1800, t0: t1 });
+  await page.waitForSelector('#arrival:not([hidden])');
+  const v = await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.vehicles')).car);
+  assert.ok(v.level >= 97 && v.level <= 100, `level ${v.level}`);
+  assert.match(await text(page, '#arrival-stats'), /guna lebih kurang/);
+  await ctx.close();
+});
+
+await check('a practice drive does not touch the tank', async () => {
+  const short = buildTrip(P.a, [{ to: [101.7012, 3.15], type: 1, street: 'Jalan Satu', kph: 40 }, { to: [101.7012, 3.1512], type: 15, street: 'Jalan Dua', kph: 40 }]);
+  const { ctx, page } = await newApp(browser, {
+    ...quiet,
+    routeResponse: () => ({ trip: short }),
+    storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { kind: 'petrol', consumption: 6, range: 100, level: 50 } } },
+  });
+  await toPreview(page);
+  await page.click('#try-sim');
+  await page.waitForSelector('#arrival:not([hidden])', { timeout: 30000 });
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.vehicles')).car.level), 50);
+  await ctx.close();
+});
+
+await check('solat: shown when close, nowhere otherwise, and offers a surau', async () => {
+  const soon = Date.now() + 12 * 60000;
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, solat: { asr: soon } });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await page.click('#where');
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('pintu.solat') || 'null')?.data);
+  assert.match(log.solat[0], /\/v2\/solat\/gps\/3\.15\/101\.70$/);
+  await page.goBack();
+  await page.waitForFunction(() => !document.getElementById('hud-prayer').hidden);
+  assert.match(await text(page, '#hud-prayer'), /^Asar dalam 1[12] min, /);
+  await noOverflow(page, 'idle prayer');
+  await page.screenshot({ path: `${shots}/1b-idle-prayer.png` });
+  await toPreview(page);
+  assert.equal(await vis(page, '#plan-prayer'), true);
+  assert.match(await text(page, '#plan-prayer-title'), /Asar dalam/);
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  await driveTo(page, cityTrip(), { to: 200 });
+  await page.waitForSelector('#chips .chip');
+  const chip = page.locator('#chips .chip', { hasText: 'Asar' });
+  assert.match(await chip.innerText(), /Cari surau/);
+  await chip.click();
+  await page.waitForSelector('#stops:not([hidden])');
+  assert.equal(await page.locator('.cat[aria-checked="true"]').innerText(), 'Surau');
+  assert.match(decodeURIComponent(log.overpass.at(-1)), /"religion"="muslim"/);
+  assert.equal(log.solat.length, 1, 'one request for the whole session');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('solat: a prayer that comes in during the trip is mentioned before you leave', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, solat: { maghrib: Date.now() + 60 * 60000 } });
+  const long = buildTrip(P.a, [{ to: [102.5, 3.15], type: 1, street: 'Jalan Panjang', kph: 60 }]);
+  await page.route(/valhalla1/, (r) => r.fulfill({ json: { trip: long }, headers: CORS }));
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await page.click('#where');
+  await page.waitForFunction(() => localStorage.getItem('pintu.solat'));
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForSelector('.route-opt');
+  assert.match(await text(page, '#plan-prayer-title'), /Waktu Maghrib masuk/);
+  assert.equal(await page.locator('#preview-strip .mark-prayer').count(), 1);
+  await ctx.close();
+});
+
+await check('solat: switched off sends nothing, and an outage shows nothing', async () => {
+  const off = await newApp(browser, { storage: { 'pintu.settings': { solat: false } }, solat: { asr: Date.now() + 600000 } });
+  await off.page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await off.page.click('#where');
+  await off.page.waitForTimeout(200);
+  assert.equal(off.log.solat.length, 0);
+  await off.ctx.close();
+  const down = await newApp(browser, {});
+  await down.page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await down.page.click('#where');
+  await down.page.waitForTimeout(200);
+  await down.page.goBack();
+  assert.equal(await vis(down.page, '#hud-prayer'), false);
+  assert.deepEqual(down.log.errors, []);
+  await down.ctx.close();
+});
+
 await check('installable, and opens with no signal once visited', async () => {
   const { ctx, page } = await newApp(browser, { sw: 'allow' });
   const manifest = await (await page.request.get(`${ORIGIN}manifest.webmanifest`)).json();
@@ -820,7 +1264,7 @@ await check('installable, and opens with no signal once visited', async () => {
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(async () => {
     const names = await caches.keys();
-    for (const n of names) if (n.endsWith('-shell') && (await (await caches.open(n)).keys()).length >= 20) return true;
+    for (const n of names) if (n.endsWith('-shell') && (await (await caches.open(n)).keys()).length >= 25) return true;
     return false;
   });
   await page.reload();
@@ -835,7 +1279,7 @@ await check('installable, and opens with no signal once visited', async () => {
     for (const n of await caches.keys()) for (const r of await (await caches.open(n)).keys()) urls.push(r.url);
     return urls;
   });
-  assert.ok(!cached.some((u) => /photon|valhalla|stadia/.test(u)), cached.join('\n'));
+  assert.ok(!cached.some((u) => /photon|valhalla|stadia|overpass|waktusolat/.test(u)), cached.join('\n'));
   await ctx.close();
 });
 

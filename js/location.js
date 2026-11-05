@@ -56,7 +56,7 @@ export class Gps {
 
 // Drives a route without moving, so the whole trip can be tried from the sofa.
 export class SimulatedDrive {
-  constructor(route, onFix, { factor = 4, intervalMs = 1000, startAt = 0 } = {}) {
+  constructor(route, onFix, { factor = 4, intervalMs = 250, startAt = 0 } = {}) {
     this.route = route;
     this.onFix = onFix;
     this.factor = factor;
@@ -87,12 +87,14 @@ export class SimulatedDrive {
     while (i < cum.length - 2 && cum[i + 1] <= this.s) i++;
     const span = cum[i + 1] - cum[i] || 1;
     const t = Math.min(1, (this.s - cum[i]) / span);
-    this.t += this.intervalMs;
+    // The clock runs as fast as the car does, so guidance sees a normal drive.
+    this.t += this.intervalMs * this.factor;
     this.onFix({
       lng: coords[i][0] + (coords[i + 1][0] - coords[i][0]) * t,
       lat: coords[i][1] + (coords[i + 1][1] - coords[i][1]) * t,
       accuracy: 8,
       speed: v,
+      motionSpeed: v * this.factor,
       heading: bearing(coords[i], coords[i + 1]),
       time: this.t,
     });

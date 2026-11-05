@@ -23,7 +23,9 @@
       this.container = opts.container;
       this.cam = { center: opts.center, zoom: opts.zoom, bearing: 0, pitch: 0, padding: {} };
       this.handlers = {};
-      this.sources = {};
+      this.jumpCount = 0;
+      this.layout = {};
+      this.sources = { openmaptiles: {} };
       this.layers = [];
       this.styleUrl = opts.style;
       this.markers = [];
@@ -42,9 +44,13 @@
     }
     on(ev, a, b) { const fn = b || a; (this.handlers[ev] ||= []).push(fn); return this; }
     _fire(ev, e) { for (const fn of this.handlers[ev] || []) fn(e); }
-    getStyle() { return { layers: [{ id: 'bg', type: 'background' }, { id: 'labels', type: 'symbol' }] }; }
+    getStyle() { return { layers: [{ id: 'bg', type: 'background' }, { id: 'early-label', type: 'symbol' }, { id: 'road', type: 'line', 'source-layer': 'transportation' }, { id: 'labels', type: 'symbol' }] }; }
     getLayer(id) { return this.layers.find((l) => l.id === id); }
-    setStyle(url, o) { calls.push(['setStyle', url, o]); this.styleUrl = url; this.sources = {}; this.layers = []; setTimeout(() => { this._fire('style.load', {}); this.draw(); }, 5); }
+    setLayoutProperty(id, key, value) { calls.push(['setLayoutProperty', id, key, value]); this.layout[id] = value; }
+    jumpTo(o) { this.jumpCount++; this.lastJump = o; Object.assign(this.cam, o); this.draw(); }
+    getZoom() { return this.cam.zoom; }
+    getPitch() { return this.cam.pitch; }
+    setStyle(url, o) { calls.push(['setStyle', url, o]); this.styleUrl = url; this.sources = { openmaptiles: {} }; this.layers = []; setTimeout(() => { this._fire('style.load', {}); this.draw(); }, 5); }
     addSource(id, s) { if (this.sources[id]) throw new Error(`source ${id} exists`); this.sources[id] = { ...s, setData: (d) => { this.sources[id].data = d; this.draw(); } }; }
     getSource(id) { return this.sources[id]; }
     addLayer(l, before) {
@@ -82,7 +88,7 @@
       for (let y = oy; y < h + step; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
       for (const l of this.layers) {
         const src = this.sources[l.source];
-        if (!src || !src.data || l.paint['line-opacity'] === 0) continue;
+        if (l.type !== 'line' || !src || !src.data || l.paint['line-opacity'] === 0 || l.paint['line-blur']) continue;
         g.strokeStyle = l.paint['line-color'];
         const lw = l.paint['line-width'];
         g.lineWidth = Array.isArray(lw) ? lw[lw.length - 1] : lw;

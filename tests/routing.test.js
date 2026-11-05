@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RouteError, fetchRoutes, parseResponse, prepareTrip, resetRouting } from '../js/routing.js';
-import { altTrip, cityTrip } from './helpers/fixtures.js';
+import { RouteError, distanceAfter, fetchRoutes, parseResponse, prepareTrip, resetRouting, timeBetween } from '../js/routing.js';
+import { P, altTrip, buildTrip, cityTrip, multiLeg } from './helpers/fixtures.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const from = { lat: 3.15, lng: 101.7 }, to = { lat: 3.16, lng: 101.718 };
@@ -137,4 +137,55 @@ test('cancelling stops the search', async () => {
   const p = fetchRoutes({ from, to, mode: 'car', signal: ctrl.signal }, { fetchImpl, providers });
   setTimeout(() => ctrl.abort(), 20);
   await assert.rejects(p, (e) => e.code === 'cancelled');
+});
+
+test('asks for lane data', async () => {
+  resetRouting();
+  let body;
+  const fetchImpl = async (u, init) => { body = JSON.parse(init.body); return json({ trip: cityTrip() }); };
+  await fetchRoutes({ from, to, mode: 'car' }, { fetchImpl, providers });
+  assert.equal(body.turn_lanes, true);
+});
+
+test('stops become extra points, with no alternatives requested', async () => {
+  resetRouting();
+  let body;
+  const fetchImpl = async (u, init) => { body = JSON.parse(init.body); return json({ trip: cityTrip() }); };
+  await fetchRoutes({ from, to, stops: [{ lat: 3.155, lng: 101.71 }], mode: 'car', alternates: 2 }, { fetchImpl, providers });
+  assert.equal(body.locations.length, 3);
+  assert.deepEqual(body.locations[1], { lat: 3.155, lon: 101.71, type: 'break' });
+  assert.equal(body.alternates, undefined);
+});
+
+test('joins a multi-stop trip into one line', () => {
+  const trip = multiLeg();
+  const r = prepareTrip(trip);
+  const legA = prepareTrip({ legs: [trip.legs[0]], summary: trip.legs[0].summary });
+  const legB = prepareTrip({ legs: [trip.legs[1]], summary: trip.legs[1].summary });
+  assert.equal(r.coords.length, legA.coords.length + legB.coords.length - 1);
+  assert.ok(Math.abs(r.length - (legA.length + legB.length)) < 1);
+  const stops = r.maneuvers.filter((m) => m.isStop);
+  assert.equal(stops.length, 1);
+  assert.ok(Math.abs(stops[0].beginDist - legA.length) < 1);
+  // The second leg's turn lands at the right place on the joined line.
+  const after = r.maneuvers.filter((m) => m.beginDist > legA.length + 1);
+  assert.ok(Math.abs(after[0].beginDist - (legA.length + legB.maneuvers[1].beginDist)) < 1);
+  assert.equal(r.maneuvers.at(-1).isStop, false);
+  assert.ok(Math.abs(r.maneuvers[0].timeFromHere - r.time) < 1);
+});
+
+test('driving time between two points', () => {
+  const r = prepareTrip(cityTrip());
+  assert.ok(Math.abs(timeBetween(r, 0, r.length) - r.time) < 0.01);
+  assert.equal(timeBetween(r, 500, 500), 0);
+  const firstLeg = r.maneuvers[0];
+  assert.ok(Math.abs(timeBetween(r, 0, r.maneuvers[1].beginDist) - firstLeg.time) < 0.01);
+  assert.equal(timeBetween(r, 1000, 500), 0);
+});
+
+test('position after a given time', () => {
+  const r = prepareTrip(cityTrip());
+  const half = distanceAfter(r, 0, r.time / 2);
+  assert.ok(Math.abs(timeBetween(r, 0, half) - r.time / 2) < 1);
+  assert.ok(Math.abs(distanceAfter(r, 0, r.time * 2) - r.length) < 1);
 });

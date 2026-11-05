@@ -30,6 +30,7 @@ export class Guidance {
     this.started = false;
     this.arrived = false;
     this.lastState = null;
+    this.stopsReached = new Set();
   }
 
   update(fix) {
@@ -150,8 +151,21 @@ export class Guidance {
       this.arrived = true;
     }
 
-    const then = maneuvers[nextIndex + 1];
+    // The next manoeuvre after a stop is the start of the following leg, which
+    // is just "drive off". Skip it for the "then" hint.
+    let thenIndex = nextIndex + 1;
+    if (next.isStop) thenIndex = maneuvers.length;
+    const then = maneuvers[thenIndex];
     const gap = then ? then.beginDist - next.beginDist : Infinity;
+
+    let stopReached = null;
+    for (let i = 0; i < maneuvers.length; i++) {
+      const m = maneuvers[i];
+      if (m.isStop && !this.stopsReached.has(i) && s >= m.beginDist - DEST_RADIUS) {
+        this.stopsReached.add(i);
+        stopReached = i;
+      }
+    }
 
     return {
       s,
@@ -162,6 +176,7 @@ export class Guidance {
       weak,
       accuracy,
       arrived: this.arrived,
+      stopReached,
       nextIndex,
       currentIndex,
       next,
@@ -181,6 +196,7 @@ export class Guidance {
     if (st.offRoute) return [];
 
     const out = [];
+    if (st.stopReached != null) out.push({ kind: 'stop', index: st.stopReached });
     const i = st.nextIndex;
     const d = st.distanceToNext;
     const { far, now } = promptDistances(speed);
@@ -190,7 +206,8 @@ export class Guidance {
       this.lastNext = i;
       if (d <= far) this.spoken.add(`${i}:far`);
       if (d <= now) this.spoken.add(`${i}:now`);
-      return [{ kind: 'intro', index: i, distance: d }];
+      out.push({ kind: 'intro', index: i, distance: d });
+      return out;
     }
 
     const changed = this.lastNext !== i;
@@ -202,7 +219,7 @@ export class Guidance {
         this.spoken.add(`${i}:far`);
         const prompt = { kind: 'now', index: i, distance: d };
         const m = this.route.maneuvers;
-        if (m[i + 1] && m[i + 1].beginDist - m[i].beginDist < 150) prompt.thenIndex = i + 1;
+        if (!m[i].isStop && m[i + 1] && m[i + 1].beginDist - m[i].beginDist < 150) prompt.thenIndex = i + 1;
         out.push(prompt);
       }
     } else if (d <= far) {

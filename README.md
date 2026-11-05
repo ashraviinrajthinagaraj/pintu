@@ -1,6 +1,7 @@
 # Pintu
 
-A private navigation web app for a small group: map, place search, routes and spoken
+A private navigation web app for a small group: a 3D map, place search, routes, stops
+along the way, fuel and charge planning, solat times, lane guidance and spoken
 turn-by-turn directions in Bahasa Melayu and English. No accounts and no install file;
 open the link and add it to the home screen.
 
@@ -14,7 +15,9 @@ folder as it is.
 | Map display | [MapLibre GL JS](https://maplibre.org/), loaded from a CDN | Version set in `js/config.js` |
 | Map tiles | [OpenFreeMap](https://openfreemap.org/) | No key. No guarantee of uptime |
 | Place search | [Photon](https://photon.komoot.io/) public server | Fair use. Heavy use is throttled |
-| Routing | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
+| Routing and lanes | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
+| Stops along the route | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), OpenStreetMap data | Light use only. Results are cached for 15 minutes |
+| Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
 ### Routing
 
@@ -32,12 +35,24 @@ services, so treat it as a way to try Pintu, and move to Stadia for regular use:
 
 Pintu needs no change: Stadia starts answering and is used from then on.
 
+## Car figures
+
+The models in the "my car" panel are starting points, not measurements of anyone's car.
+
+- Petrol use: [WapCar](https://wapcar.my/news/bezza-more-fuelefficient-than-axia-top-5-most-efficient-cars-under-rm-100k-35618)
+  for the Axia, City, Vios and Almera. The Myvi is the middle of the real-world estimates on
+  [Mudah](https://www.mudah.my/malaysia/cars-for-sale/perodua/myvi/fuel-consumption).
+- Electric range: WLTP figures from [paultan.org](https://paultan.org/2026/06/11/2026-proton-emas-7-premium-plus-launched-with-68-39-kwh-battery-115-kw-dc-450-km-wltp-rm119k-otr/)
+  and [Motorist](https://www.motorist.my/article/6007/proton-e-mas-5-vs-byd-atto-3-2026-which-ev-should-you-buy-in-malaysia).
+  Energy use is battery size divided by that range.
+
 ## Limits
 
 - No live traffic, so times are estimates.
 - Guidance can stop when the phone locks or another app is on screen, because browsers
   pause web pages. Pintu picks the trip back up when you return.
-- Map, road names and search coverage are only as good as OpenStreetMap's.
+- Map, road names, search, stops and lane data are only as good as OpenStreetMap's.
+- Fuel and range figures are estimates from what you enter.
 - Voice depends on the voices installed on each phone.
 
 ## Tests
@@ -45,7 +60,11 @@ Pintu needs no change: Stadia starts answering and is used from then on.
 ```
 node --test tests/*.test.js   # navigation logic, routing and search
 node tests/e2e/run.js         # the whole app in a browser, needs Playwright
+MAPLIBRE_DIR=/path node tests/e2e/real-map.js   # the same on the real map library
 ```
 
-The browser tests use stand-ins for the map library and services, so they check Pintu's
-behaviour, not how the real map looks or how the real servers respond.
+`run.js` uses stand-ins for the map library and services. `real-map.js` uses the real
+library and real style files from a local folder, with stand-in map data and services.
+Neither talks to the real servers.
+
+Fonts are [Barlow](https://github.com/jpt/barlow), under the licence in `fonts/OFL.txt`.

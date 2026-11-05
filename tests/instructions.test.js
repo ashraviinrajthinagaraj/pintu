@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describe as describeM, phrase, speech } from '../js/instructions.js';
+import { describe as describeM, laneView, phrase, speech } from '../js/instructions.js';
 
 const TYPES = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,37,38];
 
@@ -66,4 +66,40 @@ test('spoken sentences', () => {
   assert.equal(speech({ kind: 'arrive', index: 3 }, ms, 'ms'), 'Anda telah sampai.');
   assert.equal(speech({ kind: 'far', index: 1, distance: 310 }, ms, 'en'), 'In 300 metres, turn left onto Jalan Ampang.');
   assert.equal(speech({ kind: 'repeat', index: 1, distance: 60 }, ms, 'en'), 'Turn left onto Jalan Ampang.');
+});
+
+test('stops have their own wording', () => {
+  assert.equal(phrase({ type: 6, isStop: true }, 'ms'), 'Hentian di sebelah kiri');
+  assert.equal(phrase({ type: 5, isStop: true }, 'en'), 'Your stop is on the right');
+  assert.equal(phrase({ type: 4, isStop: true }, 'ms'), 'Hentian anda');
+  assert.equal(speech({ kind: 'stop', index: 0 }, [{ type: 4, isStop: true }], 'ms'), 'Anda telah sampai di hentian.');
+});
+
+test('lanes follow the documented example', () => {
+  const v = laneView([{ directions: 8, active: 8 }, { directions: 10, valid: 8 }]);
+  assert.deepEqual(v, [{ direction: 'left', state: 'best' }, { direction: 'left', state: 'ok' }]);
+});
+
+test('lanes that do not apply are shown as other lanes', () => {
+  const v = laneView([{ directions: 2 }, { directions: 2 }, { directions: 64, active: 64 }]);
+  assert.deepEqual(v.map((l) => l.state), ['other', 'other', 'best']);
+  assert.deepEqual(v.map((l) => l.direction), ['straight', 'straight', 'right']);
+});
+
+test('a lane that does several things shows the one you need', () => {
+  const v = laneView([{ directions: 10, active: 2 }, { directions: 64 }]);
+  assert.equal(v[0].direction, 'straight');
+});
+
+test('no lane advice when it would not help', () => {
+  assert.equal(laneView(undefined), null);
+  assert.equal(laneView([]), null);
+  assert.equal(laneView([{ directions: 2, active: 2 }]), null, 'only one lane');
+  assert.equal(laneView([{ directions: 2 }, { directions: 2 }]), null, 'nothing marked');
+  assert.equal(laneView([{ directions: 2, active: 2 }, { directions: 2, active: 2 }]), null, 'every lane is fine');
+});
+
+test('unmarked lane directions never break the display', () => {
+  const v = laneView([{ directions: 0 }, { directions: 1 }, { directions: 256, active: 256 }]);
+  assert.deepEqual(v.map((l) => l.direction), ['straight', 'straight', 'uturn']);
 });

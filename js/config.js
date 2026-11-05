@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.1.0',
+  version: '0.2.0',
 
   maplibre: {
     version: '5.24.0',
@@ -27,6 +27,15 @@ export const CONFIG = {
     // Peninsular Malaysia to Sabah, including Singapore and Brunei.
     bbox: [99.6, 0.85, 119.3, 7.4],
   },
+
+  // Stops along the route come from OpenStreetMap through these, tried in order.
+  overpass: [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ],
+
+  // JAKIM's prayer times, by zone worked out from where you are.
+  solatUrl: 'https://api.waktusolat.app/v2/solat/gps',
 
   home: { center: [109.2, 4.0], zoom: 4.6 },
 

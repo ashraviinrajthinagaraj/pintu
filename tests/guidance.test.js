@@ -4,7 +4,7 @@ import { Guidance, promptDistances } from '../js/guidance.js';
 import { prepareTrip } from '../js/routing.js';
 import { speech } from '../js/instructions.js';
 import { bearing, haversine } from '../js/geo.js';
-import { P, along, buildTrip, cityTrip } from './helpers/fixtures.js';
+import { P, along, buildTrip, cityTrip, multiLeg } from './helpers/fixtures.js';
 
 // Drives a route point by point at a steady speed and collects everything said.
 function drive(route, { kph = 40, jitterM = 0, seed = 1, stopAt = Infinity, accuracy = 10, g = new Guidance(route), t0 = 1e6 } = {}) {
@@ -234,4 +234,28 @@ test('total time matches the summary at the start', () => {
   assert.ok(Math.abs(states[0].remainingTime - route.time) < 15);
   assert.ok(Math.abs(states[0].remainingDistance - route.length) < 15);
   assert.ok(haversine(states.at(-1).snapped, P.d) < 30);
+});
+
+test('a stop on the way: announced, reached once, and the trip carries on', () => {
+  const route = prepareTrip(multiLeg());
+  const { said, states } = drive(route);
+  const reached = states.filter((s) => s.stopReached != null);
+  assert.equal(reached.length, 1);
+  const words = said.map((x) => x.text);
+  assert.ok(words.some((w) => /Hentian di sebelah kiri/.test(w)), words.join(' | '));
+  assert.ok(words.includes('Anda telah sampai di hentian.'), words.join(' | '));
+  assert.equal(words.filter((w) => w === 'Anda telah sampai.').length, 1);
+  assert.equal(words.at(-1), 'Anda telah sampai.');
+  const atStop = states.findIndex((s) => s.stopReached != null);
+  assert.equal(states[atStop].arrived, false);
+  assert.ok(states.at(-1).arrived);
+  const after = states[atStop + 2].next;
+  assert.equal(after.type, 15, 'next instruction is the turn after the stop');
+});
+
+test('the stop itself does not hint at the road beyond it', () => {
+  const route = prepareTrip(multiLeg());
+  const { states } = drive(route);
+  const beforeStop = states.find((s) => s.next.isStop);
+  assert.equal(beforeStop.then, null);
 });

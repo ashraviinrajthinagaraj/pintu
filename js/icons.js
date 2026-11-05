@@ -16,7 +16,7 @@ const SHAPES = {
 };
 
 export const doorSvg = (attrs = '') =>
-  `<svg viewBox="0 0 34 42" aria-hidden="true" width="100%" height="100%" ${attrs}><path d="M3 41V17a14 14 0 0 1 28 0v24Z" fill="none" stroke="currentColor" stroke-width="4"/><path d="M8.5 41V17.5a8.5 8.5 0 0 1 17 0V41Z" fill="currentColor"/><circle cx="21" cy="26" r="1.9" fill="var(--knob, #00693E)"/></svg>`;
+  `<svg viewBox="0 0 34 42" aria-hidden="true" width="100%" height="100%" ${attrs}><path d="M3 41V17a14 14 0 0 1 28 0v24Z" fill="none" stroke="currentColor" stroke-width="4"/><path d="M8.5 41V17.5a8.5 8.5 0 0 1 17 0V41Z" fill="currentColor"/><circle cx="21" cy="26" r="1.9" fill="var(--knob, #00794A)"/></svg>`;
 
 const mirror = (inner) => `<g transform="translate(64 0) scale(-1 1)">${inner}</g>`;
 
@@ -33,14 +33,25 @@ const BY_TYPE = {
 };
 
 function roundabout(count) {
-  const n = count >= 1 && count <= 9 ? `<text x="32" y="33.5" text-anchor="middle" font-size="19" font-weight="800" fill="currentColor" stroke="none" font-family="Overpass, Arial, sans-serif">${count}</text>` : '';
+  const n = count >= 1 && count <= 9 ? `<text x="32" y="33.5" text-anchor="middle" font-size="19" font-weight="800" fill="currentColor" stroke="none" font-family="Barlow Semi Condensed, Arial, sans-serif">${count}</text>` : '';
   return `<circle cx="32" cy="27" r="19" stroke-width="7"/><path d="M32 60V47"/>${n}`;
 }
 
 export function turnIcon(m) {
-  if ([4, 5, 6].includes(m.type)) return doorSvg('style="--knob:var(--plate,#00693E)"');
+  if ([4, 5, 6].includes(m.type)) return doorSvg('style="--knob:var(--plate,#00794A)"');
   if (m.type === 26 || m.type === 27) return svg(roundabout(m.type === 26 ? m.roundabout_exit_count : 0));
   const [shape, flip] = BY_TYPE[m.type] || ['straight'];
+  return svg(flip ? mirror(SHAPES[shape]) : SHAPES[shape]);
+}
+
+const LANES = {
+  straight: ['straight'], uturn: ['uturn'],
+  slightRight: ['slight'], right: ['right'], sharpRight: ['sharp'], mergeRight: ['merge'],
+  slightLeft: ['slight', true], left: ['right', true], sharpLeft: ['sharp', true], mergeLeft: ['merge', true],
+};
+
+export function laneIcon(direction) {
+  const [shape, flip] = LANES[direction] || LANES.straight;
   return svg(flip ? mirror(SHAPES[shape]) : SHAPES[shape]);
 }
 
@@ -49,13 +60,24 @@ const line = (inner) =>
 
 export const UI = {
   back: line('<path d="M15 5l-7 7 7 7"/>'),
-  settings: line('<circle cx="12" cy="12" r="3"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"/>'),
+  close: line('<path d="M6 6l12 12M18 6 6 18"/>'),
+  settings: line('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/>'),
   locate: line('<circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>'),
   recenter: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 19.5 21 12 16.8 4.5 21Z" fill="currentColor"/></svg>',
   sound: line('<path d="M4 9.5v5h3.5L12 19V5L7.5 9.5Z" fill="currentColor"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8.5 8.5 0 0 1 0 12"/>'),
   soundOff: line('<path d="M4 9.5v5h3.5L12 19V5L7.5 9.5Z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>'),
+  plus: line('<path d="M12 5v14M5 12h14"/>'),
+  fuel: line('<path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3.5 21h13M8 8h4"/><path d="M15 12h1.5a2 2 0 0 1 2 2v2.5a1.5 1.5 0 0 0 3 0V9l-3-3"/>'),
+  ev: line('<path d="M13 2.5 5.5 13.5H11L10 21.5 18.5 10H12.5Z" fill="currentColor" stroke-width="1.6"/>'),
+  rest: line('<path d="M4 18V9m16 9v-5a3 3 0 0 0-3-3H4M4 15h16"/><circle cx="8.5" cy="6.5" r="1.6"/>'),
+  surau: line('<path d="M5 21v-8a7 7 0 0 1 14 0v8Z"/><path d="M3 21h18M12 6V2.5"/><path d="M10 21v-4a2 2 0 0 1 4 0v4"/>'),
+  food: line('<path d="M7 3v7a2.5 2.5 0 0 0 2.5 2.5V21M4.5 3v6.5M9.5 3v6.5M17 21v-7h-2.5V8c0-3 1.5-5 4-5v18"/>'),
+  car: line('<path d="M4 16v-3l2-5.5A2 2 0 0 1 8 6h8a2 2 0 0 1 2 1.5l2 5.5v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1ZM4.5 12.5h15"/><circle cx="7.5" cy="15" r=".6" fill="currentColor"/><circle cx="16.5" cy="15" r=".6" fill="currentColor"/><path d="M6 17v2M18 17v2"/>'),
+  chevron: line('<path d="M9 5l7 7-7 7"/>'),
 };
 
-export const puckSvg = `<svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="17" fill="#fff"/><path d="M22 9 31.5 31 22 26.2 12.5 31Z" fill="#0B4DA2"/></svg>`;
+export const CATEGORY_ICONS = { fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };
 
-export const destPinSvg = `<svg viewBox="0 0 38 48" aria-hidden="true" width="38" height="48"><path d="M3 47V19a16 16 0 0 1 32 0v28Z" fill="#00693E"/><path d="M6.5 44V19a12.5 12.5 0 0 1 25 0v25Z" fill="none" stroke="#fff" stroke-width="2"/><path d="M11 44V20a8 8 0 0 1 16 0v24Z" fill="#fff"/><circle cx="23.2" cy="30" r="1.8" fill="#00693E"/></svg>`;
+export const puckSvg = `<svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="pk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#A9D2FF"/><stop offset="1" stop-color="#2B7BF0"/></linearGradient></defs><circle class="puck-halo" cx="32" cy="32" r="30" fill="#4A9BFF" fill-opacity=".2"/><path d="M32 8 50 52 32 42 14 52Z" fill="url(#pk)" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"/></svg>`;
+
+export const destPinSvg = `<svg viewBox="0 0 38 48" aria-hidden="true" width="38" height="48"><path d="M3 47V19a16 16 0 0 1 32 0v28Z" fill="#00794A"/><path d="M6.5 44V19a12.5 12.5 0 0 1 25 0v25Z" fill="none" stroke="#fff" stroke-width="2"/><path d="M11 44V20a8 8 0 0 1 16 0v24Z" fill="#fff"/><circle cx="23.2" cy="30" r="1.8" fill="#00794A"/></svg>`;

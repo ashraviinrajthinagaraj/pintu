@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="ms" data-theme="day">
+<html lang="ms">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Pintu</title>
 <meta name="description" content="Peta dan panduan suara untuk kita-kita sahaja.">
-<meta name="theme-color" content="#00693E">
+<meta name="theme-color" content="#0E1416">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Pintu">
@@ -13,20 +13,23 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;800&display=swap" crossorigin="anonymous">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div id="map" aria-label="Peta" role="application"></div>
+<div id="scrim" class="scrim" hidden></div>
 
 <div id="map-problem" class="notice" hidden>
   <p id="map-problem-text"></p>
   <button id="map-retry" class="link-btn" type="button"></button>
 </div>
 
-<!-- Idle: the whole app is one road sign -->
+<!-- Idle -->
+<div id="hud" class="hud">
+  <strong id="hud-clock" class="hud-clock"></strong>
+  <button id="hud-prayer" class="pill pill-yellow" type="button" hidden></button>
+  <button id="hud-range" class="pill" type="button" hidden></button>
+</div>
 <main id="idle" class="dock">
   <div id="resume" class="resume" hidden>
     <p id="resume-text"></p>
@@ -37,7 +40,10 @@
   </div>
   <div class="float-row">
     <button id="btn-settings" class="round" type="button"></button>
-    <button id="btn-locate" class="round" type="button"></button>
+    <div class="float-col">
+      <button id="btn-3d-idle" class="round round-text" type="button"></button>
+      <button id="btn-locate" class="round" type="button"></button>
+    </div>
   </div>
   <button id="where" class="plate plate-where" type="button">
     <span class="plate-glyph" id="where-glyph"></span>
@@ -47,11 +53,11 @@
 
 <!-- Search -->
 <section id="search" class="fullpanel" hidden>
-  <div class="search-head">
+  <div class="panel-head">
     <button id="search-back" class="icon-btn" type="button"></button>
     <input id="search-input" type="search" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
   </div>
-  <div id="search-body" class="search-body">
+  <div id="search-body" class="panel-body">
     <div id="search-status" class="search-status" role="status"></div>
     <ul id="search-results" class="place-list"></ul>
     <div id="recents-wrap" hidden>
@@ -61,12 +67,13 @@
       </div>
       <ul id="recents" class="place-list"></ul>
     </div>
-    <p id="search-tip" class="tip"></p>
+    <p id="search-tip" class="tip tip-pad"></p>
   </div>
 </section>
 
 <!-- Route preview -->
 <section id="preview" class="sheet" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
   <div class="sheet-head">
     <button id="preview-back" class="icon-btn" type="button"></button>
     <div class="dest-title">
@@ -87,8 +94,38 @@
   </div>
   <div id="route-status" class="route-status" role="status"></div>
   <ul id="route-list" class="route-list"></ul>
-  <p id="route-note" class="tip tip-tight"></p>
-  <button id="start" class="plate plate-btn" type="button" disabled></button>
+  <div id="preview-strip" class="strip strip-preview" aria-hidden="true" hidden></div>
+
+  <div id="plan" class="plan" hidden>
+    <div id="plan-stops" class="plan-stops"></div>
+    <button id="add-stop" class="plan-row" type="button">
+      <span class="plan-icon" id="add-stop-icon"></span>
+      <span class="plan-main"><strong id="add-stop-label"></strong></span>
+      <span class="plan-chev" id="add-stop-chev"></span>
+    </button>
+    <div id="plan-fuel" class="plan-row plan-fuel">
+      <span class="plan-icon" id="plan-fuel-icon"></span>
+      <div class="plan-main">
+        <strong id="plan-fuel-title"></strong>
+        <span id="plan-fuel-detail"></span>
+        <div id="plan-level-row" class="level-row" hidden>
+          <input id="plan-level" type="range" min="0" max="100" step="5">
+          <output id="plan-level-value"></output>
+        </div>
+      </div>
+      <button id="plan-fuel-edit" class="link-btn" type="button"></button>
+    </div>
+    <button id="plan-prayer" class="plan-row" type="button" hidden>
+      <span class="plan-icon" id="plan-prayer-icon"></span>
+      <span class="plan-main"><strong id="plan-prayer-title"></strong><span id="plan-prayer-detail"></span></span>
+      <span class="plan-chev" id="plan-prayer-chev"></span>
+    </button>
+  </div>
+
+  <p id="route-note" class="tip tip-note"></p>
+  <div class="start-wrap">
+    <button id="start" class="plate plate-btn" type="button" disabled></button>
+  </div>
   <button id="try-sim" class="link-btn center" type="button"></button>
 </section>
 
@@ -104,21 +141,108 @@
         <span id="sign-toward" class="sign-toward" hidden></span>
       </span>
     </button>
-    <div id="sign-then" class="then" hidden>
-      <span id="then-label"></span><span id="then-icon" class="then-icon"></span>
+    <div id="lanes" class="lanes" aria-hidden="true" hidden></div>
+    <div class="nav-under">
+      <div id="sign-then" class="then" hidden>
+        <span id="then-label"></span><span id="then-icon" class="then-icon"></span>
+      </div>
+      <div id="chips" class="chips" role="status" aria-live="polite"></div>
     </div>
-    <div id="chips" class="chips" role="status" aria-live="polite"></div>
+  </div>
+  <div class="nav-left">
+    <div id="speed" class="speed" hidden><strong id="speed-value"></strong><span id="speed-unit"></span></div>
+    <div id="nav-range" class="range-pill" hidden></div>
   </div>
   <div class="nav-float">
+    <button id="btn-3d" class="round round-text" type="button"></button>
     <button id="btn-mute" class="round" type="button"></button>
-    <button id="btn-recenter" class="round" type="button" hidden></button>
+    <button id="btn-add-stop" class="round" type="button"></button>
+    <button id="btn-recenter" class="round round-accent" type="button" hidden></button>
+  </div>
+  <div id="refill" class="refill" hidden>
+    <p id="refill-text"></p>
+    <div class="resume-actions">
+      <button id="refill-no" class="link-btn" type="button"></button>
+      <button id="refill-yes" class="plate plate-btn plate-small" type="button"></button>
+    </div>
   </div>
   <div id="nav-bar" class="nav-bar">
-    <div class="nav-eta">
-      <strong id="eta-clock"></strong>
-      <span id="eta-rest"></span>
+    <div id="nav-strip" class="strip" aria-hidden="true"></div>
+    <div class="nav-bar-row">
+      <div class="nav-eta">
+        <strong id="eta-clock"></strong>
+        <span id="eta-rest"></span>
+      </div>
+      <button id="btn-end" class="end-btn" type="button"></button>
     </div>
-    <button id="btn-end" class="end-btn" type="button"></button>
+  </div>
+</section>
+
+<!-- Choose a stop -->
+<section id="stops" class="sheet sheet-stops" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="stops-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="stops-title"></h2></div>
+  </div>
+  <div id="stops-cats" class="cats" role="radiogroup"></div>
+  <div id="stops-status" class="route-status" role="status"></div>
+  <ul id="stops-list" class="place-list stops-list"></ul>
+  <button id="stops-other" class="link-btn center" type="button"></button>
+</section>
+
+<!-- My car -->
+<section id="vehicle" class="fullpanel" hidden>
+  <div class="panel-head">
+    <button id="vehicle-back" class="icon-btn" type="button"></button>
+    <h2 id="veh-title" class="panel-title"></h2>
+  </div>
+  <div class="panel-body panel-pad">
+    <div class="field">
+      <label for="veh-preset" id="veh-preset-label"></label>
+      <select id="veh-preset"></select>
+    </div>
+    <div class="field">
+      <label for="veh-name" id="veh-name-label"></label>
+      <input id="veh-name" type="text" maxlength="40" autocomplete="off">
+    </div>
+    <div class="field">
+      <span class="field-label" id="veh-kind-label"></span>
+      <div class="segmented" role="radiogroup">
+        <button id="veh-kind-petrol" type="button" role="radio"></button>
+        <button id="veh-kind-diesel" type="button" role="radio"></button>
+        <button id="veh-kind-ev" type="button" role="radio"></button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="veh-consumption" id="veh-consumption-label"></label>
+      <div class="field-row">
+        <input id="veh-consumption" type="number" inputmode="decimal" min="0" step="0.1">
+        <div class="segmented" role="radiogroup" id="veh-unit-row">
+          <button id="veh-unit-l100" type="button" role="radio">L/100 km</button>
+          <button id="veh-unit-kml" type="button" role="radio">km/L</button>
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="veh-range" id="veh-range-label"></label>
+      <input id="veh-range" type="number" inputmode="numeric" min="0" step="10">
+    </div>
+    <div class="field">
+      <label for="veh-level" id="veh-level-label"></label>
+      <div class="level-row">
+        <input id="veh-level" type="range" min="0" max="100" step="5">
+        <output id="veh-level-value"></output>
+      </div>
+    </div>
+    <div class="field">
+      <label for="veh-price" id="veh-price-label"></label>
+      <input id="veh-price" type="number" inputmode="decimal" min="0" step="0.01">
+    </div>
+    <p id="veh-note" class="tip"></p>
+    <p id="veh-error" class="field-error" role="alert"></p>
+    <button id="veh-save" class="plate plate-btn" type="button"></button>
+    <button id="veh-remove" class="link-btn center" type="button" hidden></button>
   </div>
 </section>
 
@@ -130,6 +254,7 @@
   </div>
   <h2 id="arrival-title"></h2>
   <p id="arrival-place"></p>
+  <p id="arrival-stats" class="arrival-stats"></p>
   <button id="arrival-done" class="plate plate-btn" type="button"></button>
 </section>
 
@@ -142,11 +267,16 @@
 
 <!-- Settings -->
 <section id="settings" class="fullpanel" hidden>
-  <div class="search-head">
+  <div class="panel-head">
     <button id="settings-back" class="icon-btn" type="button"></button>
     <h2 id="settings-title" class="panel-title"></h2>
   </div>
-  <div class="settings-body">
+  <div class="panel-body panel-pad">
+    <div class="setting">
+      <h3 id="set-vehicle-title"></h3>
+      <p id="set-vehicle-text" class="tip"></p>
+      <button id="set-vehicle-open" class="outline-btn" type="button"></button>
+    </div>
     <div class="setting">
       <h3 id="set-lang-title"></h3>
       <div class="segmented" role="radiogroup">
@@ -156,7 +286,7 @@
     </div>
     <div class="setting">
       <h3 id="set-voice-title"></h3>
-      <p id="voice-status" class="tip tip-tight"></p>
+      <p id="voice-status" class="tip"></p>
       <button id="voice-test" class="outline-btn" type="button"></button>
     </div>
     <div class="setting">
@@ -168,25 +298,37 @@
       </div>
     </div>
     <div class="setting">
+      <h3 id="set-solat-title"></h3>
+      <p id="solat-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="solat-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="solat-on-label"></span>
+      </label>
+    </div>
+    <div class="setting">
       <h3 id="set-install-title"></h3>
-      <p id="install-text" class="tip tip-tight"></p>
+      <p id="install-text" class="tip"></p>
       <button id="install-btn" class="outline-btn" type="button" hidden></button>
     </div>
     <div class="setting">
       <h3 id="set-privacy-title"></h3>
-      <p id="privacy-text" class="tip tip-tight"></p>
+      <p id="privacy-text" class="tip"></p>
     </div>
     <div class="setting">
       <h3 id="set-credits-title"></h3>
-      <p class="tip tip-tight">
+      <p class="tip">
         <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>,
         <a href="https://openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a>,
         <a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>,
         <a href="https://maplibre.org/" target="_blank" rel="noopener">MapLibre</a>,
         <a href="https://github.com/valhalla/valhalla" target="_blank" rel="noopener">Valhalla</a>,
-        <a href="https://github.com/komoot/photon" target="_blank" rel="noopener">Photon</a>.
+        <a href="https://github.com/komoot/photon" target="_blank" rel="noopener">Photon</a>,
+        <a href="https://overpass-api.de/" target="_blank" rel="noopener">Overpass</a>,
+        <a href="https://api.waktusolat.app/" target="_blank" rel="noopener">Waktu Solat API</a>
+        (JAKIM e-Solat).
       </p>
-      <p id="version" class="tip tip-tight"></p>
+      <p id="version" class="tip"></p>
     </div>
   </div>
 </section>
