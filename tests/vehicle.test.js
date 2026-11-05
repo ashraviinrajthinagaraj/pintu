@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PRESETS, cleanVehicle, kmPerLitreToL100, l100ToKmPerLitre, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from '../js/vehicle.js';
+import { CAR_BODIES, COLORS, DEFAULT_LOOKS, PRESETS, cleanVehicle, kmPerLitreToL100, l100ToKmPerLitre, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from '../js/vehicle.js';
 
 const car = cleanVehicle({ name: 'Myvi', kind: 'petrol', consumption: 6, range: 500, price: 2, level: 50 });
 const ev = cleanVehicle({ name: 'eMas', kind: 'ev', consumption: 14, range: 400, level: 80 });
@@ -93,9 +93,18 @@ test('level carries over to the next trip', () => {
 
 test('presets are usable', () => {
   for (const p of PRESETS) {
+    assert.ok(CAR_BODIES.includes(p.body), `${p.name} has a shape`);
+    if (!p.consumption && !p.range) continue;
     const v = cleanVehicle(p);
     assert.ok(v, p.name);
     assert.ok(v.consumption > 3 && v.consumption < 25, p.name);
     if (p.kind === 'ev') assert.ok(v.range >= 200, p.name);
   }
+});
+
+test('looks are complete', () => {
+  assert.ok(COLORS.length >= 6);
+  for (const c of COLORS) assert.match(c.hex, /^#[0-9A-F]{6}$/);
+  assert.equal(DEFAULT_LOOKS.motorcycle.body, 'motorcycle');
+  assert.ok(CAR_BODIES.includes(DEFAULT_LOOKS.car.body));
 });

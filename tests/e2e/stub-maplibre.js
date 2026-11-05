@@ -48,6 +48,7 @@
     getLayer(id) { return this.layers.find((l) => l.id === id); }
     setLayoutProperty(id, key, value) { calls.push(['setLayoutProperty', id, key, value]); this.layout[id] = value; }
     jumpTo(o) { this.jumpCount++; this.lastJump = o; Object.assign(this.cam, o); this.draw(); }
+    triggerRepaint() {}
     getZoom() { return this.cam.zoom; }
     getPitch() { return this.cam.pitch; }
     setStyle(url, o) { calls.push(['setStyle', url, o]); this.styleUrl = url; this.sources = { openmaptiles: {} }; this.layers = []; setTimeout(() => { this._fire('style.load', {}); this.draw(); }, 5); }
@@ -55,6 +56,7 @@
     getSource(id) { return this.sources[id]; }
     addLayer(l, before) {
       if (this.layers.find((x) => x.id === l.id)) throw new Error(`layer ${l.id} exists`);
+      if (l.type === 'custom') { this.layers.push(l); l.source.onReady?.(true); return; }
       if (!this.sources[l.source]) throw new Error(`no source ${l.source}`);
       if (before !== 'labels') throw new Error(`layer before ${before}`);
       this.layers.push(l);
@@ -88,7 +90,7 @@
       for (let y = oy; y < h + step; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
       for (const l of this.layers) {
         const src = this.sources[l.source];
-        if (l.type !== 'line' || !src || !src.data || l.paint['line-opacity'] === 0 || l.paint['line-blur']) continue;
+        if (l.type !== 'line' || l.id.startsWith('pintu-lane') || !src || !src.data || l.paint['line-opacity'] === 0 || l.paint['line-blur']) continue;
         g.strokeStyle = l.paint['line-color'];
         const lw = l.paint['line-width'];
         g.lineWidth = Array.isArray(lw) ? lw[lw.length - 1] : lw;
@@ -110,6 +112,7 @@
     constructor(o = {}) { this.el = o.element; this.opts = o; this.rot = 0; }
     setLngLat(ll) { this.ll = ll; this.place(); return this; }
     setRotation(r) { this.rot = r; this.place(); return this; }
+    getElement() { return this.el; }
     addTo(map) { this.map = map; map.markers.push(this); this.el.style.position = 'absolute'; map.container.append(this.el); this.place(); return this; }
     remove() { this.el.remove(); if (this.map) this.map.markers = this.map.markers.filter((x) => x !== this); return this; }
     place() {

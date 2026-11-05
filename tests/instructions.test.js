@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describe as describeM, laneView, phrase, speech } from '../js/instructions.js';
+import { describe as describeM, laneAdvice, laneView, phrase, speech } from '../js/instructions.js';
 
 const TYPES = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,37,38];
 
@@ -77,7 +77,10 @@ test('stops have their own wording', () => {
 
 test('lanes follow the documented example', () => {
   const v = laneView([{ directions: 8, active: 8 }, { directions: 10, valid: 8 }]);
-  assert.deepEqual(v, [{ direction: 'left', state: 'best' }, { direction: 'left', state: 'ok' }]);
+  assert.deepEqual(v, [
+    { direction: 'left', others: [], state: 'best' },
+    { direction: 'left', others: ['straight'], state: 'ok' },
+  ]);
 });
 
 test('lanes that do not apply are shown as other lanes', () => {
@@ -102,4 +105,28 @@ test('no lane advice when it would not help', () => {
 test('unmarked lane directions never break the display', () => {
   const v = laneView([{ directions: 0 }, { directions: 1 }, { directions: 256, active: 256 }]);
   assert.deepEqual(v.map((l) => l.direction), ['straight', 'straight', 'uturn']);
+});
+
+test('lane advice in words', () => {
+  const lane = (active) => (active ? { directions: 2, active: 2 } : { directions: 2 });
+  const says = (flags, lang = 'ms') => laneAdvice(flags.map(lane), lang);
+  assert.equal(says([1, 0, 0]), 'Guna lorong paling kiri.');
+  assert.equal(says([0, 0, 1]), 'Guna lorong paling kanan.');
+  assert.equal(says([0, 1, 1]), 'Guna dua lorong kanan.');
+  assert.equal(says([1, 1, 0]), 'Guna dua lorong kiri.');
+  assert.equal(says([0, 1, 0]), 'Guna lorong tengah.');
+  assert.equal(says([0, 0, 1], 'en'), 'Use the right lane.');
+  assert.equal(says([0, 1, 1], 'en'), 'Use the two right lanes.');
+  assert.equal(says([0, 1, 0], 'en'), 'Use the middle lane.');
+  assert.equal(says([1, 1, 1]), '', 'any lane will do');
+  assert.equal(says([1, 0, 1]), '', 'too awkward to say');
+  assert.equal(laneAdvice(undefined, 'ms'), '');
+});
+
+test('directions include the lane to use', () => {
+  const lanes = [{ directions: 2 }, { directions: 64, active: 64 }];
+  const m = [{ type: 1 }, { type: 10, street_names: ['Jalan Ampang'], lanes }];
+  assert.equal(speech({ kind: 'far', index: 1, distance: 310 }, m, 'ms'), 'Dalam 300 meter, belok kanan ke Jalan Ampang. Guna lorong paling kanan.');
+  assert.equal(speech({ kind: 'repeat', index: 1, distance: 310 }, m, 'en'), 'In 300 metres, turn right onto Jalan Ampang. Use the right lane.');
+  assert.equal(speech({ kind: 'now', index: 1, distance: 40 }, m, 'ms'), 'Belok kanan ke Jalan Ampang.');
 });

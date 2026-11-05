@@ -1,17 +1,57 @@
 // The "my car" panel: what someone's car uses and how far it goes.
-import { PRESETS, cleanVehicle, kmPerLitreToL100, l100ToKmPerLitre } from './vehicle.js';
+import { CarPreview } from './car-gl.js';
 import { t } from './i18n.js';
+import { CAR_BODIES, COLORS, PRESETS, cleanVehicle, kmPerLitreToL100, l100ToKmPerLitre } from './vehicle.js';
 
 const $ = (id) => document.getElementById(id);
 const round1 = (n) => Math.round(n * 10) / 10;
 
-export function initVehicleUI({ getVehicle, setVehicle, getMode, onDone }) {
-  const state = { kind: 'petrol', unit: 'l100' };
+export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMode, onDone }) {
+  const state = { kind: 'petrol', unit: 'l100', body: 'hatchback', color: COLORS[0].hex };
+  let preview = null;
+
+  function ensurePreview() {
+    if (preview) return preview;
+    try {
+      preview = new CarPreview($('veh-preview'));
+    } catch {
+      preview = { ok: false, setLook() {}, start() {}, stop() {} };
+    }
+    $('veh-preview-wrap').hidden = !preview.ok;
+    return preview;
+  }
+
+  function renderLook() {
+    const moto = getMode() === 'motorcycle';
+    $('veh-body-field').hidden = moto;
+    $('veh-bodies').replaceChildren(...CAR_BODIES.map((body) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(state.body === body));
+      b.textContent = t(`body_${body}`);
+      b.addEventListener('click', () => { state.body = body; renderLook(); });
+      return b;
+    }));
+    $('veh-colors').replaceChildren(...COLORS.map(({ id, hex }) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'swatch';
+      b.style.setProperty('--swatch', hex);
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(state.color === hex));
+      b.setAttribute('aria-label', t(`color_${id}`));
+      b.title = t(`color_${id}`);
+      b.addEventListener('click', () => { state.color = hex; renderLook(); });
+      return b;
+    }));
+    ensurePreview().setLook(moto ? 'motorcycle' : state.body, state.color);
+  }
 
   const preset = $('veh-preset');
 
   function fillPresets() {
-    const groups = [['petrol', t('vehPetrol')], ['ev', t('vehEv')]];
+    const groups = [['fuel', t('vehFuelCars')], ['ev', t('vehEv')]];
     preset.replaceChildren();
     const none = document.createElement('option');
     none.value = '';
@@ -21,7 +61,7 @@ export function initVehicleUI({ getVehicle, setVehicle, getMode, onDone }) {
       const group = document.createElement('optgroup');
       group.label = label;
       PRESETS.forEach((p, i) => {
-        if (p.kind !== kind) return;
+        if ((p.kind === 'ev') !== (kind === 'ev')) return;
         const opt = document.createElement('option');
         opt.value = String(i);
         opt.textContent = p.name;
@@ -65,11 +105,19 @@ export function initVehicleUI({ getVehicle, setVehicle, getMode, onDone }) {
     $('veh-price').value = v?.price || '';
     $('veh-level').value = String(v?.level ?? 100);
     $('veh-remove').hidden = !v;
-    $('veh-error').textContent = '';
-    $('veh-title').textContent = t(getMode() === 'motorcycle' ? 'vehTitleMoto' : 'vehTitleCar');
+    const moto = getMode() === 'motorcycle';
+    $('veh-title').textContent = t(moto ? 'vehTitleMoto' : 'vehTitleCar');
+    $('veh-preset-field').hidden = moto;
+    const look = getLook();
+    state.body = look.body === 'motorcycle' ? 'hatchback' : look.body;
+    state.color = look.color;
     showLevel();
     renderKind();
+    renderLook();
+    ensurePreview().start();
   }
+
+  function close() { preview?.stop(); }
 
   preset.addEventListener('change', () => {
     const p = PRESETS[Number(preset.value)];
@@ -79,7 +127,9 @@ export function initVehicleUI({ getVehicle, setVehicle, getMode, onDone }) {
     $('veh-name').value = p.name;
     $('veh-consumption').value = p.consumption;
     $('veh-range').value = p.range || '';
+    state.body = p.body;
     renderKind();
+    renderLook();
   });
 
   for (const k of ['petrol', 'diesel', 'ev']) {
@@ -106,10 +156,8 @@ export function initVehicleUI({ getVehicle, setVehicle, getMode, onDone }) {
       price: $('veh-price').value,
       level: $('veh-level').value,
     });
-    if (!v) {
-      $('veh-error').textContent = t('vehNeedOne');
-      return;
-    }
+    // The look saves on its own. Fuel figures only count once there are some.
+    setLook({ body: getMode() === 'motorcycle' ? 'motorcycle' : state.body, color: state.color });
     setVehicle(v);
     onDone();
   });
@@ -119,5 +167,5 @@ export function initVehicleUI({ getVehicle, setVehicle, getMode, onDone }) {
     onDone();
   });
 
-  return { open };
+  return { open, close };
 }

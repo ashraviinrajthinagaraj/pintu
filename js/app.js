@@ -5,15 +5,16 @@ import { Guidance } from './guidance.js';
 import { getLang, setLang, t } from './i18n.js';
 import { CATEGORY_ICONS, UI, doorSvg, laneIcon, turnIcon } from './icons.js';
 import { describe, laneView, speech } from './instructions.js';
+import { LaneScene, NO_LANES } from './lanes.js';
 import { Gps, SimulatedDrive } from './location.js';
 import { MapView } from './map.js';
 import { Motion } from './motion.js';
 import { findAlongRoute, placeOnRoute } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
-import { RouteError, distanceAfter, fetchRoutes, timeBetween } from './routing.js';
+import { RouteError, distanceAfter, fetchLaneCounts, fetchRoutes, timeBetween } from './routing.js';
 import { reversePlace, searchPlaces } from './search.js';
 import { load, remove, save } from './store.js';
-import { levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from './vehicle.js';
+import { DEFAULT_LOOKS, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from './vehicle.js';
 import { initVehicleUI } from './vehicle-ui.js';
 import * as voice from './voice.js';
 
@@ -28,6 +29,10 @@ const NO_GPS_STILL = 60000;
 const LANDSCAPE = '(orientation: landscape) and (max-height: 520px)';
 const LANE_RANGE_HIGHWAY = 2000;
 const LANE_RANGE_ROAD = 600;
+const LANE_CHUNK_M = 30000;
+const LANE_RETRY_MS = 60000;
+const CAR_PX = 64;             // how long the car looks when the map is zoomed out
+const CAR_LANE_M = 7.6;        // and in the lane view, where it's drawn to scale with the road
 
 const S = {
   view: 'idle',
@@ -44,6 +49,9 @@ const S = {
   avoidTolls: load('avoidTolls', false),
   settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
+  looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
+  scene: null,
+  laneFetch: { routeId: null, until: 0, busy: false, retryAt: 0, failures: 0, counts: [] },
   route: null,
   guidance: null,
   sim: null,
@@ -90,6 +98,12 @@ let mapView;
 
 const vehicleUI = initVehicleUI({
   getVehicle: () => vehicle(),
+  getLook: () => S.looks[S.mode],
+  setLook: (look) => {
+    S.looks[S.mode] = look;
+    save('looks', S.looks);
+    S.lastPose = null;
+  },
   setVehicle: (v) => {
     if (v) S.vehicles[S.mode] = v;
     else delete S.vehicles[S.mode];
@@ -165,6 +179,8 @@ function applyStaticText() {
   $('privacy-text').textContent = t('privacy');
   $('set-credits-title').textContent = t('setCredits');
   $('version').textContent = t('version', { v: CONFIG.version });
+  $('veh-body-label').textContent = t('vehShape');
+  $('veh-color-label').textContent = t('vehColor');
   $('veh-preset-label').textContent = t('vehPreset');
   $('veh-name-label').textContent = t('vehName');
   $('veh-kind-label').textContent = t('vehKind');
@@ -250,9 +266,10 @@ function renderVehicleSummary() {
 }
 
 let toastTimer;
-function toast(text, ms = 3500) {
+function toast(text, ms = 3500, { top = false } = {}) {
   const el = $('toast');
   el.textContent = text;
+  el.classList.toggle('toast-top', top);
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, ms);
@@ -315,6 +332,7 @@ addEventListener('popstate', (e) => {
   }
   const was = S.overlay;
   S.overlay = st.overlay || null;
+  if (was === 'vehicle' && S.overlay !== 'vehicle') vehicleUI.close();
   if (was === 'stops' && S.overlay !== 'stopsearch') closeStopsPanel();
   if (was === 'stopsearch' && !S.overlay) closeStopsPanel();
   if (st.view === 'idle' && (S.view === 'preview' || S.view === 'search')) leaveDestination();
@@ -434,28 +452,57 @@ function frame(now) {
   const pose = motion.frame(now);
   if (!pose || !mapView) return;
 
-  const last = S.lastPose;
-  const changed = !last || Math.abs(last.lng - pose.lng) > 1e-7 || Math.abs(last.lat - pose.lat) > 1e-7
-    || (pose.heading != null && Math.abs((last.heading ?? 0) - pose.heading) > 0.05);
-  if (changed) {
-    mapView.setPuck(pose.lng, pose.lat, pose.heading);
-    S.lastPose = pose;
+  // In the lane view, the car sits in its lane and turns into lane changes.
+  const scene = S.view === 'nav' && S.settings.view3d && S.scene?.active ? S.scene : null;
+  let { lng, lat, heading } = pose;
+  if (scene && pose.s != null) {
+    const off = scene.lateralAt(pose.s);
+    const r = ((heading ?? 0) * Math.PI) / 180;
+    lng += (Math.cos(r) * off) / (111320 * Math.cos((lat * Math.PI) / 180));
+    lat -= (Math.sin(r) * off) / 110540;
+    heading = (heading ?? 0) + scene.yawAt(pose.s);
   }
-  if (S.view === 'nav') navFrame(pose, now, dt, changed);
+
+  const last = S.lastPose;
+  const changed = !last || Math.abs(last.lng - lng) > 1e-7 || Math.abs(last.lat - lat) > 1e-7
+    || (heading != null && Math.abs((last.heading ?? 0) - heading) > 0.05);
+  if (changed) {
+    mapView.setPuck(lng, lat, heading);
+    S.lastPose = { lng, lat, heading };
+  }
+  let camMoved = false;
+  if (S.view === 'nav') camMoved = navFrame({ ...pose, lng, lat, heading }, now, dt, changed, !!scene);
+  if (changed || camMoved || S.carDirty) updateCar(lng, lat, heading);
 }
 
-function navFrame(pose, now, dt, moved) {
-  const targetZoom = zoomForSpeed(S.fix?.speed);
-  const targetPitch = S.settings.view3d ? 60 : 0;
-  const ease = 1 - Math.exp(-dt * 1.1);
+function updateCar(lng, lat, heading) {
+  S.carDirty = false;
+  const look = S.looks[S.mode];
+  const lane = S.cam.lane || 0;
+  const lanePx = CAR_LANE_M / mapView.metresPerPixel(lat);
+  mapView.setCarOn(S.settings.view3d);
+  mapView.setCar({
+    lng, lat, heading, body: look.body, color: look.color,
+    theme: currentTheme(),
+    lengthPx: CAR_PX + (lanePx - CAR_PX) * lane,
+  });
+}
+
+function navFrame(pose, now, dt, moved, inLanes) {
+  const targetZoom = inLanes ? laneZoom(S.fix?.speed) : zoomForSpeed(S.fix?.speed);
+  const targetPitch = S.settings.view3d ? (inLanes ? 68 : 60) : 0;
+  const ease = 1 - Math.exp(-dt * (inLanes ? 1.4 : 1.1));
   const before = { ...S.cam };
   S.cam.zoom += (targetZoom - S.cam.zoom) * ease;
   S.cam.pitch += (targetPitch - S.cam.pitch) * (1 - Math.exp(-dt * 3));
+  S.cam.lane = (S.cam.lane || 0) + ((inLanes ? 1 : 0) - (S.cam.lane || 0)) * ease;
   const camMoved = Math.abs(before.zoom - S.cam.zoom) > 0.001 || Math.abs(before.pitch - S.cam.pitch) > 0.02;
 
+  // Further down the screen in the lane view, with more road ahead.
+  const pad = { ...S.followPad, top: S.followPad.top + (innerHeight * 0.14) * S.cam.lane };
   if (S.following && (moved || camMoved || S.poseStale)) {
     S.poseStale = false;
-    mapView.pose(pose.lng, pose.lat, pose.heading, S.cam.zoom, S.cam.pitch, S.followPad);
+    mapView.pose(pose.lng, pose.lat, pose.heading, S.cam.zoom, S.cam.pitch, pad);
   }
 
   // The line behind you and the progress bar don't need sixty updates a second.
@@ -463,9 +510,78 @@ function navFrame(pose, now, dt, moved) {
     S.lastTrimAt = now;
     if (S.lastTrimS == null || Math.abs(pose.s - S.lastTrimS) > 6) {
       S.lastTrimS = pose.s;
-      mapView.setRemaining(sliceFrom(S.route.coords, S.route.cum, pose.s));
+      // The lane view has its own line on the road; the ordinary one starts past it.
+      const trimFrom = inLanes && S.scene ? Math.max(pose.s, S.scene.trimS) : pose.s;
+      mapView.setRemaining(sliceFrom(S.route.coords, S.route.cum, trimFrom));
       setStripProgress($('nav-strip'), pose.s / S.route.length);
     }
+  }
+  return camMoved;
+}
+
+function laneZoom(speed) {
+  const v = speed ?? 0;
+  if (v < 12) return 20.1;
+  if (v < 22) return 19.7;
+  return 19.3;
+}
+
+/* ---------- The lane view ---------- */
+
+function startScene(route) {
+  S.scene = new LaneScene(route);
+  S.laneFetch = { routeId: route.id, until: 0, busy: false, retryAt: 0, failures: 0, counts: [] };
+  mapView?.setLanes(NO_LANES);
+}
+
+// Lane counts come a stretch at a time, as the road ahead needs them.
+async function loadLaneCounts(s) {
+  const f = S.laneFetch;
+  const route = S.route;
+  if (!route || !S.settings.view3d || f.busy || f.failures >= 3 || Date.now() < f.retryAt) return;
+  if (s < f.until - 3000 || f.until >= route.length) return;
+  f.busy = true;
+  const from = Math.max(0, Math.max(s, f.until) - 50);
+  const to = Math.min(route.length, from + LANE_CHUNK_M);
+  try {
+    const segs = await fetchLaneCounts(route, from, to, { mode: S.mode });
+    if (S.laneFetch !== f || !S.scene) return;
+    f.counts.push(...segs);
+    f.until = to;
+    f.failures = 0;
+    S.scene.setCounts(f.counts);
+    if (S.lastState && S.fix) updateScene(S.lastState, S.fix);
+  } catch {
+    f.failures++;
+    f.retryAt = Date.now() + LANE_RETRY_MS;
+  } finally {
+    f.busy = false;
+  }
+}
+
+function updateScene(st, fix) {
+  const scene = S.scene;
+  if (!scene) return;
+  if (!S.settings.view3d || !st.onRoute) {
+    if (scene.active) {
+      scene.active = false;
+      scene.builtAt = null;
+      scene.keys = [];
+      mapView?.setLanes(NO_LANES);
+      S.lastTrimS = null;
+    }
+    return;
+  }
+  loadLaneCounts(st.s);
+  const wasActive = scene.active;
+  if (scene.update(st.s, fix.speed)) {
+    mapView?.setLanes(scene.features);
+    S.lastTrimS = null;
+  }
+  if (scene.active && !wasActive && !load('laneNoteSeen', false)) {
+    save('laneNoteSeen', true);
+    // Up high, so it never covers the car or the lanes it's talking about.
+    toast(t('laneNote'), 7000, { top: true });
   }
 }
 
@@ -482,6 +598,8 @@ function toggle3D() {
   setSetting('view3d', on);
   render3DButtons();
   mapView?.setView3D(on);
+  mapView?.setCarOn(on);
+  S.carDirty = true;
   if (S.view === 'idle') mapView?.tilt(on, S.fix ? [S.fix.lng, S.fix.lat] : null);
   S.poseStale = true;
 }
@@ -1097,6 +1215,7 @@ function saveTrip() {
 function startGuidance({ simulate }) {
   S.guidance = new Guidance(S.route);
   motion.setRoute(S.route);
+  startScene(S.route);
   S.lastState = null;
   S.lastTrimS = null;
   S.following = true;
@@ -1110,7 +1229,7 @@ function startGuidance({ simulate }) {
   S.lastDrivenS = null;
   S.rangeSpoken = 0;
   S.lastSignKey = null;
-  S.cam = mapView ? mapView.camera() : { zoom: 16, pitch: 0 };
+  S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
   S.poseStale = true;
   mapView?.showRoutes([S.route], 0);
   mapView?.setStopPins(S.stops);
@@ -1156,6 +1275,7 @@ function onNavFix(fix, now) {
   renderSign(st);
   renderEta(st);
   renderSpeed(fix);
+  updateScene(st, fix);
   renderNavRange(st);
   renderChips();
   renderStrip($('nav-strip'), S.route, st.s, true);
@@ -1231,7 +1351,7 @@ function renderLanes(st) {
   box.replaceChildren(...lanes.map((l) => {
     const el = document.createElement('div');
     el.className = `lane ${l.state}`;
-    el.innerHTML = laneIcon(l.direction);
+    el.innerHTML = laneIcon(l.direction, l.others);
     return el;
   }));
 }
@@ -1327,6 +1447,7 @@ async function reroute(fix, { added = false } = {}) {
     S.route = route;
     S.guidance = new Guidance(route);
     motion.setRoute(route);
+    startScene(route);
     S.lastDrivenS = null;
     S.lastTrimS = null;
     S.lastSignKey = null;
@@ -1371,6 +1492,9 @@ function stopGuidance() {
   if (S.fix) motion.offRoute(S.fix.lng, S.fix.lat, S.fix.heading, 0, performance.now());
   S.guidance = null;
   S.route = null;
+  S.scene = null;
+  mapView?.setLanes(NO_LANES);
+  if (S.cam) S.cam.lane = 0;
   S.lastState = null;
   S.rangeWarning = null;
   S.stops = [];
@@ -1674,14 +1798,15 @@ function wire() {
 }
 
 function openVehicle() {
-  vehicleUI.open();
   openOverlay('vehicle');
+  vehicleUI.open();
 }
 
 function setMode(mode) {
   if (S.mode === mode) return;
   S.mode = mode;
   save('mode', mode);
+  S.carDirty = true;
   renderSegments();
   renderRangePill();
   loadRoutes();
@@ -1698,6 +1823,7 @@ async function startMap() {
       onAltTap: (i) => selectRoute(i),
     });
     await mapView.init();
+    mapView.setCarOn(S.settings.view3d);
   } catch {
     $('map-problem-text').textContent = t('mapFailed');
     $('map-problem').hidden = false;

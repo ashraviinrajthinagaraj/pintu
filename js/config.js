@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.2.0',
+  version: '0.3.0',
 
   maplibre: {
     version: '5.24.0',
@@ -17,8 +17,8 @@ export const CONFIG = {
   // Stadia answers once this site's address is added to a free Stadia account;
   // until then it refuses and the FOSSGIS public server is used instead.
   routing: [
-    { name: 'stadia', url: 'https://api.stadiamaps.com/route/v1', method: 'POST' },
-    { name: 'fossgis', url: 'https://valhalla1.openstreetmap.de/route', method: 'GET' },
+    { name: 'stadia', url: 'https://api.stadiamaps.com/route/v1', traceUrl: 'https://api.stadiamaps.com/trace_attributes/v1', method: 'POST' },
+    { name: 'fossgis', url: 'https://valhalla1.openstreetmap.de/route', traceUrl: 'https://valhalla1.openstreetmap.de/trace_attributes', method: 'GET' },
   ],
 
   search: {

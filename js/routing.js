@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { cumulative, decodePolyline } from './geo.js';
+import { cumulative, decodePolyline, encodePolyline } from './geo.js';
 import { roadNames } from './instructions.js';
 
 const MIN_GAP_MS = 1200;   // the public routing servers ask for about one call a second
@@ -37,7 +37,7 @@ function buildBody({ from, to, stops = [], mode, avoidTolls, heading, alternates
   return body;
 }
 
-async function call(provider, body, outerSignal, fetchImpl) {
+async function call(provider, body, outerSignal, fetchImpl, url = provider.url) {
   const wait = (lastCall.get(provider.name) || 0) + MIN_GAP_MS - Date.now();
   if (wait > 0) await sleep(wait);
   lastCall.set(provider.name, Date.now());
@@ -48,10 +48,9 @@ async function call(provider, body, outerSignal, fetchImpl) {
   outerSignal?.addEventListener('abort', onOuter);
   try {
     if (provider.method === 'GET') {
-      const url = `${provider.url}?json=${encodeURIComponent(JSON.stringify(body))}`;
-      return await fetchImpl(url, { signal: ctrl.signal });
+      return await fetchImpl(`${url}?json=${encodeURIComponent(JSON.stringify(body))}`, { signal: ctrl.signal });
     }
-    return await fetchImpl(provider.url, {
+    return await fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -94,6 +93,56 @@ export async function fetchRoutes(opts, { fetchImpl = (...a) => fetch(...a), pro
     throw new RouteError(info.error_code === 154 ? 'too_far' : 'no_route', info.error);
   }
   throw lastError;
+}
+
+// How many lanes each stretch of road has, for the next part of the route.
+// A route only carries lane arrows at junctions that have them mapped. The road's
+// lane count is mapped far more often, and asking for it separately keeps routes quick.
+export async function fetchLaneCounts(route, fromS, toS, { fetchImpl = (...a) => fetch(...a), providers = CONFIG.routing, signal, mode = 'car' } = {}) {
+  const { coords, cum } = route;
+  const part = [];
+  for (let i = 0; i < coords.length; i++) {
+    if (cum[i] >= fromS && cum[i] <= toS) part.push(coords[i]);
+    if (cum[i] > toS) break;
+  }
+  if (part.length < 2) return [];
+  const start = cum[coords.indexOf(part[0])];
+  const body = {
+    encoded_polyline: encodePolyline(part),
+    costing: mode === 'motorcycle' ? 'motorcycle' : 'auto',
+    shape_match: 'edge_walk',
+    filters: { attributes: ['edge.lane_count', 'edge.length'], action: 'include' },
+    directions_options: { units: 'kilometers' },
+  };
+  for (const provider of providers) {
+    if (skipped.has(provider.name) || !provider.traceUrl) continue;
+    let res;
+    try {
+      res = await call(provider, body, signal, fetchImpl, provider.traceUrl);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      continue;
+    }
+    if (res.status === 401 || res.status === 403) { skipped.add(provider.name); continue; }
+    if (!res.ok) continue;
+    return parseLaneCounts(await res.json(), start);
+  }
+  throw new RouteError('offline');
+}
+
+export function parseLaneCounts(json, baseS = 0) {
+  const out = [];
+  let s = baseS;
+  for (const edge of json.edges || []) {
+    const len = (edge.length || 0) * 1000;
+    if (len <= 0) continue;
+    const count = Math.min(8, Math.max(1, edge.lane_count || 1));
+    const last = out[out.length - 1];
+    if (last && last.count === count) last.to = s + len;
+    else out.push({ from: s, to: s + len, count });
+    s += len;
+  }
+  return out;
 }
 
 export function parseResponse(data) {

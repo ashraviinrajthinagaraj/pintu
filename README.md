@@ -1,7 +1,8 @@
 # Pintu
 
-A private navigation web app for a small group: a 3D map, place search, routes, stops
-along the way, fuel and charge planning, solat times, lane guidance and spoken
+A private navigation web app for a small group: a 3D map with your own vehicle on it,
+place search, routes, stops along the way, fuel and charge planning, solat times, a
+lane-by-lane road view and spoken
 turn-by-turn directions in Bahasa Melayu and English. No accounts and no install file;
 open the link and add it to the home screen.
 
@@ -15,7 +16,7 @@ folder as it is.
 | Map display | [MapLibre GL JS](https://maplibre.org/), loaded from a CDN | Version set in `js/config.js` |
 | Map tiles | [OpenFreeMap](https://openfreemap.org/) | No key. No guarantee of uptime |
 | Place search | [Photon](https://photon.komoot.io/) public server | Fair use. Heavy use is throttled |
-| Routing and lanes | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
+| Routing, lane arrows and lane counts | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
 | Stops along the route | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), OpenStreetMap data | Light use only. Results are cached for 15 minutes |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
@@ -34,6 +35,22 @@ services, so treat it as a way to try Pintu, and move to Stadia for regular use:
    `ashraviinrajthinagaraj` and the domain is `github.io`.
 
 Pintu needs no change: Stadia starts answering and is used from then on.
+
+## The lane view
+
+When the road has lanes mapped, Pintu draws them on the map in 3D: road surface, dividers,
+painted arrows, a stop line, and a blue carpet leading into the lane you want.
+
+- Lane arrows at a junction come with the route (Valhalla's `turn_lanes`). These decide the
+  recommended lane, and are the only source for spoken lane advice.
+- Lane counts come from a separate request for the road ahead (`trace_attributes`). With a
+  count but no arrows, a turn uses the matching side: right turns from the right, left
+  from the left. That's an estimate for a keep-left country, not mapped data.
+- A phone's GPS isn't accurate enough to tell lanes apart. **The car on the map shows the
+  lane to be in, not the lane you're in**, and the app says so the first time it appears.
+
+The vehicles are general body shapes built in code (`js/car-mesh.js`), not models of any
+real car, so there's nothing to download or license.
 
 ## Car figures
 

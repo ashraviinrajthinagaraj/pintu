@@ -198,7 +198,16 @@
     <h2 id="veh-title" class="panel-title"></h2>
   </div>
   <div class="panel-body panel-pad">
+    <div id="veh-preview-wrap" class="veh-preview"><canvas id="veh-preview" aria-hidden="true"></canvas></div>
+    <div id="veh-body-field" class="field">
+      <span class="field-label" id="veh-body-label"></span>
+      <div id="veh-bodies" class="segmented segmented-wrap" role="radiogroup"></div>
+    </div>
     <div class="field">
+      <span class="field-label" id="veh-color-label"></span>
+      <div id="veh-colors" class="swatches" role="radiogroup"></div>
+    </div>
+    <div id="veh-preset-field" class="field">
       <label for="veh-preset" id="veh-preset-label"></label>
       <select id="veh-preset"></select>
     </div>
@@ -240,7 +249,6 @@
       <input id="veh-price" type="number" inputmode="decimal" min="0" step="0.01">
     </div>
     <p id="veh-note" class="tip"></p>
-    <p id="veh-error" class="field-error" role="alert"></p>
     <button id="veh-save" class="plate plate-btn" type="button"></button>
     <button id="veh-remove" class="link-btn center" type="button" hidden></button>
   </div>

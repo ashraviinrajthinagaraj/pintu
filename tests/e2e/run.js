@@ -57,7 +57,7 @@ function solatMonth(times) {
 
 async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], errors: [], external: new Set() };
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const host = new URL(url).hostname;
@@ -82,6 +82,10 @@ async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia 
       log.stadia++;
       if (stadia === 'ok') return route.fulfill({ json: await currentRoutes(log, url, route), headers: CORS });
       return route.fulfill({ status: stadia, json: { error: 'unauthorized' }, headers: CORS });
+    }
+    if (host === 'valhalla1.openstreetmap.de' && url.includes('/trace_attributes')) {
+      log.trace.push(url);
+      return route.fulfill({ json: log.laneCounts || { edges: [] }, headers: CORS });
     }
     if (host === 'valhalla1.openstreetmap.de') {
       const body = JSON.parse(new URL(url).searchParams.get('json'));
@@ -726,7 +730,7 @@ await check('night colours, by clock and by choice', async () => {
   await driveTo(page, cityTrip(), { to: 900 });
   await page.waitForTimeout(100);
   await page.screenshot({ path: `${shots}/11-nav-night.png` });
-  assert.equal(await page.evaluate(() => window.__map.layers.length), 7, 'route and building layers survive the style change');
+  assert.ok(await page.evaluate(() => ['pintu-route', 'pintu-3d', 'pintu-lane-road', 'pintu-car'].every((id) => window.__map.getLayer(id))), 'route, building, lane and car layers survive the style change');
   assert.deepEqual(log.errors, []);
   await ctx.close();
 
@@ -917,7 +921,7 @@ await check('route line goes above every road, not just the first label', async 
   const { ctx, page } = await newApp(browser, quiet);
   await page.waitForFunction(() => window.__map.getLayer('pintu-route'));
   // The stub refuses any insertion point except the label after the last road.
-  assert.equal(await page.evaluate(() => window.__map.layers.length), 7);
+  assert.ok(await page.evaluate(() => window.__map.layers.length) > 7);
   await ctx.close();
 });
 
@@ -948,6 +952,131 @@ await check('lane arrows show near the turn, with the right lane marked', async 
   await driveTo(page, tr, { from: 800, to: 1300 });
   await page.waitForTimeout(50);
   assert.equal(await vis(page, '#lanes'), false);
+  await ctx.close();
+});
+
+await check('your vehicle shows on the map in the shape and colour you pick', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  const pose = () => page.evaluate(() => window.__map.getLayer('pintu-car').source.pose());
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { heading: 90, speed: 0 }), P.a);
+  await page.click('#btn-locate');
+  await page.waitForFunction(() => window.__map.getLayer('pintu-car').source.pose());
+  assert.equal((await pose()).body, 'hatchback');
+  assert.equal(await page.locator('.puck').evaluate((e) => e.style.visibility), 'hidden', 'the car replaces the arrow');
+
+  await page.click('#btn-settings');
+  await page.click('#set-vehicle-open');
+  assert.equal(await page.locator('#veh-bodies button').count(), 5);
+  assert.equal(await page.locator('#veh-colors button').count(), 8);
+  await page.locator('#veh-bodies button', { hasText: 'SUV' }).click();
+  await page.locator('#veh-colors button[aria-label="Merah"]').click();
+  assert.equal(await page.locator('#veh-colors button[aria-label="Merah"]').getAttribute('aria-checked'), 'true');
+  await noOverflow(page, 'vehicle look');
+  await page.screenshot({ path: `${shots}/14b-vehicle-look.png` });
+  await page.click('#veh-save');
+  await page.waitForFunction(() => document.getElementById('vehicle').hidden);
+  await page.waitForFunction(() => window.__map.getLayer('pintu-car').source.pose()?.body === 'suv');
+  assert.equal((await pose()).color, '#C4202A');
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.vehicles')), '{}', 'a look alone adds no fuel figures');
+
+  // A chosen model sets the shape.
+  await page.click('#set-vehicle-open');
+  await page.selectOption('#veh-preset', { label: 'Toyota Hilux' });
+  assert.equal(await page.locator('#veh-bodies button[aria-checked="true"]').innerText(), 'Pikap');
+  await page.click('#veh-save');
+  await page.waitForFunction(() => window.__map.getLayer('pintu-car').source.pose()?.body === 'pickup');
+  await page.click('#settings-back');
+
+  await page.reload();
+  await page.waitForFunction(() => window.__map?.ready);
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { heading: 90 }), P.a);
+  await page.click('#btn-locate');
+  await page.waitForFunction(() => window.__map.getLayer('pintu-car').source.pose()?.body === 'pickup');
+
+  // In 2D you get the arrow back.
+  await page.click('#btn-3d-idle');
+  assert.equal(await page.locator('.puck').evaluate((e) => e.style.visibility), 'visible');
+  assert.equal(await pose(), null);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('motorcycle mode rides a motorcycle', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await toPreview(page);
+  await page.click('#mode-moto');
+  await page.waitForFunction(() => window.__map.getLayer('pintu-car').source.pose()?.body === 'motorcycle');
+  await page.click('#plan-fuel-edit');
+  assert.equal(await page.locator('#veh-body-field').isVisible(), false);
+  assert.equal(await page.locator('#veh-preset-field').isVisible(), false);
+  assert.equal(await text(page, '#veh-title'), 'Motosikal saya');
+  await ctx.close();
+});
+
+const laneTrip = () => buildTrip(P.a, [
+  { to: P.b, type: 1, street: 'Jalan Ampang', kph: 40 },
+  { to: P.c, type: 10, street: 'Jalan Tun Razak', kph: 50 },
+  { to: P.d, type: 15, street: 'Jalan Pinang', kph: 40 },
+]);
+
+await check('lane view: road lane counts draw the lanes, and the camera moves in', async () => {
+  const tr = laneTrip();
+  const { ctx, page, log } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: tr }) });
+  log.laneCounts = { edges: [{ length: 30, lane_count: 3 }] };
+  await toNav(page);
+  await driveTo(page, tr, { to: 200 });
+  await page.waitForFunction(() => window.__map.getSource('pintu-lanes')?.data?.features?.length > 50, null, { timeout: 8000 });
+  assert.ok(log.trace.length >= 1, 'asked for lane counts');
+  assert.equal(log.trace.length, 1, 'one request for this stretch');
+  const body = JSON.parse(new URL(log.trace[0]).searchParams.get('json'));
+  assert.deepEqual(body.filters.attributes, ['edge.lane_count', 'edge.length']);
+  const f = await page.evaluate(() => window.__map.getSource('pintu-lanes').data.features.reduce((m, x) => { m[x.properties.k] = (m[x.properties.k] || 0) + 1; return m; }, {}));
+  assert.equal(f.divider, 2);
+  assert.ok(f.road > 20 && f.carpet > 20);
+  await driveTo(page, tr, { from: 200, to: 300 });
+  await page.waitForFunction(() => window.__map.lastJump?.zoom > 18, null, { timeout: 8000 });
+  assert.match(await text(page, '#toast'), /bukan lorong sebenar/, 'says the car does not show your actual lane');
+  assert.ok(await page.evaluate(() => window.__map.lastJump.pitch) > 55);
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.laneNoteSeen')), 'true');
+  // Lane view needs 3D.
+  await page.click('#btn-3d');
+  await driveTo(page, tr, { from: 300, to: 320 });
+  await page.waitForFunction(() => window.__map.getSource('pintu-lanes').data.features.length === 0);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('lane view: the car moves over into the lane the turn needs', async () => {
+  const lanes = [{ directions: 2 }, { directions: 2 }, { directions: 64, active: 64 }];
+  const tr = buildTrip(P.a, [
+    { to: P.b, type: 1, street: 'Jalan Ampang', kph: 40 },
+    { to: P.c, type: 10, street: 'Jalan Tun Razak', kph: 50, lanes },
+    { to: P.d, type: 15, street: 'Jalan Pinang', kph: 40 },
+  ]);
+  const { ctx, page } = await newApp(browser, { ...quiet, scale: 2, routeResponse: () => ({ trip: tr }) });
+  await toNav(page);
+  const t = await driveTo(page, tr, { to: 1050 });
+  await page.waitForFunction(() => window.__map.getSource('pintu-lanes')?.data?.features?.length > 20);
+  await page.waitForTimeout(1200);
+  // Heading east with the right lane wanted: the car's south of the road's centre.
+  await page.waitForFunction(() => window.__map.getLayer('pintu-car').source.pose().lat < 3.14998, null, { timeout: 6000 });
+  const words = (await said(page)).map((x) => x.text);
+  assert.ok(words.some((w) => /Guna lorong paling kanan\./.test(w)), words.join(' | '));
+  assert.equal(await page.locator('#lanes .lane.best').count(), 1);
+  await noOverflow(page, 'lane view');
+  await page.screenshot({ path: `${shots}/17-lane-view.png` });
+  await ctx.close();
+});
+
+await check('no lane data at all leaves the normal view untouched', async () => {
+  const { ctx, page, log } = await newApp(browser, quiet);
+  await toNav(page);
+  await driveTo(page, cityTrip(), { to: 300 });
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => window.__map.getSource('pintu-lanes').data.features.length), 0);
+  assert.ok(await page.evaluate(() => window.__map.lastJump.zoom) < 18);
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.laneNoteSeen')), null);
+  assert.deepEqual(log.errors, []);
   await ctx.close();
 });
 
@@ -1071,9 +1200,6 @@ await check('my car: enter it, see fuel use and whether the tank is enough', asy
   assert.equal(await text(page, '#veh-title'), 'Kereta saya');
   await noOverflow(page, 'vehicle');
   await page.screenshot({ path: `${shots}/14-vehicle.png` });
-
-  await page.click('#veh-save');
-  assert.match(await text(page, '#veh-error'), /Masukkan/);
 
   await page.selectOption('#veh-preset', { label: 'Perodua Myvi 1.5' });
   assert.equal(await page.inputValue('#veh-consumption'), '6.3');

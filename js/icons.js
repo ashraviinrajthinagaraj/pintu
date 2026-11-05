@@ -50,9 +50,14 @@ const LANES = {
   slightLeft: ['slight', true], left: ['right', true], sharpLeft: ['sharp', true], mergeLeft: ['merge', true],
 };
 
-export function laneIcon(direction) {
-  const [shape, flip] = LANES[direction] || LANES.straight;
-  return svg(flip ? mirror(SHAPES[shape]) : SHAPES[shape]);
+// One lane's arrow, with anything else the lane allows drawn faintly behind it.
+export function laneIcon(direction, others = []) {
+  const draw = (name) => {
+    const [shape, flip] = LANES[name] || LANES.straight;
+    return flip ? mirror(SHAPES[shape]) : SHAPES[shape];
+  };
+  const faint = others.map((name) => `<g opacity=".3">${draw(name)}</g>`).join('');
+  return svg(faint + draw(direction));
 }
 
 const line = (inner) =>

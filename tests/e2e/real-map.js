@@ -88,7 +88,7 @@ function demoCity(theme) {
   };
 }
 
-async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day' }) {
+async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1 }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: 'block', locale: 'ms-MY', timezoneId: 'Asia/Kuala_Lumpur' });
   const errors = [];
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -104,6 +104,9 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
     }
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
     if (host === 'api.stadiamaps.com') return route.fulfill({ status: 401, json: {}, headers: CORS });
+    if (host === 'valhalla1.openstreetmap.de' && url.includes('/trace_attributes')) {
+      return route.fulfill({ json: { edges: [{ length: 30, lane_count: laneCount }] }, headers: CORS });
+    }
     if (host === 'valhalla1.openstreetmap.de') {
       const body = JSON.parse(new URL(url).searchParams.get('json'));
       return route.fulfill({ json: routeResponse ? routeResponse(body) : { trip: cityTrip(), alternates: body.alternates ? [{ trip: altTrip() }] : [] }, headers: CORS });
@@ -136,6 +139,7 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
       request: async () => ({ release() {}, addEventListener() {} }),
     } });
     localStorage.setItem('pintu.safetySeen', 'true');
+    localStorage.setItem('pintu.laneNoteSeen', 'true');
     localStorage.setItem('pintu.settings', JSON.stringify({ theme }));
     if (storage) for (const [k, v] of Object.entries(storage)) localStorage.setItem(k, JSON.stringify(v));
   }, { storage: storage || null, theme });
@@ -310,9 +314,58 @@ await check('real library: pins for stops and multi-stop routes', async () => {
   await ctx.close();
 });
 
+await check('real library: the car really draws, in the colour chosen', async () => {
+  const look = { 'pintu.looks': { car: { body: 'suv', color: '#C4202A' } } };
+  const { ctx, page, errors } = await open(browser, { styleFor: async () => demoCity('day'), scale: 1, storage: look });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { heading: 90, speed: 0 }), P.a);
+  await settle(page, 400);
+  await page.click('#btn-locate');
+  await settle(page, 2000);
+  const shot = await page.screenshot();
+  const sharp = require('sharp');
+  const { data, info } = await sharp(shot).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  let red = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    if (data[i] > 120 && data[i + 1] < 70 && data[i + 2] < 70) red++;
+  }
+  assert.ok(red > 150, `red pixels from the car: ${red}`);
+  assert.equal(await page.locator('.puck').evaluate((e) => e.style.visibility), 'hidden');
+  const bad = (await page.evaluate(() => window.__mapErrors)).filter((e) => !/Failed to fetch|204|AJAXError|Unexpected end/i.test(e));
+  assert.deepEqual(bad, []);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+await check('real library: lane layers are valid, and appear with real day and night styles', async () => {
+  const lanes = [{ directions: 2 }, { directions: 2 }, { directions: 64, active: 64 }];
+  const trip = () => { const t = cityTrip(); t.legs[0].maneuvers[1].lanes = lanes; return t; };
+  const { ctx, page, errors } = await open(browser, { styleFor: realStyle, scale: 1, laneCount: 3, routeResponse: () => ({ trip: trip() }) });
+  await toPreview(page);
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  await drive(page, trip(), { to: 800, kph: 45, liveMs: 5 });
+  await page.waitForFunction(() => window.__map.getSource('pintu-lanes').serialize().data.features.length > 50, null, { timeout: 12000 });
+  await settle(page, 2500);
+  const cam = await page.evaluate(() => ({ zoom: window.__map.getZoom(), pitch: window.__map.getPitch() }));
+  assert.ok(cam.zoom > 18, `zoom ${cam.zoom}`);
+  assert.ok(cam.pitch > 60, `pitch ${cam.pitch}`);
+  const order = await page.evaluate(() => window.__map.getStyle().layers.map((l) => l.id));
+  const at = (id) => order.indexOf(id);
+  assert.ok(at('pintu-route') < at('pintu-lane-road'), 'lanes over the ordinary line');
+  assert.ok(at('pintu-lane-road') < at('pintu-lane-carpet') && at('pintu-lane-carpet') < at('pintu-lane-chevron'));
+  assert.equal(await page.evaluate(() => window.__map.style._order.at(-1)), 'pintu-car', 'the car is on top');
+  const bad = (await page.evaluate(() => window.__mapErrors)).filter((e) => !/Failed to fetch|sprite|glyph|404|AJAXError|204|Unexpected end|Could not load/i.test(e));
+  assert.deepEqual(bad, []);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
 // Pictures for looking at.
 await check('screens on the real renderer', async () => {
-  const car = { 'pintu.vehicles': { car: { name: 'Myvi', kind: 'petrol', consumption: 6.3, range: 420, level: 40, price: 2.05 } } };
+  const car = {
+    'pintu.vehicles': { car: { name: 'Myvi', kind: 'petrol', consumption: 6.3, range: 420, level: 40, price: 2.05 } },
+    'pintu.looks': { car: { body: 'hatchback', color: '#C4202A' } },
+  };
   const lanes = [{ directions: 2 }, { directions: 2 }, { directions: 64, active: 64 }, { directions: 66, valid: 64 }];
   const withLanes = () => {
     const trip = cityTrip();
@@ -321,7 +374,7 @@ await check('screens on the real renderer', async () => {
   };
   for (const theme of ['day', 'night']) {
     const { ctx, page, errors } = await open(browser, {
-      styleFor: async (n) => demoCity(n === 'dark' ? 'night' : 'day'), theme, storage: car,
+      styleFor: async (n) => demoCity(n === 'dark' ? 'night' : 'day'), theme, storage: car, laneCount: 3,
       routeResponse: (b) => ({ trip: withLanes(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }),
     });
     await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { heading: 90 }), P.a);
@@ -337,6 +390,15 @@ await check('screens on the real renderer', async () => {
     await drive(page, withLanes(), { to: 780, kph: 45, liveMs: 12 });
     await settle(page, 1800);
     await page.screenshot({ path: `${shots}/real-${theme}-3-nav.png` });
+    if (theme === 'day') {
+      await page.click('#btn-end');
+      await page.click('#btn-end');
+      await page.click('#btn-settings');
+      await page.click('#set-vehicle-open');
+      await page.locator('#veh-bodies button', { hasText: 'SUV' }).click();
+      await settle(page, 1200);
+      await page.screenshot({ path: `${shots}/real-${theme}-4-vehicle.png` });
+    }
     await ctx.close();
     assert.deepEqual(errors, []);
   }

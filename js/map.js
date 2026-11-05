@@ -1,4 +1,5 @@
 import { CONFIG } from './config.js';
+import { carLayer } from './car-gl.js';
 import { boundsOf } from './geo.js';
 import { CATEGORY_ICONS, destPinSvg, puckSvg } from './icons.js';
 
@@ -26,8 +27,8 @@ export async function loadMapLibre() {
 }
 
 const COLORS = {
-  day: { route: '#1668E3', glow: '#4A9BFF', casing: '#FFFFFF', alt: '#8695A0', altCasing: '#FFFFFF', building: '#DCD8CF' },
-  night: { route: '#5AA6FF', glow: '#2F7FF0', casing: '#0A1F3C', alt: '#74838B', altCasing: '#141A1D', building: '#2B3439' },
+  day: { route: '#1668E3', glow: '#4A9BFF', casing: '#FFFFFF', alt: '#8695A0', altCasing: '#FFFFFF', building: '#DCD8CF', road: '#3B444B', edge: '#FFFFFF', carpet: '#1E7BFF', tintBest: '#2F8BFF', tintOk: '#7FB6FF', arrowDim: '#8A949B' },
+  night: { route: '#5AA6FF', glow: '#2F7FF0', casing: '#0A1F3C', alt: '#74838B', altCasing: '#141A1D', building: '#2B3439', road: '#23292E', edge: '#DDE3E6', carpet: '#3C97FF', tintBest: '#2F8BFF', tintOk: '#5E9BE8', arrowDim: '#6D777E' },
 };
 
 const EMPTY = { type: 'FeatureCollection', features: [] };
@@ -44,7 +45,10 @@ export class MapView {
     this.onUserMove = onUserMove;
     this.onAltTap = onAltTap;
     this.map = null;
-    this.data = { active: EMPTY, alts: EMPTY };
+    this.data = { active: EMPTY, alts: EMPTY, lanes: EMPTY };
+    this.carPose = null;
+    this.carReady = false;
+    this.carOn = false;
     this.puck = null;
     this.dest = null;
     this.pins = [];
@@ -136,6 +140,70 @@ export class MapView {
     add('pintu-glow', 'pintu-active', { 'line-color': c.glow, 'line-opacity': 0.4, 'line-blur': 7, 'line-width': width(12, 28) });
     add('pintu-casing', 'pintu-active', { 'line-color': c.casing, 'line-width': width(8, 16) });
     add('pintu-route', 'pintu-active', { 'line-color': c.route, 'line-width': width(5, 11) });
+    this._addLaneLayers(beforeId, c);
+
+    // The car goes on top of everything.
+    if (!m.getLayer('pintu-car')) {
+      m.addLayer(carLayer(this.lib, {
+        pose: () => (this.carOn ? this.carPose : null),
+        onReady: (ok) => { this.carReady = ok; this._syncPuck(); },
+      }));
+    }
+  }
+
+  // The lane view, all from one source, told apart by each shape's kind.
+  _addLaneLayers(beforeId, c) {
+    const m = this.map;
+    if (!m.getSource('pintu-lanes')) {
+      m.addSource('pintu-lanes', { type: 'geojson', data: this.data.lanes, tolerance: 0.05, buffer: 16, maxzoom: 20 });
+    }
+    const kind = (...names) => ['in', ['get', 'k'], ['literal', names]];
+    const fill = (id, names, color, opacity = 1) => {
+      if (m.getLayer(id)) return;
+      m.addLayer({
+        id, type: 'fill', source: 'pintu-lanes', minzoom: 14, filter: kind(...names),
+        paint: { 'fill-color': color, 'fill-opacity': opacity, 'fill-antialias': false },
+      }, beforeId);
+    };
+    // Paint on a road stays the same real-world width as the camera moves.
+    const metres = (w) => ['interpolate', ['exponential', 2], ['zoom'], 16, w * 0.16, 21, w * 5.12];
+    const stroke = (id, names, color, w, dash) => {
+      if (m.getLayer(id)) return;
+      const paint = { 'line-color': color, 'line-width': metres(w) };
+      if (dash) paint['line-dasharray'] = dash;
+      m.addLayer({ id, type: 'line', source: 'pintu-lanes', minzoom: 14, filter: kind(...names), layout: { 'line-join': 'round' }, paint }, beforeId);
+    };
+    fill('pintu-lane-road', ['road'], c.road);
+    fill('pintu-lane-tint-ok', ['tint-ok'], c.tintOk, 0.22);
+    fill('pintu-lane-tint', ['tint-best'], c.tintBest, 0.38);
+    stroke('pintu-lane-divider', ['divider'], c.edge, 0.9, [3, 5]);
+    stroke('pintu-lane-edge', ['edge'], c.edge, 1.1);
+    fill('pintu-lane-carpet', ['carpet'], c.carpet, 0.9);
+    fill('pintu-lane-dim', ['arrow-dim'], c.arrowDim);
+    fill('pintu-lane-paint', ['arrow', 'paint'], '#FFFFFF');
+    fill('pintu-lane-chevron', ['chevron'], '#FFFFFF', 0.72);
+  }
+
+  setLanes(featureCollection) {
+    this.data.lanes = featureCollection;
+    this.map?.getSource('pintu-lanes')?.setData(featureCollection);
+  }
+
+  _syncPuck() {
+    const hide = this.carOn && this.carReady;
+    if (this.puck) this.puck.getElement().style.visibility = hide ? 'hidden' : 'visible';
+  }
+
+  // The car replaces the arrow in 3D.
+  setCarOn(on) {
+    this.carOn = on;
+    this._syncPuck();
+    this.map?.triggerRepaint();
+  }
+
+  setCar(pose) {
+    this.carPose = pose;
+    if (this.carOn) this.map?.triggerRepaint();
   }
 
   setView3D(on) {
@@ -210,6 +278,7 @@ export class MapView {
       this.puck = new this.lib.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
         .setLngLat([lng, lat])
         .addTo(this.map);
+      this._syncPuck();
     }
     this.puck.setLngLat([lng, lat]);
     if (heading != null) this.puck.setRotation(heading);
@@ -273,6 +342,11 @@ export class MapView {
   }
 
   // Called every frame while following, so it must not animate on its own.
+  metresPerPixel(lat) {
+    const z = this.map ? this.map.getZoom() : 16;
+    return (40075016.7 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** z);
+  }
+
   pose(lng, lat, bearing, zoom, pitch, padding) {
     this.map?.jumpTo({ center: [lng, lat], bearing: bearing ?? this.map.getBearing(), zoom, pitch, padding });
   }

@@ -3,19 +3,45 @@
 
 // Starting points only. They can be changed once picked. Sources are in the README.
 export const PRESETS = [
-  { name: 'Perodua Axia 1.0', kind: 'petrol', consumption: 6.5 },
-  { name: 'Perodua Myvi 1.5', kind: 'petrol', consumption: 6.3 },
-  { name: 'Honda City 1.5', kind: 'petrol', consumption: 6.3 },
-  { name: 'Toyota Vios 1.5', kind: 'petrol', consumption: 6.5 },
-  { name: 'Nissan Almera 1.0T', kind: 'petrol', consumption: 5.8 },
-  { name: 'Proton eMas 5 Prime', kind: 'ev', range: 225, consumption: 13.4 },
-  { name: 'Proton eMas 5 Premium', kind: 'ev', range: 325, consumption: 12.4 },
-  { name: 'Proton eMas 7 Prime', kind: 'ev', range: 345, consumption: 14.4 },
-  { name: 'Proton eMas 7 Premium', kind: 'ev', range: 410, consumption: 14.7 },
-  { name: 'Proton eMas 7 Premium Plus', kind: 'ev', range: 450, consumption: 15.2 },
-  { name: 'BYD Atto 3 Ultra', kind: 'ev', range: 410, consumption: 12.2 },
-  { name: 'BYD Atto 3 Premium', kind: 'ev', range: 510, consumption: 14.7 },
+  { name: 'Perodua Axia 1.0', kind: 'petrol', body: 'hatchback', consumption: 6.5 },
+  { name: 'Perodua Myvi 1.5', kind: 'petrol', body: 'hatchback', consumption: 6.3 },
+  { name: 'Perodua Bezza', kind: 'petrol', body: 'sedan' },
+  { name: 'Perodua Ativa', kind: 'petrol', body: 'suv' },
+  { name: 'Perodua Alza', kind: 'petrol', body: 'mpv' },
+  { name: 'Proton Saga', kind: 'petrol', body: 'sedan' },
+  { name: 'Proton X50', kind: 'petrol', body: 'suv' },
+  { name: 'Proton X70', kind: 'petrol', body: 'suv' },
+  { name: 'Honda City 1.5', kind: 'petrol', body: 'sedan', consumption: 6.3 },
+  { name: 'Honda Civic', kind: 'petrol', body: 'sedan' },
+  { name: 'Honda HR-V', kind: 'petrol', body: 'suv' },
+  { name: 'Toyota Vios 1.5', kind: 'petrol', body: 'sedan', consumption: 6.5 },
+  { name: 'Toyota Hilux', kind: 'diesel', body: 'pickup' },
+  { name: 'Nissan Almera 1.0T', kind: 'petrol', body: 'sedan', consumption: 5.8 },
+  { name: 'Proton eMas 5 Prime', kind: 'ev', body: 'hatchback', range: 225, consumption: 13.4 },
+  { name: 'Proton eMas 5 Premium', kind: 'ev', body: 'hatchback', range: 325, consumption: 12.4 },
+  { name: 'Proton eMas 7 Prime', kind: 'ev', body: 'suv', range: 345, consumption: 14.4 },
+  { name: 'Proton eMas 7 Premium', kind: 'ev', body: 'suv', range: 410, consumption: 14.7 },
+  { name: 'Proton eMas 7 Premium Plus', kind: 'ev', body: 'suv', range: 450, consumption: 15.2 },
+  { name: 'BYD Atto 3 Ultra', kind: 'ev', body: 'suv', range: 410, consumption: 12.2 },
+  { name: 'BYD Atto 3 Premium', kind: 'ev', body: 'suv', range: 510, consumption: 14.7 },
 ];
+
+// How your vehicle looks on the map. It works with or without any fuel figures.
+export const CAR_BODIES = ['hatchback', 'sedan', 'suv', 'mpv', 'pickup'];
+export const COLORS = [
+  { id: 'white', hex: '#F1F3F4' },
+  { id: 'silver', hex: '#AEB6BB' },
+  { id: 'grey', hex: '#596269' },
+  { id: 'black', hex: '#1A1E21' },
+  { id: 'red', hex: '#C4202A' },
+  { id: 'blue', hex: '#1B4FA8' },
+  { id: 'green', hex: '#11704B' },
+  { id: 'yellow', hex: '#EDB91C' },
+];
+export const DEFAULT_LOOKS = {
+  car: { body: 'hatchback', color: '#F1F3F4' },
+  motorcycle: { body: 'motorcycle', color: '#C4202A' },
+};
 
 const num = (v) => {
   const n = Number(v);

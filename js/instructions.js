@@ -129,8 +129,10 @@ export function speech(prompt, maneuvers, lang) {
       const p = phrase(m, lang);
       if (prompt.distance < 150) return p + '.';
       if (prompt.kind === 'repeat') {
-        return ms ? `Dalam ${sayDistance(prompt.distance, lang)}, ${lower(p)}.`
-                  : `In ${sayDistance(prompt.distance, lang)}, ${lower(p)}.`;
+        const advice = laneAdvice(m.lanes, lang);
+        const base = ms ? `Dalam ${sayDistance(prompt.distance, lang)}, ${lower(p)}.`
+                        : `In ${sayDistance(prompt.distance, lang)}, ${lower(p)}.`;
+        return advice ? `${base} ${advice}` : base;
       }
       if (prompt.kind === 'continue') {
         return ms ? `Terus sejauh ${sayDistance(prompt.distance, lang)}.`
@@ -139,9 +141,12 @@ export function speech(prompt, maneuvers, lang) {
       return ms ? `Terus sejauh ${sayDistance(prompt.distance, lang)}, kemudian ${lower(p)}.`
                 : `Continue for ${sayDistance(prompt.distance, lang)}, then ${lower(p)}.`;
     }
-    case 'far':
-      return ms ? `Dalam ${sayDistance(prompt.distance, lang)}, ${lower(phrase(m, lang))}.`
-                : `In ${sayDistance(prompt.distance, lang)}, ${lower(phrase(m, lang))}.`;
+    case 'far': {
+      const advice = laneAdvice(m.lanes, lang);
+      const base = ms ? `Dalam ${sayDistance(prompt.distance, lang)}, ${lower(phrase(m, lang))}.`
+                      : `In ${sayDistance(prompt.distance, lang)}, ${lower(phrase(m, lang))}.`;
+      return advice ? `${base} ${advice}` : base;
+    }
     case 'now': {
       let text = phrase(m, lang);
       if (prompt.thenIndex != null) {
@@ -162,22 +167,45 @@ const LANE_BITS = [
   [4, 'sharpLeft'], [128, 'sharpRight'], [256, 'uturn'], [512, 'mergeLeft'], [1024, 'mergeRight'],
 ];
 
-function laneDirection(mask) {
-  for (const [bit, name] of LANE_BITS) if (mask & bit) return name;
-  return null;
+function laneDirections(mask) {
+  return LANE_BITS.filter(([bit]) => mask & bit).map(([, name]) => name);
 }
 
-// [{ direction: 'left', state: 'best' | 'ok' | 'other' }], or null if there's
-// nothing that would actually help you choose a lane.
+// [{ direction: 'left', others: ['straight'], state: 'best' | 'ok' | 'other' }],
+// or null if there's nothing that would actually help you choose a lane.
 export function laneView(lanes) {
   if (!Array.isArray(lanes) || lanes.length < 2) return null;
   const view = lanes.map((l) => {
-    const directions = l.directions || 0;
-    if (l.active) return { direction: laneDirection(l.active) || 'straight', state: 'best' };
-    if (l.valid) return { direction: laneDirection(l.valid) || 'straight', state: 'ok' };
-    return { direction: laneDirection(directions) || 'straight', state: 'other' };
+    const all = laneDirections(l.directions || 0);
+    const pick = (mask) => laneDirections(mask)[0] || 'straight';
+    const direction = l.active ? pick(l.active) : l.valid ? pick(l.valid) : all[0] || 'straight';
+    const state = l.active ? 'best' : l.valid ? 'ok' : 'other';
+    return { direction, others: all.filter((d) => d !== direction), state };
   });
   if (!view.some((l) => l.state !== 'other')) return null;
   if (view.every((l) => l.state === 'best')) return null;
   return view;
+}
+
+// The lanes to be in, as words, or nothing if they can't be said simply.
+export function laneAdvice(lanes, lang) {
+  const view = laneView(lanes);
+  if (!view) return '';
+  const wanted = view.some((l) => l.state === 'best') ? 'best' : 'ok';
+  const picks = view.map((l, i) => (l.state === wanted ? i : -1)).filter((i) => i >= 0);
+  const n = view.length;
+  const count = picks.length;
+  const contiguous = picks[count - 1] - picks[0] === count - 1;
+  if (!count || !contiguous || count === n) return '';
+  const ms = lang === 'ms';
+  const countWord = (ms ? ['', 'satu', 'dua', 'tiga', 'empat'] : ['', 'one', 'two', 'three', 'four'])[count] || String(count);
+  let side = null;
+  if (picks[0] === 0) side = 'left';
+  else if (picks[count - 1] === n - 1) side = 'right';
+  if (side) {
+    const word = ms ? (side === 'left' ? 'kiri' : 'kanan') : side;
+    if (count === 1) return ms ? `Guna lorong paling ${word}.` : `Use the ${word} lane.`;
+    return ms ? `Guna ${countWord} lorong ${word}.` : `Use the ${countWord} ${word} lanes.`;
+  }
+  return ms ? 'Guna lorong tengah.' : 'Use the middle lane.';
 }

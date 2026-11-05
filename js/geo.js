@@ -25,6 +25,23 @@ export function decodePolyline(str, precision = 6) {
   return out;
 }
 
+export function encodePolyline(coords, precision = 6) {
+  const factor = 10 ** precision;
+  let out = '', pLat = 0, pLng = 0;
+  const enc = (v) => {
+    let n = v < 0 ? ~(v << 1) : v << 1, part = '';
+    while (n >= 0x20) { part += String.fromCharCode((0x20 | (n & 0x1f)) + 63); n >>>= 5; }
+    return part + String.fromCharCode(n + 63);
+  };
+  for (const [lng, lat] of coords) {
+    const a = Math.round(lat * factor), b = Math.round(lng * factor);
+    out += enc(a - pLat) + enc(b - pLng);
+    pLat = a;
+    pLng = b;
+  }
+  return out;
+}
+
 export function haversine(a, b) {
   const dLat = rad(b[1] - a[1]);
   const dLng = rad(b[0] - a[0]);
