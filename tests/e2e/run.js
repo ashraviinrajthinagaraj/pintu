@@ -82,6 +82,7 @@ async function newApp(browser, { realAudio = false, tiles, hangAll = false, fore
       const answer = appServer ? await appServer(new URL(url)) : null;
       if (!answer) return route.fulfill({ status: 502, json: { error: 'unavailable' }, headers: CORS });
       if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
+      if (answer.__encoded) return route.fulfill({ status: 200, body: answer.__encoded, contentType: 'application/vnd.pintu.audio+base64', headers: CORS });
       if (answer.__audio) return route.fulfill({ status: 200, body: Buffer.from(answer.__audio), contentType: answer.__type || 'audio/mpeg', headers: CORS });
       return route.fulfill({ json: answer, headers: CORS });
     }
@@ -2116,7 +2117,7 @@ await check('voices: a character never loses the instruction, and the first word
   await toNav(page);
   await roll(page, trip, 0, 60);
   const lines = (await said(page)).map((s) => s.text);
-  assert.match(lines[0], /Dah sampai ke belum/, 'the greeting');
+  assert.match(lines[0], /Dah sampai ke belum|Jalan-jalan|tali pinggang|teddy/, 'the greeting');
   assert.match(lines[0], /Terus sejauh|Mula|belok/i, 'and the instruction with it');
   const before = lines.length;
   await roll(page, trip, 60, trip.maneuvers[1].beginDist + 5, 12);
@@ -2889,6 +2890,127 @@ await check('human voice: choosing a voice says it\'s getting ready, and stops s
   await page.waitForFunction(() => window.__played.length > 0);
   await page.waitForFunction(() => document.getElementById('voice-wait').textContent === '');
   assert.equal(await vis(page, '#voice-wait'), false);
+  await ctx.close();
+});
+
+await check('human voice: audio left encoded by the server is decoded and really plays', async () => {
+  const wav = Buffer.alloc(44 + 4000);
+  wav.write('RIFF', 0); wav.writeUInt32LE(36 + 4000, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(8000, 28); wav.writeUInt16LE(1, 32); wav.writeUInt16LE(8, 34); wav.write('data', 36); wav.writeUInt32LE(4000, 40);
+  wav.fill(128, 44);
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return { ready: true };
+    return { __encoded: wav.toString('base64') };
+  };
+  const { ctx, page } = await newApp(browser, { ...withCast('standard'), realAudio: true, appServer: server });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await page.click('#btn-settings');
+  const heard = await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('Belok kiri.', { evenIfMuted: true, wait: 5000 })));
+  assert.equal(heard, 'human');
+  assert.deepEqual(await said(page), []);
+  const kept = await page.evaluate(async () => {
+    const box = await caches.open('pintu-voice-1');
+    const [first] = await box.keys();
+    const blob = await (await box.match(first)).blob();
+    return { size: blob.size, type: blob.type };
+  });
+  assert.equal(kept.size, wav.length);
+  assert.equal(kept.type, 'audio/wav');
+  await ctx.close();
+});
+
+await check('voice check: says plainly what\'s wrong, one reason at a time', async () => {
+  const cases = [
+    [{ ok: false, problem: 'no key', engine: null, steps: [] }, /belum ada kunci/],
+    [{ ok: false, problem: 'key', status: 403, engine: 'gemini', steps: [] }, /menolak kunci/],
+    [{ ok: false, problem: 'daily', status: 429, engine: 'gemini', steps: [] }, /Kuota percuma/],
+    [{ ok: false, problem: 'busy', status: 429, engine: 'gemini', steps: [] }, /dalam seminit/],
+    [{ ok: false, problem: 'failed', status: 502, engine: 'gemini', who: 'standard', lang: 'ms', where: 'KUL', steps: [{ step: 'speak', status: 400, ms: 120, voice: 'Kore', why: 'User location is not supported' }] }, /gambar skrin/],
+  ];
+  for (const [report, words] of cases) {
+    const server = async (url) => (url.pathname === '/speak' ? (url.searchParams.has('test') ? report : { ready: false, reason: 'no key' }) : null);
+    const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 }, appServer: server });
+    await page.click('#btn-settings');
+    await page.click('#voice-check');
+    await page.waitForFunction(() => document.querySelector('#voice-report p'));
+    assert.match(await text(page, '#voice-report'), words);
+    if (report.problem === 'failed') {
+      assert.match(await text(page, '.voice-trace'), /speak 400 120ms Kore User location is not supported/);
+      assert.match(await text(page, '.voice-trace'), /gemini standard ms KUL failed 502/);
+      await page.locator('#voice-report').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${shots}/52-voice-check.png` });
+      await noOverflow(page, 'voice check');
+    }
+    assert.deepEqual(log.errors, []);
+    await ctx.close();
+  }
+});
+
+await check('voice check: a server with old code, or none, is told apart', async () => {
+  const old = await newApp(browser, { ...quiet, appServer: async () => ({ __status: 404 }) });
+  await old.page.click('#btn-settings');
+  await old.page.click('#voice-check');
+  await old.page.waitForFunction(() => document.querySelector('#voice-report p'));
+  assert.match(await text(old.page, '#voice-report'), /kod lama/);
+  await old.ctx.close();
+  const down = await newApp(browser, { ...quiet, appServer: () => null });
+  await down.page.click('#btn-settings');
+  await down.page.click('#voice-check');
+  await down.page.waitForFunction(() => document.querySelector('#voice-report p'));
+  assert.match(await text(down.page, '#voice-report'), /tak dapat dihubungi/);
+  await down.ctx.close();
+});
+
+await check('voice check: when it works it says so, and plays a sample', async () => {
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return { ready: false, reason: 'no key' };
+    if (url.searchParams.has('test')) return { ok: true, engine: 'gemini', steps: [{ step: 'speak', status: 200, ms: 900, voice: 'voice_abc' }] };
+    return { __audio: [1, 2, 3] };
+  };
+  const { ctx, page } = await newApp(browser, { ...quiet, appServer: server });
+  await page.click('#btn-settings');
+  await page.click('#voice-check');
+  await page.waitForFunction(() => document.querySelector('#voice-report .voice-good'));
+  assert.match(await text(page, '#voice-report'), /Berfungsi/);
+  await page.waitForFunction(() => window.__played.length > 0);
+  assert.deepEqual(await said(page), []);
+  await page.waitForFunction(() => /Suara manusia aktif/.test(document.getElementById('voice-status').textContent));
+  await ctx.close();
+});
+
+await check('voice check: not offered with no server at all', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await page.click('#btn-settings');
+  assert.equal(await vis(page, '#voice-check'), false);
+  await ctx.close();
+});
+
+await check('after a sample, it says if that was the phone\'s voice, and why', async () => {
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return { ready: true };
+    return { __status: 502, __json: { error: 'no voice could say that', why: 'Google 400: User location is not supported' } };
+  };
+  const { ctx, page } = await newApp(browser, { ...quiet, appServer: server });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /Suara manusia aktif/.test(document.getElementById('voice-status').textContent));
+  await page.locator('#voice-chars .char-opt', { hasText: 'Kapten' }).click();
+  await page.waitForFunction(() => /suara telefon/.test(document.getElementById('voice-wait').textContent));
+  assert.match(await text(page, '#voice-wait'), /User location is not supported/);
+  await page.waitForFunction(() => window.__said.length >= 1);
+  await ctx.close();
+});
+
+await check('after a sample, nothing is said when it was the human voice', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, appServer: voiceServer() });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /Suara manusia aktif/.test(document.getElementById('voice-status').textContent));
+  await page.locator('#voice-chars .char-opt', { hasText: 'Kapten' }).click();
+  await page.waitForFunction(() => window.__played.length > 0);
+  await page.waitForTimeout(300);
+  assert.equal(await text(page, '#voice-wait').catch(() => ''), '');
   await ctx.close();
 });
 

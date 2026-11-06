@@ -163,25 +163,47 @@ async function keptClip(address) {
   return remember(address, await kept.blob());
 }
 
+// Why the last recording didn't come, in words that can be read out over the phone.
+let lastProblem = null;
+export const voiceProblem = () => lastProblem;
+
+// Google's audio arrives encoded, because the server's too small to decode it.
+function decodeClip(encoded) {
+  const raw = atob(encoded.trim());
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return new Blob([bytes], { type: 'audio/wav' });
+}
+
 async function fetchClip(address) {
-  const res = await fetch(address);
-  if (res.status === 503) {
-    // No key, or the key was refused. Nothing to wait for until that changes.
-    humanState = 'off';
-    throw new Error('no human voice');
+  let res;
+  try {
+    res = await fetch(address);
+  } catch {
+    throw new Error('the server couldn\u2019t be reached, or it stopped');
   }
-  if (res.status === 400) throw Object.assign(new Error('not this line'), { justThisLine: true });
-  if (res.status === 429) {
-    const { error } = await res.json().catch(() => ({}));
-    if (error === 'daily') restingUntil = Date.now() + REST_MS;
-    else stepBackUntil = Date.now() + BUSY_BACK_MS;
-    throw Object.assign(new Error('allowance'), { justThisLine: true });
+  if (!res.ok) {
+    const { error, why } = await res.json().catch(() => ({}));
+    const said = `server ${res.status}${error ? `: ${error}` : ''}${why ? ` (${why})` : ''}`;
+    if (res.status === 503) {
+      // No key, or the key was refused. Nothing to wait for until that changes.
+      humanState = error === 'key refused' ? 'refused' : 'off';
+      throw new Error(said);
+    }
+    if (res.status === 400) throw Object.assign(new Error(said), { justThisLine: true });
+    if (res.status === 429) {
+      if (error === 'daily') restingUntil = Date.now() + REST_MS;
+      else stepBackUntil = Date.now() + BUSY_BACK_MS;
+      throw Object.assign(new Error(said), { justThisLine: true });
+    }
+    throw new Error(said);
   }
-  if (!res.ok) throw new Error(`voice ${res.status}`);
-  const blob = await res.blob();
+  const type = res.headers.get('content-type') || '';
+  const blob = /base64/.test(type) ? decodeClip(await res.text()) : await res.blob();
   humanState = 'on';
+  lastProblem = null;
   const box = await shelf();
-  if (box) keep(box, address, blob.slice());
+  if (box) keep(box, address, blob.slice(0, blob.size, blob.type));
   return remember(address, blob);
 }
 
@@ -189,8 +211,9 @@ async function fetchClip(address) {
 function getClip(address) {
   if (fetching.has(address)) return fetching.get(address);
   const job = keptClip(address).catch(() => fetchClip(address)).catch((err) => {
+    lastProblem = err.message;
     // Lost signal, usually. A pause keeps directions from waiting on nothing.
-    if (humanState !== 'off' && !err.justThisLine) stepBackUntil = Date.now() + STEP_BACK_MS;
+    if (humanState !== 'off' && humanState !== 'refused' && !err.justThisLine) stepBackUntil = Date.now() + STEP_BACK_MS;
     throw err;
   }).finally(() => fetching.delete(address));
   fetching.set(address, job);
@@ -242,19 +265,20 @@ async function playClips(clips, mine, wait, onStart) {
     for (let i = 0; i < clips.length; i++) {
       const late = heard && !isDirection(clips[i]) ? JOKE_LATE_MS : wait;
       const playable = await inTime(jobs[i], late);
-      if (mine !== ticket) return;
+      if (mine !== ticket) return 'cut off';
       if (playable) {
         if (heard) {
           await pause(BETWEEN_CLIPS_MS);
-          if (mine !== ticket) return;
+          if (mine !== ticket) return 'cut off';
         }
         onStart?.();
         if (await playClip(playable)) {
           heard = true;
-          if (mine !== ticket) return;
+          if (mine !== ticket) return 'cut off';
           continue;
         }
-        if (mine !== ticket) return;
+        if (mine !== ticket) return 'cut off';
+        lastProblem = 'the phone wouldn\u2019t play the recording';
       }
       // Nothing is lost: the phone says what's left. But after a recording, a late joke
       // in a different voice would only spoil it, so only directions are picked up.
@@ -262,22 +286,24 @@ async function playClips(clips, mine, wait, onStart) {
       const words = heard ? left.filter(isDirection) : left;
       onStart?.();
       if (words.length) phoneSpeak(plainSpeech(words.join(' ')));
-      return;
+      return heard && !words.length ? 'human' : 'phone';
     }
+    return 'human';
   } finally {
     talking--;
   }
 }
 
-// Says a line, and finishes when it has been said or cut off by the next one.
+// Says a line, and finishes with which voice said it: human, phone, or cut off by the
+// next line. Empty if there was nothing to say.
 export function speak(text, { evenIfMuted = false, wait = WAIT_NORMAL_MS, onStart } = {}) {
-  if (!text || (muted && !evenIfMuted)) return Promise.resolve();
+  if (!text || (muted && !evenIfMuted)) return Promise.resolve('');
   stopTalking();
   const clips = clipsOf(text);
   if (!CONFIG.server || clips.some((clip) => clip.length > MAX_SPEECH)) {
     onStart?.();
     phoneSpeak(plainSpeech(text));
-    return Promise.resolve();
+    return Promise.resolve('phone');
   }
   return playClips(clips, ticket, wait, onStart);
 }
@@ -352,6 +378,38 @@ export async function checkHumanVoice() {
     humanState = 'unknown';
   }
   return humanState;
+}
+
+// Tries one real line through the server, for when voices aren't working and someone
+// needs to see why. It uses one line of the day's allowance.
+export async function testHumanVoice(who = character, language = lang) {
+  if (!CONFIG.server) return { kind: 'unreachable' };
+  let res;
+  try {
+    res = await fetch(`${CONFIG.server}/speak?${new URLSearchParams({ test: '1', who, lang: language })}`);
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  // Servers from before this check don't know the question.
+  if (res.status === 404 || res.status === 400) return { kind: 'old-server', report: { status: res.status } };
+  const report = await res.json().catch(() => null);
+  if (!res.ok || !report) return { kind: 'unreachable', report: { status: res.status } };
+  if (report.ok) {
+    humanState = 'on';
+    stepBackUntil = 0;
+    lastProblem = null;
+    return { kind: 'works', report };
+  }
+  if (report.problem === 'no key') {
+    humanState = 'off';
+    return { kind: 'no-key', report };
+  }
+  if (report.problem === 'key' || report.status === 401 || report.status === 403) {
+    humanState = 'refused';
+    return { kind: 'key-refused', report };
+  }
+  if (report.status === 429) return { kind: report.problem === 'daily' ? 'daily' : 'busy', report };
+  return { kind: 'failed', report };
 }
 
 /* ---------- Tapping unlocks sound ---------- */

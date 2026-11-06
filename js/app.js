@@ -210,6 +210,7 @@ function applyStaticText() {
   $('set-lang-title').textContent = t('setLang');
   $('set-voice-title').textContent = t('setVoice');
   $('voice-test').textContent = t('voiceTest');
+  $('voice-check').textContent = t('voiceCheck');
   $('voice-try-label').textContent = t('voiceTryLabel');
   for (const b of document.querySelectorAll('#voice-try button')) b.textContent = t(`voiceTry_${b.dataset.moment}`);
   $('voice-level-label').textContent = t('setVoiceLevel');
@@ -322,6 +323,7 @@ function renderVoiceStatus() {
   const silent = human !== 'on' && key === 'voiceMissing';
   $('voice-test').hidden = silent;
   $('voice-try').hidden = silent || S.settings.voiceCharacter === 'standard';
+  $('voice-check').hidden = !CONFIG.server;
 }
 
 function renderInstall() {
@@ -2382,11 +2384,41 @@ function chooseCharacter(id) {
 }
 
 // The first time a character speaks, their voice is being made, which takes a while.
+// Afterwards it says if that wasn't a human voice, and why, so it's never a mystery.
 function hearNow(line) {
   voice.unlockVoice();
   const hint = $('voice-wait');
   hint.textContent = voice.humanVoice() === 'on' ? t('voicePreparing') : '';
-  voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS, onStart: () => { hint.textContent = ''; } });
+  voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS, onStart: () => { hint.textContent = ''; } }).then((heard) => {
+    if (heard !== 'phone' || !CONFIG.server) return;
+    const why = voice.voiceProblem() || (voice.humanVoice() === 'on' ? t('voiceTooSlow') : t('voiceNotConnected'));
+    hint.textContent = t('voiceHeardPhone', { why });
+    renderVoiceStatus();
+  });
+}
+
+// Runs one real line through the server, and reports on it in full.
+async function checkVoiceNow() {
+  const box = $('voice-report');
+  const check = $('voice-check');
+  check.disabled = true;
+  box.replaceChildren(t('voiceChecking'));
+  const { kind, report } = await voice.testHumanVoice(S.settings.voiceCharacter, getLang());
+  check.disabled = false;
+  const summary = document.createElement('p');
+  summary.className = kind === 'works' ? 'voice-good' : 'voice-bad';
+  summary.textContent = t(`voiceReport_${kind.replace('-', '_')}`);
+  const parts = [summary];
+  if (report) {
+    const details = document.createElement('pre');
+    details.className = 'voice-trace';
+    const steps = (report.steps || []).map((n) => [n.step, n.status, n.ms != null ? `${n.ms}ms` : '', n.voice, n.why].filter((x) => x != null && x !== '').join(' '));
+    details.textContent = [`${report.engine ?? '-'} ${report.who ?? ''} ${report.lang ?? ''} ${report.where ?? ''} ${report.problem ?? ''} ${report.status ?? ''}`.replace(/\s+/g, ' ').trim(), ...steps].join('\n');
+    parts.push(details);
+  }
+  box.replaceChildren(...parts);
+  renderVoiceStatus();
+  if (kind === 'works') trySample();
 }
 
 function trySample() {
@@ -2883,6 +2915,7 @@ function wire() {
   $('lang-ms').addEventListener('click', () => changeLanguage('ms'));
   $('lang-en').addEventListener('click', () => changeLanguage('en'));
   $('voice-test').addEventListener('click', trySample);
+  $('voice-check').addEventListener('click', checkVoiceNow);
   for (const b of document.querySelectorAll('#voice-try button')) b.addEventListener('click', () => tryMoment(b.dataset.moment));
   for (const theme of ['auto', 'day', 'night']) {
     $(`theme-${theme}`).addEventListener('click', () => {

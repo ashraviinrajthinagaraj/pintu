@@ -968,6 +968,12 @@ a { color: inherit; }
 .char-opt span { display: block; font-size: 14px; color: var(--mute); line-height: 1.3; }
 .char-opt small { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; color: var(--sky); line-height: 1.3; }
 #voice-wait:empty { display: none; }
+.voice-report { margin-top: 8px; font-size: 15px; }
+.voice-report:empty { display: none; }
+.voice-report p { margin: 0; max-width: 34em; line-height: 1.35; }
+.voice-report .voice-good { color: var(--ok, var(--sky)); font-weight: 600; }
+.voice-report .voice-bad { font-weight: 600; }
+.voice-trace { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); font-size: 12px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .voice-try { margin-top: 14px; }
 .voice-try[hidden] { display: none; }
 .try-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }

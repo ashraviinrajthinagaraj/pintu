@@ -319,7 +319,7 @@ function buildSsml(text, lang, speaker, plain = false) {
 }
 
 class VoiceRefused extends Error {
-  constructor(status, kind) { super('refused'); this.status = status; this.kind = kind; }
+  constructor(status, kind, why) { super('refused'); this.status = status; this.kind = kind; this.why = why; }
 }
 
 // Azure answers 400 for a voice it doesn't have here or a line it can't read, so
@@ -354,6 +354,9 @@ const GEMINI = 'https://generativelanguage.googleapis.com/v1beta';
 // Each has its own daily allowance, so the second carries on when the first runs out.
 const GEMINI_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
 const DESIGN_RETRY_MS = 600000;
+// Google's audio is passed on still encoded, for the phone to decode. Decoding it here
+// could use up the free plan's 10 ms of computing, and the line would be lost.
+const ENCODED_AUDIO = 'application/vnd.pintu.audio+base64';
 
 // Who each character is. An accent can only come from a voice designed to have it, so
 // each gets one, made the first time they speak. `voice` is the ready-made voice used
@@ -428,20 +431,28 @@ function geminiLine(text, lang) {
 
 const geminiHeaders = (key) => ({ 'x-goog-api-key': key, 'content-type': 'application/json' });
 
+// Enough of a refusal to tell what went wrong, and never the key itself.
+const reason = (text, key) => String(text || '').split(key).join('***').replace(/\s+/g, ' ').trim().slice(0, 180);
+
 const designedVoices = new Map();   // key -> voice name -> id, for as long as this copy runs
 const designFailed = new Map();
 
-async function listDesigned(key) {
+async function listDesigned(key, trace) {
+  const started = Date.now();
   const res = await fetch(`${GEMINI}/voices?type=prompted&page_size=100`, { headers: geminiHeaders(key) });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    trace?.push({ step: 'list', status: res.status, ms: Date.now() - started, why: reason(await res.text(), key) });
+    return null;
+  }
   const { voices = [] } = await res.json();
+  trace?.push({ step: 'list', status: res.status, ms: Date.now() - started, found: voices.length });
   const known = new Map();
   // Newest come first. Should one ever be made twice, the oldest keeps being used.
   for (const v of voices) if (v.id && v.display_name) known.set(v.display_name, v.id);
   return known;
 }
 
-async function createVoice(name, who, lang, key) {
+async function createVoice(name, who, lang, key, trace) {
   const actor = ACTORS[who];
   const voice = {
     model: GEMINI_MODELS[0],
@@ -451,63 +462,62 @@ async function createVoice(name, who, lang, key) {
     language_code: lang === 'ms' ? 'ms-MY' : actor.en,
     prompted: { input: actor.persona },
   };
+  const started = Date.now();
   let res = await fetch(`${GEMINI}/voices`, { method: 'POST', headers: geminiHeaders(key), body: JSON.stringify({ store: true, voice }) });
   if (res.status === 400) {
     // Not every language has a regional code. The accent is in the description anyway.
     const { language_code: _ignored, ...plain } = voice;
     res = await fetch(`${GEMINI}/voices`, { method: 'POST', headers: geminiHeaders(key), body: JSON.stringify({ store: true, voice: plain }) });
   }
-  if (!res.ok) return null;
-  const made = await res.json();
-  return made.id || made.voice?.id || null;
+  // The answer carries a long sample of the voice. Only its name is needed, so it
+  // isn't read as data: that alone could take up the free plan's computing time.
+  const answer = await res.text();
+  const id = res.ok ? answer.match(/"id"\s*:\s*"([^"]+)"/)?.[1] || null : null;
+  trace?.push({ step: 'design', status: res.status, ms: Date.now() - started, ...(res.ok ? { name } : { why: reason(answer, key) }) });
+  return id;
 }
 
 // This character's own voice, made if it doesn't exist yet. Null if it can't be had.
-async function designedVoice(who, lang, key) {
+async function designedVoice(who, lang, key, trace) {
   const name = `pintu-${who}-${lang}`;
   let known = designedVoices.get(key);
   if (!known) {
-    known = await listDesigned(key);
+    known = await listDesigned(key, trace);
     if (!known) return null;
     designedVoices.set(key, known);
   }
   if (known.has(name)) return known.get(name);
   const memo = `${key}:${name}`;
   if ((designFailed.get(memo) || 0) > Date.now()) return null;
-  const id = await createVoice(name, who, lang, key);
+  const id = await createVoice(name, who, lang, key, trace);
   if (id) known.set(name, id);
   else designFailed.set(memo, Date.now() + DESIGN_RETRY_MS);
   return id;
 }
 
-function fromBase64(data) {
-  const raw = atob(data);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-
-async function geminiAudio(res) {
-  const reply = await res.json();
+// The last audio in Google's answer, found without reading the whole thing as data.
+function encodedAudio(answer) {
   let found = null;
-  for (const step of reply.steps || []) {
-    if (step.type !== 'model_output') continue;
-    for (const part of step.content || []) if (part.type === 'audio' && part.data) found = part;
-  }
-  return found ? { audio: fromBase64(found.data), type: found.mime_type || 'audio/wav' } : null;
+  for (const m of answer.matchAll(/"data"\s*:\s*"([A-Za-z0-9+/=\\]{8,})"/g)) found = m[1];
+  return found ? { audio: found.replace(/\\/g, ''), type: ENCODED_AUDIO } : null;
 }
 
-async function geminiSpeak(text, lang, who, key) {
+async function geminiSpeak(text, lang, who, key, trace) {
   const actor = ACTORS[who];
   const { words, style } = geminiLine(text, lang);
-  const own = await designedVoice(who, lang, key).catch(() => null);
+  const own = await designedVoice(who, lang, key, trace).catch((err) => {
+    trace?.push({ step: 'design', why: reason(err.message, key) });
+    return null;
+  });
   const stock = [actor.act, style].filter(Boolean).join(', ');
   const voices = own ? [[own, style], [actor.voice, stock]] : [[actor.voice, stock]];
   let limited = null;
+  let lastWhy = '';
   for (const model of GEMINI_MODELS) {
     for (const [name, direction] of voices) {
       const item = { type: 'text', text: words };
       if (direction) item.annotations = [{ type: 'speech_metadata', style: direction }];
+      const started = Date.now();
       const res = await fetch(`${GEMINI}/interactions`, {
         method: 'POST',
         headers: geminiHeaders(key),
@@ -518,22 +528,27 @@ async function geminiSpeak(text, lang, who, key) {
           generation_config: { speech_config: [{ voice: name }] },
         }),
       });
+      const answer = await res.text();
+      const ms = Date.now() - started;
       if (res.ok) {
-        const clip = await geminiAudio(res);
+        const clip = encodedAudio(answer);
+        trace?.push({ step: 'speak', model, voice: name, status: res.status, ms, ...(clip ? { size: clip.audio.length } : { why: `no audio: ${reason(answer, key)}` }) });
         if (clip) return clip;
+        lastWhy = 'Google answered with no audio';
         continue;
       }
-      const why = await res.text();
+      lastWhy = `Google ${res.status}: ${reason(answer, key)}`;
+      trace?.push({ step: 'speak', model, voice: name, status: res.status, ms, why: reason(answer, key) });
       if (res.status === 429) {
-        limited = /per\s*day/i.test(why) ? 'daily' : 'busy';
+        limited = /per\s*day/i.test(answer) ? 'daily' : 'busy';
         break;
       }
-      if (res.status === 401 || res.status === 403 || /API.?key/i.test(why)) throw new VoiceRefused(403);
+      if (res.status === 401 || res.status === 403 || /API.?key/i.test(answer)) throw new VoiceRefused(403, 'key', lastWhy);
       // Any other refusal is about this voice or this model, so try the next.
     }
   }
-  if (limited) throw new VoiceRefused(429, limited);
-  return null;
+  if (limited) throw new VoiceRefused(429, limited, lastWhy);
+  throw new VoiceRefused(502, 'failed', lastWhy);
 }
 
 /* ---------- Answering /speak ---------- */
@@ -552,12 +567,35 @@ async function voiceCheck(gemini, azure, region) {
   return { ready: false, reason: [400, 401, 403].includes(res.status) ? 'key refused' : 'unavailable' };
 }
 
-async function speakRoute(url, origin, env, ctx) {
+// Tries one real line and reports every step, so a problem can be seen and not guessed.
+async function voiceTest(url, gemini, azure, region, request) {
+  const lang = url.searchParams.get('lang') === 'en' ? 'en' : 'ms';
+  const who = Object.hasOwn(SPEAKERS, url.searchParams.get('who')) ? url.searchParams.get('who') : 'standard';
+  const report = { engine: gemini ? 'gemini' : azure ? 'azure' : null, who, lang, where: request?.cf?.colo || null, steps: [], ok: false };
+  if (!report.engine) return { ...report, problem: 'no key' };
+  const line = lang === 'ms' ? 'Belok kiri.' : 'Turn left.';
+  try {
+    const clip = gemini
+      ? await geminiSpeak(line, lang, who, gemini, report.steps)
+      : await synthesize(line, lang, SPEAKERS[who][lang], azure, region);
+    report.ok = !!clip;
+    if (!clip) report.problem = 'no voice could say that';
+  } catch (err) {
+    report.problem = err.kind || reason(err.message, gemini || azure);
+    report.status = err.status;
+  }
+  return report;
+}
+
+async function speakRoute(url, origin, env, ctx, request) {
   const gemini = env?.GEMINI_API_KEY;
   const azure = env?.AZURE_SPEECH_KEY;
   const region = /^[a-z0-9]+$/.test(env?.AZURE_SPEECH_REGION || '') ? env.AZURE_SPEECH_REGION : 'southeastasia';
   if (url.searchParams.has('check')) {
     return reply(await voiceCheck(gemini, azure, region), origin, 200, { 'cache-control': 'no-store' });
+  }
+  if (url.searchParams.has('test')) {
+    return reply(await voiceTest(url, gemini, azure, region, request), origin, 200, { 'cache-control': 'no-store' });
   }
 
   const who = url.searchParams.get('who');
@@ -575,7 +613,9 @@ async function speakRoute(url, origin, env, ctx) {
   });
   const shelf = globalThis.caches?.default;
   const label = new Request(`https://speech.pintu.invalid/${SPEECH_VERSION}/${who}/${lang}?t=${encodeURIComponent(text)}`);
-  const kept = await shelf?.match(label).catch(() => null);
+  // Storing lines is a bonus. Nothing about it is allowed to cost a line.
+  let kept = null;
+  try { kept = await shelf?.match(label); } catch { /* not stored, then */ }
   if (kept) return new Response(kept.body, { headers: headers(kept.headers.get('content-type') || 'audio/mpeg') });
 
   let clip = null;
@@ -598,13 +638,15 @@ async function speakRoute(url, origin, env, ctx) {
     }
   }
   if (refused) {
-    if (refused.status === 429) return reply({ error: refused.kind || 'busy' }, origin, 429);
-    if (refused.status === 401 || refused.status === 403) return reply({ error: 'key refused' }, origin, 503);
-    throw refused;
+    if (refused.status === 429) return reply({ error: refused.kind || 'busy', why: refused.why }, origin, 429);
+    if (refused.status === 401 || refused.status === 403) return reply({ error: 'key refused', why: refused.why }, origin, 503);
+    return reply({ error: 'no voice could say that', why: refused.why }, origin, 502);
   }
   if (!clip) return reply({ error: 'no voice could say that' }, origin, 502);
-  const keep = shelf?.put(label, new Response(clip.audio.slice(0), { headers: { 'content-type': clip.type, 'cache-control': 'public, max-age=2592000' } })).catch(() => {});
-  if (keep) ctx?.waitUntil?.(keep);
+  try {
+    const keep = shelf?.put(label, new Response(clip.audio.slice(0), { headers: { 'content-type': clip.type, 'cache-control': 'public, max-age=2592000' } }))?.catch(() => {});
+    if (keep) ctx?.waitUntil?.(keep);
+  } catch { /* it just won't be stored */ }
   return new Response(clip.audio, { headers: headers(clip.type) });
 }
 
@@ -633,7 +675,7 @@ async function handle(request, origin, env, ctx) {
     return reply({ shops }, origin, 200, { 'cache-control': 'public, max-age=86400' });
   }
 
-  if (url.pathname === '/speak') return speakRoute(url, origin, env, ctx);
+  if (url.pathname === '/speak') return speakRoute(url, origin, env, ctx, request);
 
   return reply({ error: 'not found' }, origin, 404);
 }
