@@ -51,6 +51,17 @@ export class Motion {
     this.s = null;
   }
 
+  // Placed somewhere new on purpose: no gliding there, and facing the new road.
+  jump(s, now) {
+    this.free = null;
+    this.s = s;
+    this.targetS = s;
+    this.speed = 0;
+    this.fixAt = now;
+    this.pos = null;
+    this.heading = null;
+  }
+
   // On the route: progress along it.
   onRoute(s, speed, now) {
     this.free = null;

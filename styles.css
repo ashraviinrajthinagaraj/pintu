@@ -330,8 +330,93 @@ a { color: inherit; }
 .sheet-modal { z-index: 25; padding-top: 22px; max-height: 90dvh; box-shadow: 0 0 0 100vmax rgba(4, 10, 12, .6); }
 .sheet-modal h2 { font-family: var(--condensed); font-size: 27px; font-weight: 800; margin-bottom: 8px; }
 .sheet-modal p { margin-bottom: 18px; max-width: 34em; }
-.sheet-stops { z-index: 11; max-height: 68dvh; }
+/* The same height throughout, so nothing moves under your finger as results arrive. */
+.sheet-stops { z-index: 11; height: 62dvh; max-height: 62dvh; }
+#steps { height: auto; }
 .sheet-head { display: flex; align-items: flex-start; gap: 4px; margin: 0 0 8px -10px; }
+/* Where from and where to, one above the other, joined by a dotted line. */
+.trip-head { align-items: center; margin-right: -8px; }
+.trip-ends { flex: 1; min-width: 0; position: relative; }
+.trip-ends::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 31px;
+  height: 22px;
+  border-left: 2px dotted var(--mute);
+  pointer-events: none;
+}
+.trip-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 2px 4px 2px 0;
+  text-align: left;
+  min-width: 0;
+}
+.trip-end + .trip-end { border-top: 1px solid var(--line); margin-left: 30px; width: calc(100% - 30px); position: relative; }
+.trip-end + .trip-end .trip-mark { margin-left: -30px; }
+.trip-mark { flex: none; width: 18px; display: grid; place-items: center; }
+.trip-mark-from { height: 14px; width: 14px; margin: 0 2px; border-radius: 50%; border: 3.5px solid var(--sky); background: var(--panel); }
+.trip-mark-to { height: 22px; color: #18B070; --knob: #18B070; }
+.trip-name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; overflow: hidden; }
+.trip-name > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#from-name { display: block; overflow: hidden; text-overflow: ellipsis; }
+#from-name { color: var(--mute); font-weight: 600; font-size: 16px; }
+.is-custom #from-name { color: var(--ink); }
+#dest-name { flex: 0 0 auto; max-width: 100%; font-family: var(--condensed); font-size: 23px; font-weight: 800; line-height: 1.2; }
+#dest-detail { flex: 1 1 0; color: var(--mute); font-size: 14px; }
+.start-pin { width: 22px; height: 22px; border-radius: 50%; border: 5px solid var(--sky); background: #fff; box-shadow: 0 2px 5px rgba(0, 0, 0, .55); pointer-events: none; }
+
+.search-quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 14px 4px; }
+.quick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-weight: 600;
+  text-align: left;
+  line-height: 1.15;
+}
+.quick svg { width: 22px; height: 22px; color: var(--sky); display: block; flex: none; }
+.quick > span:first-child { flex: none; }
+
+/* A pin that stays put while the map moves under it. Its tip marks the place. */
+.pick-pin {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  z-index: 6;
+  border-radius: 50%;
+  border: 6px solid var(--sky);
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+.pick-bar {
+  position: fixed;
+  left: var(--safe-l);
+  right: var(--safe-r);
+  bottom: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px calc(10px + var(--safe-b)) 6px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  border-radius: 20px 20px 0 0;
+}
+.pick-bar p { flex: 1; min-width: 0; font-weight: 600; line-height: 1.2; }
+
 .dest-title { min-width: 0; padding-top: 7px; }
 .dest-title h2 { font-family: var(--condensed); font-size: 26px; font-weight: 800; line-height: 1.15; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .dest-title p { color: var(--mute); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -618,6 +703,47 @@ a { color: inherit; }
   padding: 8px 14px calc(12px + var(--safe-b)) 20px;
   box-shadow: 0 -10px 34px rgba(4, 10, 12, .5);
 }
+/* The controls for a simulated drive */
+.sim-panel { display: flex; align-items: center; gap: 6px; margin: 2px -2px 12px -6px; }
+.sim-btn {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.sim-btn svg { width: 24px; height: 24px; display: block; }
+.sim-speeds { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.sim-speeds button { min-height: 40px; padding: 4px 2px; font-family: var(--condensed); font-weight: 700; font-size: 18px; font-variant-numeric: tabular-nums; }
+.strip-wrap { position: relative; }
+.strip-seek {
+  position: absolute;
+  inset: -12px -12px -10px;
+  z-index: 2;
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  outline-offset: -8px;
+}
+.is-sim .nav-bar-row { margin-top: 10px; }
+.is-sim .mark-me {
+  width: 20px;
+  height: 20px;
+  margin-left: -10px;
+  top: 1px;
+  border: 3px solid var(--sky);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, .6);
+}
+.step { display: flex; align-items: center; gap: 12px; }
+.step-icon { flex: none; width: 30px; height: 30px; color: var(--sky); }
+.step-icon svg { display: block; }
+.step-text { min-width: 0; flex: 1; }
+.step.is-past { opacity: .5; }
+.step.is-next strong { color: var(--sky); }
+
 .nav-bar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 2px; }
 .nav-eta { min-width: 0; display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
 .nav-eta strong { font-family: var(--condensed); font-size: 38px; font-weight: 800; line-height: 1.02; white-space: nowrap; }
@@ -713,7 +839,7 @@ a { color: inherit; }
   .dock { right: auto; width: 360px; }
   .sheet { right: auto; width: 400px; max-height: 100dvh; top: 0; border-radius: 0 20px 20px 0; border-top: 0; }
   .sheet-modal { top: auto; width: 480px; border-radius: 0 20px 0 0; }
-  .sheet-stops { top: 0; }
+  .sheet-stops, #steps { top: 0; height: auto; max-height: 100dvh; }
   .nav-top { right: auto; width: 370px; }
   .sign { grid-template-columns: 62px 1fr; padding: 9px 14px 9px 10px; }
   .sign-icon { width: 62px; height: 62px; }

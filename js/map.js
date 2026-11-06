@@ -295,6 +295,16 @@ export class MapView {
   }
 
   // The places on offer while choosing a stop.
+  // A starting point other than where you are.
+  setStart(place) {
+    if (!this.map) return;
+    if (this.startPin) { this.startPin.remove(); this.startPin = null; }
+    if (!place) return;
+    const el = document.createElement('div');
+    el.className = 'start-pin';
+    this.startPin = new this.lib.Marker({ element: el }).setLngLat([place.lng, place.lat]).addTo(this.map);
+  }
+
   setPins(places, onPick) {
     for (const m of this.pins) m.remove();
     this.pins = [];
@@ -355,8 +365,30 @@ export class MapView {
     return this.map ? { zoom: this.map.getZoom(), pitch: this.map.getPitch() } : { zoom: 16, pitch: 0 };
   }
 
+  // Straight down over a place, for picking a spot on the map.
+  lookDownAt(lng, lat, zoom = 16) {
+    this.map?.easeTo({ center: [lng, lat], zoom, pitch: 0, bearing: 0, duration: 500 });
+  }
+
+  // Straight down and square on, right now, ready to be pointed at something else.
+  level() {
+    this.map?.jumpTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 } });
+  }
+
+  // The place under a point on the screen.
+  placeAt(x, y) {
+    const ll = this.map?.unproject([x, y]);
+    return ll ? { lng: ll.lng, lat: ll.lat } : null;
+  }
+
   flat() {
     this.map?.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
+  }
+
+  // Where the map itself gets its tiles, so other requests share the same files.
+  tileUrl() {
+    const tiles = this.map?.getSource('openmaptiles')?.tiles;
+    return Array.isArray(tiles) ? tiles[0] : undefined;
   }
 
   resize() { this.map?.resize(); }

@@ -58,6 +58,10 @@
     <input id="search-input" type="search" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
   </div>
   <div id="search-body" class="panel-body">
+    <div id="search-quick" class="search-quick" hidden>
+      <button id="quick-here" class="quick" type="button"><span id="quick-here-icon"></span><span id="quick-here-label"></span></button>
+      <button id="quick-map" class="quick" type="button"><span id="quick-map-icon"></span><span id="quick-map-label"></span></button>
+    </div>
     <div id="search-status" class="search-status" role="status"></div>
     <ul id="search-results" class="place-list"></ul>
     <div id="recents-wrap" hidden>
@@ -74,12 +78,19 @@
 <!-- Route preview -->
 <section id="preview" class="sheet" hidden>
   <div class="sheet-grip" aria-hidden="true"></div>
-  <div class="sheet-head">
+  <div class="sheet-head trip-head">
     <button id="preview-back" class="icon-btn" type="button"></button>
-    <div class="dest-title">
-      <h2 id="dest-name"></h2>
-      <p id="dest-detail"></p>
+    <div class="trip-ends">
+      <button id="from-row" class="trip-end" type="button">
+        <span class="trip-mark trip-mark-from" aria-hidden="true"></span>
+        <span id="from-name" class="trip-name"></span>
+      </button>
+      <button id="to-row" class="trip-end" type="button">
+        <span id="to-mark" class="trip-mark trip-mark-to" aria-hidden="true"></span>
+        <span class="trip-name"><strong id="dest-name"></strong><span id="dest-detail"></span></span>
+      </button>
     </div>
+    <button id="swap-ends" class="icon-btn" type="button"></button>
   </div>
   <div class="mode-row">
     <div class="segmented" role="radiogroup" id="mode-group">
@@ -130,6 +141,16 @@
   </div>
 </section>
 
+<!-- Choose a starting point on the map -->
+<section id="map-pick" hidden>
+  <div class="pick-pin" id="pick-pin" aria-hidden="true"></div>
+  <div class="pick-bar">
+    <button id="pick-back" class="icon-btn" type="button"></button>
+    <p id="pick-hint"></p>
+    <button id="pick-use" class="plate plate-btn plate-small" type="button"></button>
+  </div>
+</section>
+
 <!-- Navigation -->
 <section id="nav" hidden>
   <div id="nav-top" class="nav-top">
@@ -168,7 +189,17 @@
     </div>
   </div>
   <div id="nav-bar" class="nav-bar">
-    <div id="nav-strip" class="strip" aria-hidden="true"></div>
+    <div id="sim-panel" class="sim-panel" hidden>
+      <button id="sim-play" class="sim-btn" type="button"></button>
+      <div id="sim-speeds" class="segmented sim-speeds" role="radiogroup"></div>
+      <button id="sim-next" class="sim-btn" type="button"></button>
+      <button id="sim-list" class="sim-btn" type="button"></button>
+    </div>
+    <div class="strip-wrap">
+      <div id="nav-strip" class="strip" aria-hidden="true"></div>
+      <!-- In a simulated drive, the trip line is what you drag to go anywhere. -->
+      <div id="sim-seek" class="strip-seek" role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden></div>
+    </div>
     <div class="nav-bar-row">
       <div class="nav-eta">
         <strong id="eta-clock"></strong>
@@ -187,9 +218,19 @@
     <div class="dest-title"><h2 id="stops-title"></h2></div>
   </div>
   <div id="stops-cats" class="cats" role="radiogroup"></div>
-  <div id="stops-status" class="route-status" role="status"></div>
   <ul id="stops-list" class="place-list stops-list"></ul>
+  <div id="stops-status" class="route-status" role="status"></div>
   <button id="stops-other" class="link-btn center" type="button"></button>
+</section>
+
+<!-- Choose where a simulated drive jumps to -->
+<section id="steps" class="sheet sheet-stops" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="steps-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="steps-title"></h2></div>
+  </div>
+  <ul id="steps-list" class="place-list"></ul>
 </section>
 
 <!-- My car -->

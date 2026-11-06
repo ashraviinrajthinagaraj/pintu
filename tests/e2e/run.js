@@ -9,6 +9,9 @@ import assert from 'node:assert/strict';
 import { altTrip, buildTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
 import { bearing } from '../../js/geo.js';
 import { prepareTrip } from '../../js/routing.js';
+import { pointAt } from '../../js/motion.js';
+import { lngLatToTile } from '../../js/tiles.js';
+import { encodeTile } from '../helpers/mvt.js';
 
 const require = createRequire('/opt/npm-tools/node_modules/');
 const { chromium, devices } = require('playwright');
@@ -55,9 +58,9 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
+async function newApp(browser, { tiles, hangAll = false, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], errors: [], external: new Set() };
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const host = new URL(url).hostname;
@@ -67,6 +70,18 @@ async function newApp(browser, { viewport = { width: 390, height: 844 }, stadia 
       return route.fulfill({ contentType: 'text/javascript', headers: CORS, body: stub });
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
+    // Everything a stop search asks goes silent, and stays silent.
+    if (hangAll && (url.endsWith('.pbf') || host.includes('overpass') || host === 'ovp.dresel.systems' || url.includes('include='))) return undefined;
+    const tile = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+    if (tile && tiles) {
+      log.tiles.push(url);
+      const [z, x, y] = tile.slice(1).map(Number);
+      const poi = tiles.filter((p) => {
+        const [tx, ty] = lngLatToTile(p.lng, p.lat, z);
+        return Math.floor(tx) === x && Math.floor(ty) === y;
+      });
+      return route.fulfill({ body: Buffer.from(encodeTile({ z, x, y }, { poi })), headers: CORS, contentType: 'application/x-protobuf' });
+    }
     if (host === 'overpass-api.de' || host === 'overpass.private.coffee' || host === 'ovp.dresel.systems') {
       log.overpass.push(route.request().postData());
       if (log.overpassFail) return route.abort();
@@ -1189,7 +1204,8 @@ await check('add a stop and start are always there to tap on real phone screens'
     await toPreview(page);
     await page.waitForTimeout(350);
     const name = `${viewport.width}x${viewport.height}`;
-    const hits = await page.evaluate(() => ['add-stop', 'start', 'try-sim'].map((id) => {
+    await page.evaluate(() => { document.getElementById('preview').scrollTop = 0; });
+    const hits = await page.evaluate(() => ['add-stop', 'start', 'try-sim', 'from-row', 'to-row', 'swap-ends', 'preview-back'].map((id) => {
       const el = document.getElementById(id);
       const r = el.getBoundingClientRect();
       const pts = [[0.1, 0.5], [0.5, 0.5], [0.9, 0.5], [0.5, 0.15], [0.5, 0.85]].map(([x, y]) => [r.left + r.width * x, r.top + r.height * y]);
@@ -1463,6 +1479,522 @@ await check('installable, and opens with no signal once visited', async () => {
     return urls;
   });
   assert.ok(!cached.some((u) => /photon|valhalla|stadia|overpass|waktusolat/.test(u)), cached.join('\n'));
+  await ctx.close();
+});
+
+const TILE_PLACES = [
+  { id: 21, lng: 101.7055, lat: 3.1502, props: { name: 'Petronas Dari Peta', class: 'fuel', subclass: 'fuel' } },
+  { id: 22, lng: 101.7102, lat: 3.1548, props: { name: 'Shell Dari Peta', class: 'fuel', subclass: 'fuel' } },
+  { id: 23, lng: 101.7053, lat: 3.1503, props: { name: 'Surau Al-Amin', class: 'place_of_worship', subclass: 'place_of_worship' } },
+  { id: 24, lng: 101.7054, lat: 3.1502, props: { name: 'Nasi Kandar', class: 'restaurant', subclass: 'restaurant' } },
+];
+
+await check('stops: found in the map tiles, with no other server needed', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, tiles: TILE_PLACES });
+  await toPreview(page);
+  await page.click('#add-stop');
+  await page.waitForSelector('#stops-list .place');
+  await page.waitForFunction(() => document.getElementById('stops-status').textContent === '');
+  assert.match(await text(page, '#stops-list'), /Petronas Dari Peta/);
+  assert.match(await text(page, '#stops-list'), /Shell Dari Peta/);
+  assert.equal(log.overpass.length, 0);
+  assert.match(log.tiles[0], /\/planet\/latest\/14\/\d+\/\d+\.pbf$/);
+  assert.ok(log.tiles.length <= 30, String(log.tiles.length));
+  const pins = await page.evaluate(() => document.querySelectorAll('.map-pin').length);
+  assert.equal(pins, 2);
+  // Each category sees its own places.
+  await page.locator('#stops-cats .cat').nth(3).click();
+  await page.waitForFunction(() => /Surau Al-Amin/.test(document.getElementById('stops-list').textContent));
+  await page.locator('#stops-cats .cat').nth(4).click();
+  await page.waitForFunction(() => /Nasi Kandar/.test(document.getElementById('stops-list').textContent));
+  // And one is added like any other.
+  await page.locator('#stops-list .place').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('stops: with every service silent, the search still ends and offers another go', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, hangAll: true });
+  await toPreview(page);
+  await page.click('#add-stop');
+  const began = Date.now();
+  await page.waitForFunction(() => /tak dapat dimuatkan/.test(document.getElementById('stops-status').textContent), null, { timeout: 26000 });
+  assert.ok(Date.now() - began < 25000, `took ${Date.now() - began} ms`);
+  assert.equal(await vis(page, '#stops-status button'), true);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+const ends = (body) => body.locations.map((l) => [l.lon, l.lat]);
+
+await check('starting point: search for one, and the buttons say what you can do from there', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
+  await toPreview(page);
+  assert.equal(await text(page, '#from-name'), 'Lokasi anda');
+  assert.equal(await text(page, '#start'), 'Mula');
+  assert.equal(await text(page, '#try-sim'), 'Cuba tanpa memandu');
+  assert.deepEqual(ends(log.fossgis.at(-1))[0], P.a);
+  await page.screenshot({ path: `${shots}/20-from-here.png` });
+
+  await page.click('#from-row');
+  assert.equal(await vis(page, '#search'), true);
+  assert.equal(await vis(page, '#search-quick'), true);
+  assert.equal(await page.getAttribute('#search-input', 'placeholder'), 'Cari titik mula');
+  await page.screenshot({ path: `${shots}/21-start-search.png` });
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  assert.equal(await vis(page, '#search-quick'), false);
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForFunction(() => /KLCC Park/.test(document.getElementById('from-name').textContent));
+  await page.waitForSelector('.route-opt');
+  assert.equal(await vis(page, '#search'), false);
+  assert.deepEqual(ends(log.fossgis.at(-1))[0], [101.71, 3.14]);
+  assert.deepEqual(ends(log.fossgis.at(-1))[1], P.d);
+  assert.equal(await text(page, '#start'), 'Pratonton');
+  assert.equal(await text(page, '#try-sim'), 'Pandu ke titik mula dulu');
+  assert.match(await text(page, '#route-note'), /belum berada di titik mula/);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.start-pin').length), 1);
+  await page.screenshot({ path: `${shots}/22-from-elsewhere.png` });
+  await noOverflow(page, 'custom start');
+
+  // Arriving at the start makes it an ordinary trip.
+  await page.evaluate(() => window.__gps.push(101.7101, 3.1401, { accuracy: 10 }));
+  await page.waitForFunction(() => document.getElementById('start').textContent === 'Mula');
+  assert.equal(await text(page, '#try-sim'), 'Cuba tanpa memandu');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.waitForFunction(() => document.getElementById('start').textContent === 'Pratonton');
+
+  // And back to starting from where you are.
+  await page.click('#from-row');
+  await page.click('#quick-here');
+  await page.waitForFunction(() => document.getElementById('from-name').textContent === 'Lokasi anda');
+  await page.waitForSelector('.route-opt');
+  assert.deepEqual(ends(log.fossgis.at(-1))[0], P.a);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.start-pin').length), 0);
+  assert.equal(await text(page, '#start'), 'Mula');
+  // Leaving forgets it.
+  await page.click('#from-row');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForFunction(() => /KLCC Park/.test(document.getElementById('from-name').textContent));
+  await page.click('#preview-back');
+  await page.waitForSelector('#where');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.start-pin').length), 0);
+  await toPreview(page);
+  assert.equal(await text(page, '#from-name'), 'Lokasi anda');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('starting point: previewing it, then coming back to the same plan', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  await toPreview(page);
+  await page.click('#from-row');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForFunction(() => document.getElementById('start').textContent === 'Pratonton' && !document.getElementById('start').disabled);
+  const asked = log.fossgis.length;
+  await page.click('#start');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  assert.match(await text(page, '#chips'), /Simulasi/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.trip')), null);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.start-pin').length), 0);
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('.route-opt');
+  assert.equal(await vis(page, '#preview'), true);
+  assert.match(await text(page, '#from-name'), /KLCC Park/);
+  assert.equal(await text(page, '#dest-name'), 'Suria KLCC');
+  assert.equal(await text(page, '#start'), 'Pratonton');
+  assert.equal(log.fossgis.length, asked, 'nothing changed, so no new route is needed');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.start-pin').length), 1);
+  // A real trip never starts from there by accident: the car stays where it is.
+  await page.waitForFunction(([lng, lat]) => {
+    const ll = window.__map.markers.find((m) => m.el.className === 'puck').ll;
+    return Math.abs(ll[0] - lng) < 0.0002 && Math.abs(ll[1] - lat) < 0.0002;
+  }, P.a);
+
+  // Going there first: the start becomes the first stop, from where you really are.
+  await page.click('#try-sim');
+  await page.waitForFunction(() => document.getElementById('from-name').textContent === 'Lokasi anda');
+  await page.waitForSelector('.route-opt');
+  const body = log.fossgis.at(-1);
+  assert.deepEqual(ends(body), [P.a, [101.71, 3.14], P.d]);
+  assert.equal(await page.locator('.stop-row').count(), 1);
+  assert.equal(await text(page, '#start'), 'Mula');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('starting point: swap the two ends, and change the destination from here', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  await toPreview(page);
+  await page.click('#swap-ends');
+  await page.waitForFunction(() => document.getElementById('dest-name').textContent === 'Lokasi anda');
+  await page.waitForSelector('.route-opt');
+  assert.deepEqual(ends(log.fossgis.at(-1)), [P.d, P.a]);
+  assert.equal(await text(page, '#from-name'), 'Suria KLCC');
+  assert.equal(await text(page, '#start'), 'Pratonton');
+  await page.click('#swap-ends');
+  await page.waitForFunction(() => document.getElementById('dest-name').textContent === 'Suria KLCC');
+  await page.waitForSelector('.route-opt');
+  assert.deepEqual(ends(log.fossgis.at(-1)), [P.a, P.d]);
+  assert.equal(await text(page, '#from-name'), 'Lokasi anda');
+  assert.equal(await text(page, '#start'), 'Mula');
+
+  await page.click('#to-row');
+  assert.equal(await page.getAttribute('#search-input', 'placeholder'), 'Cari tempat atau alamat');
+  assert.equal(await vis(page, '#search-quick'), false);
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForFunction(() => /KLCC Park/.test(document.getElementById('dest-name').textContent));
+  await page.waitForSelector('.route-opt');
+  assert.deepEqual(ends(log.fossgis.at(-1)), [P.a, [101.71, 3.14]]);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('starting point: chosen on the map, and named once it can be', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
+  await toPreview(page);
+  await page.click('#from-row');
+  await page.click('#quick-map');
+  assert.equal(await vis(page, '.pick-bar'), true);
+  assert.equal(await vis(page, '#preview'), false);
+  assert.equal(await vis(page, '#search'), false);
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: `${shots}/23-pick-on-map.png` });
+  // Backing out returns to the search, then the plan, with nothing changed.
+  await page.click('#pick-back');
+  await page.waitForSelector('#search:not([hidden])');
+  await page.click('#quick-map');
+  // The map centres on you to begin with. Move it a little, as a finger would.
+  await page.evaluate(() => window.__map.jumpTo({ center: [101.72, 3.13] }));
+  await page.click('#pick-use');
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.waitForSelector('.route-opt');
+  assert.equal(await vis(page, '.pick-bar'), false);
+  assert.equal(await vis(page, '#search'), false);
+  const [lng, lat] = ends(log.fossgis.at(-1))[0];
+  assert.ok(Math.abs(lng - 101.72) < 0.0002 && Math.abs(lat - 3.13) < 0.0002, `${lng},${lat}`);
+  await page.waitForFunction(() => document.getElementById('from-name').textContent === 'Suria KLCC');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('starting point: a way forward when your location is off', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  await page.click('#where');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.__gps.deny());
+  await page.waitForFunction(() => /perlukan lokasi/.test(document.getElementById('route-status').textContent));
+  await page.locator('#route-status button', { hasText: 'Pilih titik mula' }).click();
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForSelector('.route-opt');
+  assert.deepEqual(ends(log.fossgis.at(-1))[0], [101.71, 3.14]);
+  assert.equal(await text(page, '#start'), 'Pratonton');
+  assert.equal(await vis(page, '#try-sim'), false, 'can\'t go there first without knowing where you are');
+  // A swap can't happen in the other direction without it either, but it can here.
+  await page.click('#start');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('.route-opt');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+const puck = (page) => page.evaluate(() => {
+  const ll = window.__map.markers.find((m) => m.el.className === 'puck').ll;
+  return [ll[0], ll[1]];
+});
+const seekValue = (page) => page.evaluate(() => Number(document.getElementById('sim-seek').getAttribute('aria-valuenow')));
+
+async function startSim(page, opts) {
+  await toPreview(page);
+  await page.click('#try-sim');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+}
+
+await check('simulation: choose the speed, and pause it', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
+  await startSim(page);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/24-sim-controls.png` });
+  await noOverflow(page, 'sim');
+  await smallTargets(page, 'sim', ['#sim-play', '#sim-next', '#sim-list']);
+  const chosen = () => page.evaluate(() => document.querySelector('#sim-speeds [aria-checked="true"]').textContent);
+  assert.equal(await chosen(), '4×');
+
+  await page.click('#sim-play');
+  await page.waitForTimeout(100);
+  const a = await puck(page);
+  await page.waitForTimeout(600);
+  const b = await puck(page);
+  assert.ok(Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6, 'paused means still');
+  assert.equal(await page.getAttribute('#sim-play', 'aria-label'), 'Sambung');
+  await page.click('#sim-play');
+  await page.waitForTimeout(500);
+  const c = await puck(page);
+  assert.ok(Math.abs(b[0] - c[0]) > 1e-5 || Math.abs(b[1] - c[1]) > 1e-5, 'and carries on');
+
+  // Faster really is faster, measured along the trip.
+  await page.click('#sim-play');
+  await page.locator('#sim-speeds button', { hasText: '1×' }).click();
+  await page.click('#sim-play');
+  const startAt = await seekValue(page);
+  await page.waitForTimeout(1000);
+  const slowGain = (await seekValue(page)) - startAt;
+  await page.click('#sim-play');
+  await page.locator('#sim-speeds button', { hasText: '30×' }).click();
+  assert.equal(await chosen(), '30×');
+  const fromFast = await seekValue(page);
+  await page.click('#sim-play');
+  await page.waitForTimeout(1000);
+  const fastGain = (await seekValue(page)) - fromFast;
+  assert.ok(fastGain >= slowGain + 5, `fast ${fastGain}, slow ${slowGain}`);
+  await page.click('#sim-play');
+  // The choice is remembered.
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).simSpeed), 30);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('simulation: drag anywhere along the trip, forward or back, quietly', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  await startSim(page);
+  await page.click('#sim-play');
+  const trip = prepareTrip(cityTrip());
+  const box = await page.locator('#nav-strip').boundingBox();
+  const y = box.y + box.height / 2;
+  const xAt = (f) => box.x + box.width * f;
+  const routes = log.fossgis.length;
+  const before = (await said(page)).length;
+
+  await page.mouse.move(xAt(0.1), y);
+  await page.mouse.down();
+  for (const f of [0.2, 0.4, 0.6, 0.8]) {
+    await page.mouse.move(xAt(f), y);
+    await page.waitForTimeout(90);
+  }
+  assert.equal((await said(page)).length, before, 'nothing spoken while dragging');
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  assert.ok(Math.abs((await seekValue(page)) - 80) <= 1, String(await seekValue(page)));
+  let p = await puck(page);
+  let want = pointAt(trip, trip.length * 0.8);
+  assert.ok(Math.abs(p[0] - want[0]) < 0.0003 && Math.abs(p[1] - want[1]) < 0.0003, `${p} vs ${want}`);
+  const after = await said(page);
+  assert.equal(after.length, before + 1, 'one instruction for where you landed');
+  assert.equal(log.fossgis.length, routes, 'a jump is not a wrong turn');
+  assert.doesNotMatch(await text(page, '#chips'), /Mencari laluan|Laluan baharu/);
+  const forward = await text(page, '#eta-rest');
+
+  // And back again, which an ordinary drive never does.
+  await page.mouse.move(xAt(0.25), y);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  assert.ok(Math.abs((await seekValue(page)) - 25) <= 1);
+  p = await puck(page);
+  want = pointAt(trip, trip.length * 0.25);
+  assert.ok(Math.abs(p[0] - want[0]) < 0.0003 && Math.abs(p[1] - want[1]) < 0.0003, `${p} vs ${want}`);
+  assert.notEqual(await text(page, '#eta-rest'), forward);
+  assert.equal(log.fossgis.length, routes);
+
+  // Sitting at the very end doesn't end the trip until you drive the last bit.
+  await page.mouse.move(xAt(1), y);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  assert.equal(await vis(page, '#arrival'), false);
+  await page.click('#sim-play');
+  await page.waitForSelector('#arrival:not([hidden])', { timeout: 15000 });
+  await page.click('#arrival-done');
+  await page.waitForSelector('.route-opt');
+  assert.equal(await vis(page, '#preview'), true, 'back to the plan');
+  assert.equal(await text(page, '#start'), 'Mula');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('simulation: a finger tap on the line jumps there, on phone sizes too', async () => {
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 664 }, { width: 844, height: 390 }]) {
+    const name = `${viewport.width}x${viewport.height}`;
+    const { ctx, page, log } = await newApp(browser, { ...quiet, viewport, scale: 2 });
+    await startSim(page);
+    await page.click('#sim-play');
+    await page.waitForTimeout(350);
+    const box = await page.locator('#nav-strip').boundingBox();
+    await page.touchscreen.tap(box.x + box.width * 0.5, box.y + box.height / 2);
+    await page.waitForTimeout(120);
+    assert.ok(Math.abs((await seekValue(page)) - 50) <= 2, `${name}: ${await seekValue(page)}`);
+    // Nothing here sits on top of anything else.
+    const hits = await page.evaluate(() => ['sim-play', 'sim-next', 'sim-list', 'btn-end'].map((id) => {
+      const el = document.getElementById(id);
+      const r = el.getBoundingClientRect();
+      const pts = [[0.5, 0.5], [0.5, 0.1], [0.5, 0.9], [0.1, 0.5], [0.9, 0.5]].map(([x, y]) => [r.left + r.width * x, r.top + r.height * y]);
+      return { id, ok: pts.every(([x, y]) => document.elementFromPoint(x, y)?.closest(`#${id}`)), inside: r.bottom <= innerHeight + 1 && r.right <= innerWidth + 1 };
+    }));
+    for (const h of hits) assert.ok(h.ok && h.inside, `${name}: ${h.id} ${JSON.stringify(h)}`);
+    await noOverflow(page, name);
+    await page.screenshot({ path: `${shots}/25-sim-${name}.png` });
+    // The speed buttons and the rest respond to a finger as well.
+    await page.locator('#sim-speeds button', { hasText: '10×' }).tap();
+    assert.equal(await page.evaluate(() => document.querySelector('#sim-speeds [aria-checked="true"]').textContent), '10×');
+    assert.deepEqual(log.errors, []);
+    await ctx.close();
+  }
+});
+
+await check('simulation: next turn and the list of turns go straight there', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
+  await startSim(page);
+  await page.click('#sim-play');
+  const trip = prepareTrip(cityTrip());
+  const routes = log.fossgis.length;
+  const sign = () => text(page, '#sign-action');
+  const first = await sign();
+
+  await page.click('#sim-next');
+  await page.waitForTimeout(100);
+  const m1 = trip.maneuvers[1];
+  assert.ok(Math.abs((await seekValue(page)) - Math.round(((m1.beginDist - 150) / trip.length) * 100)) <= 1);
+  assert.match(await text(page, '#sign-distance'), /1[0-9]0 m|150 m/);
+  assert.equal(await sign(), first, 'still on the way to that turn');
+
+  // Pressing again from just before it goes on to the next one.
+  await page.click('#sim-next');
+  await page.waitForTimeout(100);
+  const m2 = trip.maneuvers[2];
+  assert.ok(Math.abs((await seekValue(page)) - Math.round(((m2.beginDist - 150) / trip.length) * 100)) <= 1);
+  assert.notEqual(await sign(), first);
+
+  await page.click('#sim-list');
+  assert.equal(await vis(page, '#steps'), true);
+  const rows = page.locator('#steps-list .place');
+  assert.equal(await rows.count(), trip.maneuvers.length - 1);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/26-sim-steps.png` });
+  await noOverflow(page, 'steps');
+  assert.equal(await page.locator('#steps-list .is-past').count() >= 1, true);
+  await rows.first().click();
+  await page.waitForTimeout(120);
+  assert.equal(await vis(page, '#steps'), false);
+  assert.ok(Math.abs((await seekValue(page)) - Math.round(((m1.beginDist - 150) / trip.length) * 100)) <= 1, 'back to the first turn');
+  assert.equal(await sign(), first);
+  assert.equal(log.fossgis.length, routes);
+  assert.equal(await vis(page, '#nav-bar'), true);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('simulation: stops come and go as you jump past them', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    routeResponse: (b) => (b.locations.length > 2 ? { trip: multiLeg() } : { trip: cityTrip(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }),
+    tiles: TILE_PLACES,
+  });
+  await toPreview(page);
+  await page.click('#add-stop');
+  await page.waitForSelector('#stops-list .place');
+  await page.locator('#stops-list .place').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
+  await page.waitForSelector('.route-opt');
+  await page.click('#try-sim');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.click('#sim-play');
+  const trip = prepareTrip(multiLeg());
+  const stopAt = trip.maneuvers.find((m) => m.isStop).beginDist;
+  const box = await page.locator('#nav-strip').boundingBox();
+  const tap = async (s) => {
+    await page.mouse.move(box.x + box.width * (s / trip.length), box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+  };
+  const pins = () => page.evaluate(() => document.querySelectorAll('.map-pin.is-stop').length);
+  assert.equal(await pins(), 1);
+  await tap(stopAt + 400);
+  assert.equal(await pins(), 0, 'skipped past');
+  assert.equal(await vis(page, '#refill'), false);
+  assert.equal(await page.locator('#nav-strip .mark-stop').count(), 0);
+  await tap(stopAt - 400);
+  assert.equal(await pins(), 1, 'ahead again');
+  assert.equal(await page.locator('#nav-strip .mark-stop').count(), 1);
+  // Ending returns to the plan with the stop still in it.
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('.route-opt');
+  assert.equal(await page.locator('.stop-row').count(), 1);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('simulation: adding a stop on the way follows the new route', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    routeResponse: (b) => (b.locations.length > 2 ? { trip: multiLeg() } : { trip: cityTrip(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }),
+    tiles: TILE_PLACES,
+  });
+  await startSim(page);
+  await page.click('#sim-play');
+  const box = await page.locator('#nav-strip').boundingBox();
+  await page.mouse.move(box.x + box.width * 0.05, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.click('#btn-add-stop');
+  await page.waitForSelector('#stops-list .place');
+  const asked = log.fossgis.length;
+  await page.locator('#stops-list .place').first().click();
+  await page.waitForFunction((n) => document.getElementById('toast').textContent.length > 0 && !document.getElementById('toast').hidden, asked);
+  assert.equal(log.fossgis.length, asked + 1);
+  // It keeps following the new route, and doesn't wander off and ask for another.
+  await page.click('#sim-play');
+  await page.waitForTimeout(2500);
+  assert.equal(log.fossgis.length, asked + 1);
+  assert.doesNotMatch(await text(page, '#chips'), /Mencari laluan/);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('simulation: too fast to talk over, but it still says you have arrived', async () => {
+  const short = buildTrip(P.a, [
+    { to: [101.704, 3.15], type: 1, street: 'Jalan Satu', kph: 40 },
+    { to: [101.704, 3.154], type: 15, street: 'Jalan Dua', kph: 40 },
+  ]);
+  const { ctx, page, log } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: short }), storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { simSpeed: 30 } } });
+  await toPreview(page);
+  const before = (await said(page)).length;
+  await page.click('#try-sim');
+  await page.waitForSelector('#arrival:not([hidden])', { timeout: 20000 });
+  const words = (await said(page)).slice(before).map((s) => s.text);
+  assert.deepEqual(words, ['Anda telah sampai.']);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('a real drive has none of the simulation controls', async () => {
+  const { ctx, page, log } = await newApp(browser, quiet);
+  await toNav(page);
+  assert.equal(await vis(page, '#sim-panel'), false);
+  assert.equal(await page.locator('#sim-seek').isVisible(), false);
+  // And the line can't move anything.
+  const box = await page.locator('#nav-strip').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.8, box.y + box.height / 2);
+  const st = await page.evaluate(() => document.getElementById('eta-rest').textContent);
+  assert.ok(st.length > 0);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.trip')).dest.name), 'Suria KLCC');
+  assert.deepEqual(log.errors, []);
   await ctx.close();
 });
 

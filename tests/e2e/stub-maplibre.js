@@ -71,6 +71,13 @@
       this.draw();
     }
     getBearing() { return this.cam.bearing; }
+    unproject([x, y]) {
+      const scale = (256 * 2 ** this.cam.zoom) / 360;
+      const pad = this.cam.padding || {};
+      const dx = x - innerWidth / 2 - ((pad.left || 0) - (pad.right || 0)) / 2;
+      const dy = y - innerHeight / 2 - ((pad.top || 0) - (pad.bottom || 0)) / 2;
+      return new LngLat(this.cam.center[0] + dx / scale, this.cam.center[1] - dy / scale);
+    }
     resize() { this.draw(); }
     draw() {
       const c = this.canvas, dpr = devicePixelRatio || 1;

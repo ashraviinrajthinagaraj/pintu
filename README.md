@@ -17,7 +17,7 @@ folder as it is.
 | Map tiles | [OpenFreeMap](https://openfreemap.org/) | No key. No guarantee of uptime |
 | Place search | [Photon](https://photon.komoot.io/) public server | Fair use. Heavy use is throttled |
 | Routing, lane arrows and lane counts | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
-| Stops along the route | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), OpenStreetMap data | Light use only. Results are cached for 15 minutes |
+| Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
 ### Routing
@@ -35,6 +35,34 @@ services, so treat it as a way to try Pintu, and move to Stadia for regular use:
    `ashraviinrajthinagaraj` and the domain is `github.io`.
 
 Pintu needs no change: Stadia starts answering and is used from then on.
+
+### Stops
+
+Public Overpass servers are often overloaded, so Pintu doesn't wait on them. It reads places
+straight out of the map's vector tiles (`js/tiles.js`), nearest first, showing them as they
+arrive. If the map shows, this works.
+
+- The tiles only say a place of worship is one, not which kind, so a surau or mosque is
+  recognised by its name. An R&R is also recognised by its name.
+- Charging stations and R&Rs may be missing from the tiles, so those also ask Overpass and,
+  failing that, Photon. For anything else, those two are asked only if the tiles found nothing
+  or couldn't be read.
+- A whole search ends within about 22 seconds whatever the network does, with what it found,
+  or an offer to try again.
+
+## Choosing where to start
+
+The route screen has a start and a destination, either of which can be changed, or swapped.
+A start can be searched for or chosen on the map. Away from a chosen start, the main button
+previews the route as a simulated drive, and "drive to the start first" makes it the first stop
+of a trip from where you are. Within 300 m of it, the trip starts as usual.
+
+## Simulated drives
+
+A simulated drive has a pause button, speeds from 1× to 30×, and a jump to the next turn or any
+turn on a list. The trip line can be dragged or tapped to go anywhere, forward or back. None of
+this counts as leaving the route. From 10× it's silent apart from arriving, and the lane view
+is off. Ending the drive returns to the route screen with the plan unchanged.
 
 ## The lane view
 

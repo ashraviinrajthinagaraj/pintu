@@ -55,6 +55,7 @@ export class Gps {
 }
 
 // Drives a route without moving, so the whole trip can be tried from the sofa.
+// It can run faster, pause, and be moved to any point along the way.
 export class SimulatedDrive {
   constructor(route, onFix, { factor = 4, intervalMs = 250, startAt = 0 } = {}) {
     this.route = route;
@@ -64,6 +65,8 @@ export class SimulatedDrive {
     this.s = startAt;
     this.t = Date.now();
     this.timer = null;
+    this.paused = false;
+    this.held = false;     // a finger is on the trip line
   }
 
   start() {
@@ -73,6 +76,33 @@ export class SimulatedDrive {
 
   stop() { clearInterval(this.timer); this.timer = null; }
 
+  setFactor(factor) { this.factor = factor; }
+
+  // A new route, from where the car is now.
+  setRoute(route, startAt = 0) {
+    this.route = route;
+    this.s = startAt;
+  }
+
+  // Stops the car where it appears to be, which can be a little short of the
+  // next position this was about to report.
+  pause(atS = this.s) {
+    this.paused = true;
+    this.s = Math.min(this.s, atS);
+    this._report();
+  }
+
+  resume() { this.paused = false; }
+
+  seek(s) {
+    this.s = Math.max(0, Math.min(this.route.length, s));
+    this._report();
+    if (!this.timer && this.s < this.route.length) this.timer = setInterval(() => this._tick(), this.intervalMs);
+  }
+
+  // How fast the road is here, paused or not.
+  get roadSpeed() { return this._speedAt(this.s); }
+
   _speedAt(s) {
     const { maneuvers } = this.route;
     let m = maneuvers[0];
@@ -80,25 +110,32 @@ export class SimulatedDrive {
     return m.time > 0 && m.length > 0 ? (m.length * 1000) / m.time : 12;
   }
 
-  _tick() {
-    const { coords, cum, length } = this.route;
+  _report() {
+    const { coords, cum } = this.route;
+    const moving = !this.paused && !this.held;
     const v = this._speedAt(this.s);
     let i = 0;
     while (i < cum.length - 2 && cum[i + 1] <= this.s) i++;
     const span = cum[i + 1] - cum[i] || 1;
     const t = Math.min(1, (this.s - cum[i]) / span);
-    // The clock runs as fast as the car does, so guidance sees a normal drive.
-    this.t += this.intervalMs * this.factor;
     this.onFix({
       lng: coords[i][0] + (coords[i + 1][0] - coords[i][0]) * t,
       lat: coords[i][1] + (coords[i + 1][1] - coords[i][1]) * t,
       accuracy: 8,
-      speed: v,
-      motionSpeed: v * this.factor,
+      speed: moving ? v : 0,
+      motionSpeed: moving ? v * this.factor : 0,
       heading: bearing(coords[i], coords[i + 1]),
       time: this.t,
     });
-    if (this.s >= length) { this.stop(); return; }
-    this.s = Math.min(length, this.s + v * this.factor * (this.intervalMs / 1000));
+    return v;
+  }
+
+  _tick() {
+    if (this.paused || this.held) return;
+    // The clock runs as fast as the car does, so guidance sees a normal drive.
+    this.t += this.intervalMs * this.factor;
+    const v = this._report();
+    if (this.s >= this.route.length) { this.stop(); return; }
+    this.s = Math.min(this.route.length, this.s + v * this.factor * (this.intervalMs / 1000));
   }
 }

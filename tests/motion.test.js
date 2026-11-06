@@ -142,3 +142,21 @@ test('off the route it eases toward each fix', () => {
   assert.ok(prev > 101.7003, String(prev));
   assert.ok(biggest < 0.00005, `largest step ${biggest}`);
 });
+
+test('a deliberate jump lands at once, facing along the new road', () => {
+  const r = route();
+  const m = new Motion();
+  m.setRoute(r);
+  const end = run(m, r, { seconds: 3, v: 10 });
+  m.jump(1500, end);
+  const pose = m.frame(end + 16);
+  assert.ok(Math.abs(pose.s - 1500) < 1, String(pose.s));
+  const road = pointAt(r, 1500);
+  assert.ok(haversine([pose.lng, pose.lat], road) < 2);
+  const on = pointAt(r, 1520);
+  const want = (Math.atan2(on[0] - road[0], on[1] - road[1]) * 180) / Math.PI;
+  assert.ok(angleDiff(pose.heading, (want + 360) % 360) < 3);
+  // And backwards just the same, with no gliding through everything between.
+  m.jump(100, end + 32);
+  assert.ok(Math.abs(m.frame(end + 48).s - 100) < 1);
+});

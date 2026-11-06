@@ -1,6 +1,6 @@
 import { CONFIG } from './config.js';
 import { fmtClock, fmtDistance, fmtDuration, sayDistance } from './format.js';
-import { sliceFrom } from './geo.js';
+import { clamp, haversine, sliceFrom } from './geo.js';
 import { Guidance } from './guidance.js';
 import { getLang, setLang, t } from './i18n.js';
 import { CATEGORY_ICONS, UI, doorSvg, laneIcon, turnIcon } from './icons.js';
@@ -9,7 +9,7 @@ import { LaneScene, NO_LANES } from './lanes.js';
 import { Gps, SimulatedDrive } from './location.js';
 import { MapView } from './map.js';
 import { Motion } from './motion.js';
-import { findAlongRoute, placeOnRoute } from './places.js';
+import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
 import { RouteError, distanceAfter, fetchLaneCounts, fetchRoutes, timeBetween } from './routing.js';
 import { reversePlace, searchPlaces } from './search.js';
@@ -33,6 +33,11 @@ const LANE_CHUNK_M = 30000;
 const LANE_RETRY_MS = 60000;
 const CAR_PX = 64;             // how long the car looks when the map is zoomed out
 const CAR_LANE_M = 7.6;        // and in the lane view, where it's drawn to scale with the road
+const START_NEAR_M = 300;      // this close to a chosen start, you're there
+const SIM_SPEEDS = [1, 4, 10, 30];
+const SIM_FAST = 10;           // from here it's too quick to talk over, or to read lanes
+const SIM_LEAD_M = 150;        // jumping to a turn lands this far before it
+const SIM_END_GAP_M = 60;      // a jump doesn't end the trip by itself
 
 const S = {
   view: 'idle',
@@ -40,6 +45,7 @@ const S = {
   fix: null,
   realFix: null,
   dest: null,
+  start: null,
   stops: [],
   routes: [],
   selected: 0,
@@ -47,7 +53,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -55,6 +61,9 @@ const S = {
   route: null,
   guidance: null,
   sim: null,
+  simStops: [],
+  simPlan: null,
+  simScrub: false,
   following: true,
   followTimer: null,
   followPad: { top: 0, bottom: 0, left: 0, right: 0 },
@@ -126,19 +135,30 @@ function applyStaticText() {
   $('where-glyph').innerHTML = doorSvg('style="--knob:#00794A"');
   label($('btn-settings'), t('settings'), UI.settings);
   label($('btn-locate'), t('locate'), UI.locate);
-  for (const id of ['search-back', 'preview-back', 'settings-back', 'vehicle-back']) label($(id), t('back'), UI.back);
-  label($('stops-back'), t('back'), UI.close);
-  $('search-input').placeholder = t('searchPlaceholder');
-  $('search-input').setAttribute('aria-label', t('searchPlaceholder'));
+  for (const id of ['search-back', 'preview-back', 'settings-back', 'vehicle-back', 'pick-back']) label($(id), t('back'), UI.back);
+  for (const id of ['stops-back', 'steps-back']) label($(id), t('back'), UI.close);
+  setSearchPrompt();
+  label($('swap-ends'), t('swapEnds'), UI.swap);
+  $('to-mark').innerHTML = doorSvg('style="--knob:#18B070"');
+  $('quick-here-icon').innerHTML = UI.locate;
+  $('quick-here-label').textContent = t('myLocation');
+  $('quick-map-icon').innerHTML = UI.pin;
+  $('quick-map-label').textContent = t('pickOnMap');
+  $('pick-hint').textContent = t('pickHint');
+  $('pick-use').textContent = t('pickUse');
+  $('steps-title').textContent = t('stepsTitle');
+  $('sim-seek').setAttribute('aria-label', t('simSeek'));
+  label($('sim-next'), t('simNext'), UI.skip);
+  label($('sim-list'), t('simList'), UI.list);
+  $('sim-speeds').setAttribute('aria-label', t('simSpeed'));
+  renderEnds();
+  renderSimPanel();
   $('search-tip').textContent = t('searchTip');
   $('recents-title').textContent = t('recents');
   $('recents-clear').textContent = t('clear');
   $('mode-car').textContent = t('car');
   $('mode-moto').textContent = t('moto');
   $('avoid-tolls-label').textContent = t('avoidTolls');
-  $('route-note').textContent = t('routeNote');
-  $('start').textContent = t('start');
-  $('try-sim').textContent = t('tryIt');
   $('add-stop-label').textContent = t('addStopShort');
   $('add-stop').setAttribute('aria-label', t('addStop'));
   $('add-stop-icon').innerHTML = UI.plus;
@@ -302,8 +322,11 @@ function render() {
   $('idle').hidden = view !== 'idle';
   $('hud').hidden = view !== 'idle';
   $('scrim').hidden = !(view === 'idle' || view === 'nav');
-  $('search').hidden = !(view === 'search' || overlay === 'stopsearch');
-  $('preview').hidden = view !== 'preview';
+  $('search').hidden = !(view === 'search' || overlay === 'stopsearch' || overlay === 'endsearch');
+  // The stops panel takes the same space, so there's no need to draw both.
+  $('preview').hidden = view !== 'preview' || overlay === 'pickmap' || overlay === 'stops';
+  $('map-pick').hidden = overlay !== 'pickmap';
+  $('steps').hidden = overlay !== 'steps';
   $('nav').hidden = view !== 'nav';
   $('arrival').hidden = view !== 'arrival';
   $('settings').hidden = overlay !== 'settings';
@@ -335,10 +358,13 @@ addEventListener('popstate', (e) => {
   if (was === 'vehicle' && S.overlay !== 'vehicle') vehicleUI.close();
   if (was === 'stops' && S.overlay !== 'stopsearch') closeStopsPanel();
   if (was === 'stopsearch' && !S.overlay) closeStopsPanel();
+  if (was === 'endsearch' || was === 'stopsearch') S.searchFor = null;
   if (st.view === 'idle' && (S.view === 'preview' || S.view === 'search')) leaveDestination();
   // History can point at a trip that has already ended.
   const stale = (st.view === 'nav' && S.view !== 'nav') || st.view === 'arrival' || (st.view === 'preview' && !S.dest);
   show(stale ? 'idle' : st.view);
+  // Choosing on the map moved it. Put the route back in view.
+  if (was === 'pickmap' && S.overlay !== 'pickmap' && S.view === 'preview') fitRoutes();
 });
 
 // Whatever covers the bottom of the map decides where the map's own controls sit.
@@ -346,13 +372,15 @@ const bottomObserver = 'ResizeObserver' in window ? new ResizeObserver(() => upd
 function observeBottom() {
   if (bottomObserver) {
     bottomObserver.disconnect();
-    for (const id of ['preview', 'nav-bar', 'where', 'stops']) bottomObserver.observe($(id));
+    for (const id of ['preview', 'nav-bar', 'where', 'stops', 'steps']) bottomObserver.observe($(id));
   }
   updateBottomInset();
 }
 
 function bottomElement() {
   if (S.overlay === 'stops') return $('stops');
+  if (S.overlay === 'steps') return $('steps');
+  if (S.overlay === 'pickmap') return null;
   if (S.view === 'preview') return $('preview');
   if (S.view === 'nav') return $('nav-bar');
   if (S.view === 'idle') return $('where');
@@ -419,6 +447,7 @@ function receiveFix(fix) {
     S.wantCenter = false;
     mapView?.centerOn(fix.lng, fix.lat);
   }
+  if (S.view === 'preview' && S.start) renderActions();
   flushFixWaiters(fix);
 }
 
@@ -489,7 +518,11 @@ function updateCar(lng, lat, heading) {
 }
 
 function navFrame(pose, now, dt, moved, inLanes) {
-  const targetZoom = inLanes ? laneZoom(S.fix?.speed) : zoomForSpeed(S.fix?.speed);
+  // Further out the faster a simulated drive goes, so the map can keep up.
+  const speedUp = S.sim ? Math.max(0, Math.log2(S.sim.factor / 4)) * 0.65 : 0;
+  // A paused simulated car is still on that road, so the view holds still.
+  const speedNow = S.sim ? S.sim.roadSpeed : S.fix?.speed;
+  const targetZoom = inLanes ? laneZoom(speedNow) : zoomForSpeed(speedNow) - speedUp;
   const targetPitch = S.settings.view3d ? (inLanes ? 68 : 60) : 0;
   const ease = 1 - Math.exp(-dt * (inLanes ? 1.4 : 1.1));
   const before = { ...S.cam };
@@ -514,6 +547,7 @@ function navFrame(pose, now, dt, moved, inLanes) {
       const trimFrom = inLanes && S.scene ? Math.max(pose.s, S.scene.trimS) : pose.s;
       mapView.setRemaining(sliceFrom(S.route.coords, S.route.cum, trimFrom));
       setStripProgress($('nav-strip'), pose.s / S.route.length);
+      if (S.sim) $('sim-seek').setAttribute('aria-valuenow', String(Math.round((pose.s / S.route.length) * 100)));
     }
   }
   return camMoved;
@@ -562,7 +596,8 @@ async function loadLaneCounts(s) {
 function updateScene(st, fix) {
   const scene = S.scene;
   if (!scene) return;
-  if (!S.settings.view3d || !st.onRoute) {
+  const tooQuick = S.simScrub || (S.sim && S.sim.factor >= SIM_FAST);
+  if (!S.settings.view3d || !st.onRoute || tooQuick) {
     if (scene.active) {
       scene.active = false;
       scene.builtAt = null;
@@ -620,7 +655,21 @@ function openStopSearch() {
   resetSearch();
 }
 
+// Changing either end of a planned trip.
+function openEndSearch(end) {
+  S.searchFor = end;
+  openOverlay('endsearch');
+  resetSearch();
+}
+
+function setSearchPrompt() {
+  const text = t(S.searchFor === 'start' ? 'startSearch' : 'searchPlaceholder');
+  $('search-input').placeholder = text;
+  $('search-input').setAttribute('aria-label', text);
+}
+
 function resetSearch() {
+  setSearchPrompt();
   $('search-input').value = '';
   renderSearch([]);
   $('search-status').textContent = '';
@@ -646,13 +695,14 @@ function placeButton(place, onPick) {
 }
 
 function renderSearch(results) {
-  const pick = S.searchFor === 'stop' ? chooseStopFromSearch : chooseFromSearch;
+  const pick = { stop: chooseStopFromSearch, start: chooseStartFromSearch, to: chooseToFromSearch }[S.searchFor] || chooseFromSearch;
   $('search-results').replaceChildren(...results.map((p) => placeButton(p, pick)));
   const empty = !$('search-input').value.trim();
   const recents = load('recents', []);
   $('recents-wrap').hidden = !empty || !recents.length;
   $('recents').replaceChildren(...recents.map((p) => placeButton(p, pick)));
-  $('search-tip').hidden = !empty;
+  $('search-tip').hidden = !empty || S.searchFor === 'start';
+  $('search-quick').hidden = !empty || S.searchFor !== 'start';
 }
 
 function onSearchInput() {
@@ -705,6 +755,115 @@ function chooseStopFromSearch(place) {
   addStop({ ...place, category: null });
 }
 
+function chooseStartFromSearch(place) {
+  $('search-input').blur();
+  addRecent(place);
+  history.back();
+  setStart(place);
+}
+
+function chooseToFromSearch(place) {
+  $('search-input').blur();
+  addRecent(place);
+  history.back();
+  openPreview(place);
+}
+
+/* ---------- Where the trip starts ---------- */
+
+// null means from wherever you are.
+function setStart(place) {
+  S.start = place;
+  mapView?.setStart(place);
+  mapView?.clearRoutes();
+  renderEnds();
+  loadRoutes();
+}
+
+function renderEnds() {
+  const name = S.start ? S.start.name : t('myLocation');
+  $('from-name').textContent = name;
+  $('from-row').classList.toggle('is-custom', !!S.start);
+  $('from-row').setAttribute('aria-label', t('fromAria', { place: name }));
+  if (S.dest) $('to-row').setAttribute('aria-label', t('toAria', { place: S.dest.name }));
+}
+
+// You chose somewhere to start from, and aren't there. Driving this route isn't
+// possible yet, so what's on offer is looking at it, or going there first.
+function awayFromStart() {
+  if (!S.start) return false;
+  return !S.fix || haversine([S.fix.lng, S.fix.lat], [S.start.lng, S.start.lat]) > START_NEAR_M;
+}
+
+function renderActions() {
+  const away = awayFromStart();
+  const ready = S.routeState === 'ready' && S.routes.length > 0;
+  $('start').textContent = t(away ? 'previewDrive' : 'start');
+  $('try-sim').textContent = t(away ? 'driveToStart' : 'tryIt');
+  // Going there first needs to know where you are.
+  $('try-sim').hidden = !ready || (away && !S.fix);
+  $('route-note').textContent = t(away ? 'startElsewhere' : 'routeNote');
+  $('route-note').hidden = !ready;
+}
+
+function swapEnds() {
+  const here = S.fix;
+  if (!S.start && !here) {
+    toast(t(S.gpsDenied ? 'gpsDenied' : 'gpsNone'), 6000);
+    return;
+  }
+  const newDest = S.start || { name: t('myLocation'), detail: '', lng: here.lng, lat: here.lat, country: '', isHere: true };
+  S.start = S.dest.isHere ? null : S.dest;
+  S.stops.reverse();
+  mapView?.setStart(S.start);
+  openPreview(newDest);
+}
+
+// The chosen start becomes the first stop on a trip from where you really are.
+function driveViaStart() {
+  const p = S.start;
+  S.stops.unshift({ id: 'start', name: p.name, detail: p.detail || '', lat: p.lat, lng: p.lng, category: null, along: 0 });
+  S.start = null;
+  mapView?.setStart(null);
+  mapView?.setStopPins(S.stops);
+  mapView?.clearRoutes();
+  renderEnds();
+  loadRoutes();
+}
+
+function openMapPick() {
+  // The search box is still focused, and the phone's keyboard would cover the map.
+  $('search-input').blur();
+  const at = S.start || S.fix || S.dest;
+  openOverlay('pickmap');
+  mapView?.level();
+  if (at) mapView?.lookDownAt(at.lng, at.lat);
+}
+
+async function useMapPick() {
+  const box = $('pick-pin').getBoundingClientRect();
+  const where = mapView?.placeAt(box.left + box.width / 2, box.top + box.height / 2);
+  if (!where) return;
+  const place = { name: `${where.lat.toFixed(5)}, ${where.lng.toFixed(5)}`, detail: '', lng: where.lng, lat: where.lat, country: '' };
+  // Back past both the map and the search that led to it.
+  history.go(-2);
+  setStart(place);
+  try {
+    const named = await reversePlace(where.lng, where.lat);
+    if (named && S.start === place) {
+      // Its name, but the exact spot you chose.
+      place.name = named.name;
+      place.detail = named.detail;
+      renderEnds();
+      addRecent(place);
+    }
+  } catch { /* the coordinates still work */ }
+}
+
+function fitRoutes() {
+  if (S.routes.length) mapView?.fit(S.routes.map((r) => r.coords), mapPadding());
+}
+
 /* ---------- Route preview ---------- */
 
 function openPreview(place) {
@@ -717,6 +876,7 @@ function openPreview(place) {
   $('dest-name').textContent = place.name;
   $('dest-detail').textContent = place.detail || '';
   $('dest-detail').hidden = !place.detail;
+  renderEnds();
   show('preview');
   renderSegments();
   loadRoutes();
@@ -725,8 +885,10 @@ function openPreview(place) {
 function leaveDestination() {
   S.routeCtrl?.abort();
   S.dest = null;
+  S.start = null;
   S.routes = [];
   S.stops = [];
+  mapView?.setStart(null);
   mapView?.setDestination(null);
   mapView?.setStopPins([]);
   mapView?.clearRoutes();
@@ -753,6 +915,7 @@ async function onLongPress(lngLat) {
       $('dest-name').textContent = named.name;
       $('dest-detail').textContent = named.detail || '';
       $('dest-detail').hidden = !named.detail;
+      renderEnds();
       addRecent(named);
     }
   } catch { /* the coordinates still work */ }
@@ -768,7 +931,7 @@ async function loadRoutes() {
   renderRoutes();
 
   gps.start();
-  const from = await waitForFix();
+  const from = S.start || await waitForFix();
   if (ctrl.signal.aborted) return;
   if (!from) {
     S.routeState = 'error';
@@ -824,6 +987,15 @@ function renderRoutes() {
     retry.textContent = t('retry');
     retry.addEventListener('click', loadRoutes);
     status.append(msg, retry);
+    // Without your location, a route can still start from somewhere you choose.
+    if (S.routeError === 'gpsDenied' || S.routeError === 'gpsNone') {
+      const choose = document.createElement('button');
+      choose.type = 'button';
+      choose.className = 'link-btn';
+      choose.textContent = t('chooseStart');
+      choose.addEventListener('click', () => openEndSearch('start'));
+      status.append(choose);
+    }
   }
 
   const list = $('route-list');
@@ -862,8 +1034,7 @@ function renderRoutes() {
   const ready = S.routeState === 'ready' && S.routes.length > 0;
   $('start').disabled = !ready;
   $('add-stop').disabled = !ready;
-  $('try-sim').hidden = !ready;
-  $('route-note').hidden = !ready;
+  renderActions();
   renderPlan();
   updateBottomInset();
 }
@@ -1111,17 +1282,30 @@ async function loadStops() {
   const route = tripRoute();
   const fromS = tripFromS();
   S.stopResults = [];
+  S.stopsShown = '';
   $('stops-list').replaceChildren();
   mapView?.setPins([], pickStop);
   const status = $('stops-status');
   status.classList.remove('is-error');
   status.textContent = t('stopsSearching');
-  try {
-    const found = await findAlongRoute(route, S.stopCat, fromS, { signal: ctrl.signal });
-    if (ctrl.signal.aborted) return;
-    S.stopResults = found.slice(0, 40).map((p) => ({ ...p, name: p.name || t(categoryName(p.category)) }));
-    status.textContent = S.stopResults.length ? '' : t('stopsNone');
+  const showFound = (found) => {
+    S.stopResults = thinAlong(found).map((p) => ({ ...p, name: p.name || t(categoryName(p.category)) }));
     renderStopResults(route, fromS);
+  };
+  try {
+    const found = await findAlongRoute(route, S.stopCat, fromS, {
+      signal: ctrl.signal,
+      tileUrl: mapView?.tileUrl(),
+      // Worth showing straight away, while the rest of the road is still being read.
+      onProgress: (list) => {
+        if (ctrl.signal.aborted) return;
+        status.textContent = t('stopsSearchingMore');
+        showFound(list);
+      },
+    });
+    if (ctrl.signal.aborted) return;
+    showFound(found);
+    status.textContent = S.stopResults.length ? '' : t('stopsNone');
   } catch {
     if (ctrl.signal.aborted) return;
     status.classList.add('is-error');
@@ -1137,6 +1321,9 @@ async function loadStops() {
 }
 
 function renderStopResults(route, fromS) {
+  const shown = S.stopResults.map((p) => p.id).join();
+  if (shown === S.stopsShown) return;
+  S.stopsShown = shown;
   const v = vehicle();
   const left = v && (S.stopCat === 'fuel' || S.stopCat === 'ev') ? rangeLeft(v, S.drivenKm) : null;
   $('stops-list').replaceChildren(...S.stopResults.map((p) => {
@@ -1192,6 +1379,10 @@ function addStop(place) {
   S.stops.push(stop);
   S.stops.sort((a, b) => a.along - b.along);
   mapView?.setStopPins(S.stops);
+  if (S.sim) {
+    S.simPlan.stops.push(stop);
+    S.simPlan.changed = true;
+  }
   if (S.view === 'nav') {
     S.lastReroute = 0;
     reroute(S.fix, { added: true });
@@ -1239,6 +1430,7 @@ function startGuidance({ simulate }) {
   S.lastSignKey = null;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
   S.poseStale = true;
+  mapView?.setStart(null);
   mapView?.showRoutes([S.route], 0);
   mapView?.setStopPins(S.stops);
 
@@ -1256,10 +1448,16 @@ function startGuidance({ simulate }) {
 
   if (simulate) {
     S.realFix = S.fix;
-    S.sim = new SimulatedDrive(S.route, receiveFix);
+    S.simStops = [...S.stops];
+    // Ending a simulated drive comes back to this plan, ready to change or drive.
+    S.simPlan = { dest: S.dest, start: S.start, stops: [...S.stops], routes: S.routes, selected: S.selected, changed: false };
+    S.sim = new SimulatedDrive(S.route, receiveFix, { factor: S.settings.simSpeed });
+    renderSimPanel();
     S.sim.start();
     remove('trip');
   } else {
+    S.simPlan = null;
+    renderSimPanel();
     saveTrip();
     if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
   }
@@ -1297,12 +1495,15 @@ function onNavFix(fix, now) {
 }
 
 function say(prompt) {
+  // Too quick to talk over, except to say you've arrived.
+  if (S.sim && S.sim.factor >= SIM_FAST && prompt.kind !== 'arrive') return;
   const text = speech(prompt, S.route.maneuvers, getLang());
   if (!text) return;
   speakText(text);
 }
 
 function speakText(text) {
+  if (S.simScrub) return;
   voice.speak(text);
   $('speak-live').textContent = text;
 }
@@ -1456,6 +1657,10 @@ async function reroute(fix, { added = false } = {}) {
     S.guidance = new Guidance(route);
     motion.setRoute(route);
     startScene(route);
+    if (S.sim) {
+      S.sim.setRoute(route);
+      S.simStops = [...S.stops];
+    }
     S.lastDrivenS = null;
     S.lastTrimS = null;
     S.lastSignKey = null;
@@ -1493,6 +1698,8 @@ function stopGuidance() {
   if (S.sim) {
     S.sim.stop();
     S.sim = null;
+    S.simScrub = false;
+    renderSimPanel();
     // A simulated drive must not leave you standing at its pretend finish.
     S.fix = S.realFix || null;
   }
@@ -1535,6 +1742,7 @@ function finishTrip() {
   mapView?.setStopPins([]);
   mapView?.flat();
   S.dest = null;
+  S.start = null;
   $('arrival-place').textContent = place ? place.name : '';
   replaceHistory('arrival');
   S.overlay = null;
@@ -1543,8 +1751,14 @@ function finishTrip() {
 }
 
 function endTrip() {
+  if (S.sim) {
+    stopGuidance();
+    backToPlan();
+    return;
+  }
   stopGuidance();
   S.dest = null;
+  S.start = null;
   S.routes = [];
   mapView?.clearRoutes();
   mapView?.setDestination(null);
@@ -1554,6 +1768,195 @@ function endTrip() {
   S.overlay = null;
   show('idle');
   if (S.fix) mapView?.centerOn(S.fix.lng, S.fix.lat);
+}
+
+// After a simulated drive: the plan it came from, just as it was.
+function backToPlan() {
+  const plan = S.simPlan;
+  S.simPlan = null;
+  S.dest = plan.dest;
+  S.start = plan.start;
+  S.stops = plan.stops;
+  S.routes = plan.routes;
+  S.selected = plan.selected;
+  S.overlay = null;
+  mapView?.level();
+  mapView?.setDestination(S.dest);
+  mapView?.setStart(S.start);
+  mapView?.setStopPins(S.stops);
+  $('dest-name').textContent = S.dest.name;
+  $('dest-detail').textContent = S.dest.detail || '';
+  $('dest-detail').hidden = !S.dest.detail;
+  renderEnds();
+  replaceHistory('preview');
+  show('preview');
+  if (plan.changed) { loadRoutes(); return; }
+  S.routeState = 'ready';
+  renderRoutes();
+  mapView?.showRoutes(S.routes, S.selected);
+  fitRoutes();
+}
+
+/* ---------- Controlling a simulated drive ---------- */
+
+function renderSimPanel() {
+  const on = !!S.sim;
+  $('sim-panel').hidden = !on;
+  $('sim-seek').hidden = !on;
+  $('nav-bar').classList.toggle('is-sim', on);
+  if (!on) return;
+  label($('sim-play'), t(S.sim.paused ? 'simPlay' : 'simPause'), S.sim.paused ? UI.play : UI.pause);
+  $('sim-speeds').replaceChildren(...SIM_SPEEDS.map((factor) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(S.sim.factor === factor));
+    b.textContent = `${factor}×`;
+    b.addEventListener('click', () => setSimSpeed(factor));
+    return b;
+  }));
+}
+
+function setSimSpeed(factor) {
+  if (!S.sim) return;
+  S.sim.setFactor(factor);
+  setSetting('simSpeed', factor);
+  renderSimPanel();
+}
+
+function toggleSimPause() {
+  if (!S.sim) return;
+  if (S.sim.paused) S.sim.resume();
+  else S.sim.pause(motion.s ?? S.sim.s);
+  renderSimPanel();
+}
+
+// Put the simulated car anywhere on the route, without it counting as a detour.
+function simSeek(target) {
+  const route = S.route;
+  if (!S.sim || !route || !S.guidance) return;
+  const s = clamp(target, 0, Math.max(0, route.length - SIM_END_GAP_M));
+  S.guidance.jumpTo(s);
+  motion.jump(s, performance.now());
+  // The car would have used this much by here, whichever way it got here.
+  S.drivenKm = s / 1000;
+  S.tripKm = s / 1000;
+  S.lastDrivenS = s;
+  S.rangeSpoken = 0;
+  // Stops before here are behind you, and those after it are still to come.
+  const passed = route.maneuvers.filter((m) => m.isStop && s >= m.beginDist - 25).length;
+  S.stops = S.simStops.slice(passed);
+  mapView?.setStopPins(S.stops);
+  $('refill').hidden = true;
+  S.following = true;
+  S.poseStale = true;
+  S.lastTrimS = null;
+  S.lastSignKey = null;
+  $('btn-recenter').hidden = true;
+  clearTimeout(S.followTimer);
+  $('nav-strip').dataset.key = '';
+  // Lane counts may not have been fetched for the stretch you've landed on.
+  if (!S.simScrub) S.laneFetch.until = 0;
+  S.sim.seek(s);
+  mapView?.setRemaining(sliceFrom(route.coords, route.cum, s));
+  setStripProgress($('nav-strip'), s / route.length);
+  $('sim-seek').setAttribute('aria-valuenow', String(Math.round((s / route.length) * 100)));
+}
+
+function simNextTurn() {
+  const st = S.lastState;
+  if (!S.sim || !st) return;
+  const list = S.route.maneuvers;
+  let i = st.nextIndex;
+  // Already just before this one: on to the one after.
+  if (st.distanceToNext <= SIM_LEAD_M + 10 && i < list.length - 1) i++;
+  const to = list[i].beginDist - SIM_LEAD_M;
+  if (to > st.s) simSeek(to);
+}
+
+function openSteps() {
+  if (!S.sim || !S.route) return;
+  renderSteps();
+  openOverlay('steps');
+  $('steps-list').querySelector('.is-next')?.scrollIntoView({ block: 'center' });
+}
+
+function renderSteps() {
+  const at = S.lastState?.s ?? 0;
+  const next = S.lastState?.nextIndex;
+  const lang = getLang();
+  // The first is only "head off", which is already behind you or right here.
+  $('steps-list').replaceChildren(...S.route.maneuvers.map((m, i) => {
+    if (i === 0) return null;
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `place step${m.beginDist < at ? ' is-past' : ''}${i === next ? ' is-next' : ''}`;
+    const icon = document.createElement('span');
+    icon.className = 'step-icon';
+    icon.innerHTML = turnIcon(m);
+    const text = document.createElement('span');
+    text.className = 'step-text';
+    const d = describe(m, lang);
+    const strong = document.createElement('strong');
+    strong.textContent = d.road ? `${d.action} ${d.road}` : d.action;
+    const where = document.createElement('span');
+    where.textContent = t('stepAt', { distance: fmtDistance(m.beginDist) });
+    text.append(strong, where);
+    btn.append(icon, text);
+    btn.addEventListener('click', () => {
+      history.back();
+      simSeek(m.beginDist - SIM_LEAD_M);
+    });
+    li.append(btn);
+    return li;
+  }).filter(Boolean));
+}
+
+function wireSimSeek() {
+  const el = $('sim-seek');
+  const at = (e) => {
+    const r = $('nav-strip').getBoundingClientRect();
+    return clamp((e.clientX - r.left) / r.width, 0, 1) * S.route.length;
+  };
+  let dragging = false, lastS = 0, lastMove = 0;
+  el.addEventListener('pointerdown', (e) => {
+    if (!S.sim) return;
+    dragging = true;
+    el.setPointerCapture?.(e.pointerId);
+    S.sim.held = true;
+    S.simScrub = true;
+    lastS = at(e);
+    simSeek(lastS);
+    e.preventDefault();
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!dragging || !S.sim) return;
+    lastS = at(e);
+    const now = performance.now();
+    if (now - lastMove < 60) return;
+    lastMove = now;
+    simSeek(lastS);
+  });
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (!S.sim) return;
+    S.sim.held = false;
+    S.simScrub = false;
+    simSeek(lastS);
+  };
+  el.addEventListener('pointerup', finish);
+  el.addEventListener('pointercancel', finish);
+  el.addEventListener('keydown', (e) => {
+    if (!S.sim) return;
+    const step = S.route.length / 50;
+    const now = S.lastState?.s ?? 0;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') simSeek(now + step);
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') simSeek(now - step);
+    else return;
+    e.preventDefault();
+  });
 }
 
 function clearEndArmed() {
@@ -1626,6 +2029,7 @@ function resumeTrip() {
   S.mode = trip.mode;
   S.avoidTolls = trip.avoidTolls;
   S.stops = trip.stops || [];
+  S.start = null;
   voice.unlockVoice();
   S.startWhenRouted = true;
   pushHistory('preview');
@@ -1698,8 +2102,27 @@ function wire() {
     save('avoidTolls', S.avoidTolls);
     loadRoutes();
   });
-  $('start').addEventListener('click', () => beginTrip({ simulate: false }));
-  $('try-sim').addEventListener('click', () => beginTrip({ simulate: true }));
+  // Away from a chosen start, the main button shows the route instead of driving it.
+  $('start').addEventListener('click', () => beginTrip({ simulate: awayFromStart() }));
+  $('try-sim').addEventListener('click', () => {
+    if (awayFromStart()) driveViaStart();
+    else beginTrip({ simulate: true });
+  });
+  $('from-row').addEventListener('click', () => openEndSearch('start'));
+  $('to-row').addEventListener('click', () => openEndSearch('to'));
+  $('swap-ends').addEventListener('click', swapEnds);
+  $('quick-here').addEventListener('click', () => {
+    history.back();
+    setStart(null);
+  });
+  $('quick-map').addEventListener('click', openMapPick);
+  $('pick-back').addEventListener('click', () => history.back());
+  $('pick-use').addEventListener('click', useMapPick);
+  $('sim-play').addEventListener('click', toggleSimPause);
+  $('sim-next').addEventListener('click', simNextTurn);
+  $('sim-list').addEventListener('click', openSteps);
+  $('steps-back').addEventListener('click', () => history.back());
+  wireSimSeek();
 
   $('add-stop').addEventListener('click', () => openStops());
   $('btn-add-stop').addEventListener('click', () => openStops());
@@ -1756,7 +2179,11 @@ function wire() {
   });
   $('refill-no').addEventListener('click', () => { $('refill').hidden = true; });
 
-  $('arrival-done').addEventListener('click', () => { replaceHistory('idle'); show('idle'); });
+  $('arrival-done').addEventListener('click', () => {
+    if (S.simPlan) { backToPlan(); return; }
+    replaceHistory('idle');
+    show('idle');
+  });
 
   $('resume-yes').addEventListener('click', resumeTrip);
   $('resume-no').addEventListener('click', () => { remove('trip'); $('resume').hidden = true; });

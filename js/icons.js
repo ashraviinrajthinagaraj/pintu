@@ -79,6 +79,12 @@ export const UI = {
   food: line('<path d="M7 3v7a2.5 2.5 0 0 0 2.5 2.5V21M4.5 3v6.5M9.5 3v6.5M17 21v-7h-2.5V8c0-3 1.5-5 4-5v18"/>'),
   car: line('<path d="M4 16v-3l2-5.5A2 2 0 0 1 8 6h8a2 2 0 0 1 2 1.5l2 5.5v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1ZM4.5 12.5h15"/><circle cx="7.5" cy="15" r=".6" fill="currentColor"/><circle cx="16.5" cy="15" r=".6" fill="currentColor"/><path d="M6 17v2M18 17v2"/>'),
   chevron: line('<path d="M9 5l7 7-7 7"/>'),
+  swap: line('<path d="M8 20V5M8 5 4 9M8 5l4 4M16 4v15M16 19l-4-4M16 19l4-4"/>'),
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 4.5h4v15h-4ZM13.5 4.5h4v15h-4Z" fill="currentColor"/></svg>',
+  skip: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l10-7.5Z" fill="currentColor"/><path d="M16 4.5h3.2v15H16Z" fill="currentColor"/></svg>',
+  list: line('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2" fill="currentColor"/><circle cx="4.5" cy="12" r="1.2" fill="currentColor"/><circle cx="4.5" cy="18" r="1.2" fill="currentColor"/>'),
+  pin: line('<path d="M12 21.5s7.5-6.7 7.5-12a7.5 7.5 0 1 0-15 0c0 5.3 7.5 12 7.5 12Z"/><circle cx="12" cy="9.5" r="2.6"/>'),
 };
 
 export const CATEGORY_ICONS = { fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };

@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.3.1',
+  version: '0.4.0',
 
   maplibre: {
     version: '5.24.0',
@@ -29,6 +29,8 @@ export const CONFIG = {
   },
 
   // Stops along the route come from OpenStreetMap through these, tried in order.
+  // The map's own tiles, for finding stops when the map hasn't said where it gets them.
+  poiTiles: 'https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf',
   // The main server is often overloaded, so it isn't asked first.
   overpass: [
     'https://overpass.private.coffee/api/interpreter',

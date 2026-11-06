@@ -74,6 +74,27 @@ export class Guidance {
     return state;
   }
 
+  // Placed somewhere else on the route on purpose, in a simulated drive: this
+  // isn't leaving the route, and nothing passed on the way needs announcing.
+  jumpTo(s) {
+    const { cum, length, maneuvers } = this.route;
+    this.s = clamp(s, 0, length);
+    let seg = 0;
+    while (seg < cum.length - 2 && cum[seg + 1] <= this.s) seg++;
+    this.seg = seg;
+    this.offSince = null;
+    this.wrongSince = null;
+    this.lastTime = null;
+    this.everOn = true;
+    this.started = false;
+    this.lastNext = null;
+    this.spoken = new Set();
+    this.stopsReached = new Set();
+    maneuvers.forEach((m, i) => {
+      if (m.isStop && this.s >= m.beginDist - DEST_RADIUS) this.stopsReached.add(i);
+    });
+  }
+
   // Say the current instruction again on request, or after a pause.
   repeat() {
     const st = this.lastState;

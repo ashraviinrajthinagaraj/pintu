@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Guidance, promptDistances } from '../js/guidance.js';
+import { pointAt } from '../js/motion.js';
 import { prepareTrip } from '../js/routing.js';
 import { speech } from '../js/instructions.js';
 import { bearing, haversine } from '../js/geo.js';
@@ -258,4 +259,64 @@ test('the stop itself does not hint at the road beyond it', () => {
   const { states } = drive(route);
   const beforeStop = states.find((s) => s.next.isStop);
   assert.equal(beforeStop.then, null);
+});
+
+test('jumping along the route is not leaving it, and announces nothing passed', () => {
+  const r = prepareTrip(cityTrip());
+  const g = new Guidance(r);
+  const at = (s, time, speed = 10) => {
+    const [lng, lat] = pointAt(r, s);
+    return { lng, lat, accuracy: 8, speed, heading: null, time };
+  };
+  let st = g.update(at(0, 1000));
+  const firstNext = st.nextIndex;
+  // Forward past a turn.
+  const later = r.maneuvers[firstNext + 1].beginDist - 100;
+  g.jumpTo(later);
+  st = g.update(at(later, 2000));
+  assert.equal(st.onRoute, true);
+  assert.equal(st.offRoute, false);
+  assert.ok(Math.abs(st.s - later) < 2, String(st.s));
+  assert.equal(st.nextIndex, firstNext + 1);
+  assert.deepEqual(st.prompts.map((p) => p.kind), ['intro']);
+  assert.equal(st.prompts[0].index, firstNext + 1);
+  // Backward works too, which ordinary driving would refuse.
+  g.jumpTo(50);
+  st = g.update(at(50, 3000));
+  assert.ok(Math.abs(st.s - 50) < 2, String(st.s));
+  assert.equal(st.nextIndex, firstNext);
+  assert.equal(st.offRoute, false);
+  // Staying there for a while doesn't turn into a detour.
+  for (let t = 4000; t < 16000; t += 1000) assert.equal(g.update(at(50, t, 0)).offRoute, false);
+  // The turn it passed earlier is announced again when it comes round.
+  let spoken = [];
+  for (let s = 50; s < r.maneuvers[firstNext].beginDist + 5; s += 10) {
+    spoken = spoken.concat(g.update(at(s, 20000 + s * 100)).prompts.map((p) => `${p.kind}:${p.index}`));
+  }
+  assert.ok(spoken.includes(`now:${firstNext}`), spoken.join());
+});
+
+test('jumping over a stop counts it as passed, and jumping back brings it back', () => {
+  const r = prepareTrip(multiLeg());
+  const stopIndex = r.maneuvers.findIndex((m) => m.isStop);
+  const stopAt = r.maneuvers[stopIndex].beginDist;
+  const g = new Guidance(r);
+  const at = (s, time) => {
+    const [lng, lat] = pointAt(r, s);
+    return { lng, lat, accuracy: 8, speed: 10, heading: null, time };
+  };
+  g.update(at(0, 1000));
+  g.jumpTo(stopAt + 200);
+  let st = g.update(at(stopAt + 200, 2000));
+  assert.equal(st.stopReached, null, 'no "you have reached your stop" for one you skipped');
+  assert.ok(g.stopsReached.has(stopIndex));
+  g.jumpTo(stopAt - 100);
+  st = g.update(at(stopAt - 100, 3000));
+  assert.ok(!g.stopsReached.has(stopIndex));
+  const reached = [];
+  for (let s = stopAt - 100; s < stopAt + 20; s += 10) {
+    const u = g.update(at(s, 4000 + s));
+    if (u.stopReached != null) reached.push(u.stopReached);
+  }
+  assert.deepEqual(reached, [stopIndex]);
 });

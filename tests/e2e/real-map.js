@@ -1,6 +1,9 @@
 // Runs Pintu on the real MapLibre library, which the stub-based tests can't do.
 // Needs a local copy: MAPLIBRE_DIR=/path/with/maplibre-gl.js[.css] and, for the
 // style checks, style-liberty.json and style-dark.json from openfreemap-styles.
+import { lngLatToTile, readPlaces } from '../../js/tiles.js';
+import { encodeTile } from '../helpers/mvt.js';
+import { pointAt } from '../../js/motion.js';
 import { createServer } from 'node:http';
 import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -88,7 +91,17 @@ function demoCity(theme) {
   };
 }
 
-async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1 }) {
+const POIS = [
+  { id: 31, lng: 101.7055, lat: 3.1503, props: { name: 'Petronas Dari Peta', class: 'fuel', subclass: 'fuel', rank: 2 } },
+  { id: 32, lng: 101.7104, lat: 3.1548, props: { class: 'fuel', subclass: 'fuel', rank: 5 } },
+  { id: 33, lng: 101.7052, lat: 3.1502, props: { name: 'Surau Al-Amin', class: 'place_of_worship', subclass: 'place_of_worship' } },
+];
+const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, { poi: POIS.filter((p) => {
+  const [tx, ty] = lngLatToTile(p.lng, p.lat, z);
+  return Math.floor(tx) === x && Math.floor(ty) === y;
+}) });
+
+async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [] }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: 'block', locale: 'ms-MY', timezoneId: 'Asia/Kuala_Lumpur' });
   const errors = [];
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -100,6 +113,12 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
       const m = url.match(/\/styles\/(\w+)/);
       if (m) return route.fulfill({ json: await styleFor(m[1]), headers: CORS });
       if (/\/planet$/.test(url)) return route.fulfill({ json: { tilejson: '3.0.0', tiles: ['https://tiles.openfreemap.org/planet/x/{z}/{x}/{y}.pbf'], minzoom: 0, maxzoom: 14 }, headers: CORS });
+      const t = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+      if (t && tiles) {
+        tileLog.push(url);
+        const [z, x, y] = t.slice(1).map(Number);
+        return route.fulfill({ body: Buffer.from(tileBytes({ z, x, y })), contentType: 'application/x-protobuf', headers: CORS });
+      }
       return route.fulfill({ status: 204, headers: CORS });
     }
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
@@ -182,6 +201,7 @@ const settle = (page, ms = 1500) => page.waitForTimeout(ms);
 
 const results = [];
 async function check(name, fn) {
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return;
   try {
     let timer;
     const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('took over 150 seconds')), 150000); });
@@ -402,6 +422,111 @@ await check('screens on the real renderer', async () => {
     await ctx.close();
     assert.deepEqual(errors, []);
   }
+});
+
+await check('real library and Pintu read the same tile the same way', async () => {
+  const tileLog = [];
+  const { ctx, page, errors } = await open(browser, { styleFor: realStyle, tiles: true, tileLog });
+  await page.evaluate(([lng, lat]) => window.__map.jumpTo({ center: [lng, lat], zoom: 15.5 }), [POIS[0].lng, POIS[0].lat]);
+  await page.waitForFunction(() => window.__map.querySourceFeatures('openmaptiles', { sourceLayer: 'poi' }).length > 0, null, { timeout: 15000 });
+  const theirs = await page.evaluate(() => window.__map.querySourceFeatures('openmaptiles', { sourceLayer: 'poi' })
+    .map((f) => ({ name: f.properties.name, subclass: f.properties.subclass, lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] })));
+  const [x, y] = lngLatToTile(POIS[0].lng, POIS[0].lat, 14).map(Math.floor);
+  const ours = readPlaces(tileBytes({ z: 14, x, y }), { z: 14, x, y });
+  assert.ok(theirs.length >= 2, JSON.stringify(theirs));
+  for (const place of ours.filter((p) => p.name)) {
+    const same = theirs.find((f) => f.name === place.name);
+    assert.ok(same, `the library has ${place.name}`);
+    assert.equal(same.subclass, place.subclass);
+    assert.ok(Math.abs(same.lng - place.lng) < 0.0001 && Math.abs(same.lat - place.lat) < 0.0001, `${same.lng},${same.lat} vs ${place.lng},${place.lat}`);
+  }
+  await ctx.close();
+  assert.deepEqual(errors, []);
+});
+
+await check('real library: stops are found using the same tile address as the map', async () => {
+  const tileLog = [];
+  const { ctx, page, errors } = await open(browser, { styleFor: realStyle, tiles: true, tileLog });
+  await toPreview(page);
+  await page.click('#add-stop');
+  await page.waitForFunction(() => /Petronas Dari Peta/.test(document.getElementById('stops-list').textContent), null, { timeout: 15000 });
+  assert.ok(tileLog.length > 0);
+  assert.ok(tileLog.every((u) => u.includes('/planet/x/')), tileLog.find((u) => !u.includes('/planet/x/')));
+  await page.waitForFunction(() => document.getElementById('stops-status').textContent === '');
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: `${shots}/real-tile-stops.png` });
+  await ctx.close();
+  assert.deepEqual(errors, []);
+});
+
+await check('real library: choosing a start on the map, previewing, then jumping about at speed', async () => {
+  const { ctx, page, errors } = await open(browser, { styleFor: demoCity });
+  await toPreview(page);
+  await page.click('#from-row');
+  await page.click('#quick-map');
+  await page.waitForTimeout(800);
+  const before = await page.evaluate(() => { const c = window.__map.getCenter(); return [c.lng, c.lat, window.__map.getPitch()]; });
+  assert.ok(before[2] < 1, 'looking straight down');
+  await page.screenshot({ path: `${shots}/real-pick.png` });
+  // Drag the real map with a real pointer, as a finger would.
+  await page.mouse.move(350, 500);
+  await page.mouse.down();
+  await page.mouse.move(60, 120, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction(() => !window.__map.isMoving());
+  const centre = await page.evaluate(() => { const c = window.__map.getCenter(); return [c.lng, c.lat]; });
+  assert.ok(Math.abs(centre[0] - before[0]) > 1e-5, 'the map moved');
+  await page.click('#pick-use');
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.waitForFunction(() => document.getElementById('start').textContent === 'Pratonton' && !document.getElementById('start').disabled, null, { timeout: 10000 });
+  await page.waitForTimeout(1200);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.start-pin').length), 1);
+  const pin = await page.evaluate(() => {
+    const r = document.querySelector('.start-pin').getBoundingClientRect();
+    return window.__map.unproject([r.left + r.width / 2, r.top + r.height / 2]);
+  });
+  assert.ok(Math.abs(pin.lng - centre[0]) < 0.0002 && Math.abs(pin.lat - centre[1]) < 0.0002, `${JSON.stringify(pin)} vs ${centre}`);
+  await page.screenshot({ path: `${shots}/real-from-elsewhere.png` });
+
+  await page.click('#start');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.click('#sim-play');
+  const box = await page.locator('#nav-strip').boundingBox();
+  await page.mouse.move(box.x + box.width * 0.3, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await settle(page, 900);
+  const trip = prepareTrip(cityTrip());
+  const car = await page.evaluate(() => window.__map.getCenter());
+  const want = pointAt(trip, trip.length * 0.7);
+  assert.ok(Math.abs(car.lng - want[0]) < 0.004 && Math.abs(car.lat - want[1]) < 0.004, `${car.lng},${car.lat} vs ${want}`);
+  await page.screenshot({ path: `${shots}/real-sim-controls.png` });
+  await page.click('#sim-list');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${shots}/real-sim-steps.png` });
+  await page.click('#steps-back');
+  await page.waitForTimeout(150);
+  await page.locator('#sim-speeds button', { hasText: '30×' }).click();
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.click('#sim-play');
+  await page.waitForTimeout(700);
+  await page.click('#sim-play');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${shots}/real-sim-fast.png` });
+  assert.equal(await page.locator('#sim-seek').isVisible(), true);
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.waitForTimeout(1500);
+  const pose = await page.evaluate(() => ({ pitch: window.__map.getPitch(), bearing: window.__map.getBearing(), padding: window.__map.getPadding() }));
+  assert.ok(pose.pitch < 1 && Math.abs(pose.bearing) < 1, JSON.stringify(pose));
+  assert.equal(pose.padding.top, 0, 'no leftover offset from following the car');
+  await page.screenshot({ path: `${shots}/real-back-to-plan.png` });
+  await ctx.close();
+  assert.deepEqual(errors, []);
 });
 
 await browser.close();
