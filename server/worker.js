@@ -14,6 +14,9 @@
 // the page. With both, Azure takes over when Gemini's daily allowance runs out. With
 // neither, /speak says so and the page uses the phone's own voice.
 
+// Shown when the server's address is opened, so it's clear which code is running.
+const SERVER_VERSION = '2026-11-07';
+
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
 
@@ -687,7 +690,7 @@ export default {
 
     // Opening the address in a browser shows it's up, and nothing else.
     if (url.pathname === '/' && !origin) {
-      return new Response('Pintu server is running.', { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return new Response(`Pintu server is running. Version ${SERVER_VERSION}.`, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
     }
     if (!ALLOWED_ORIGINS.includes(origin)) return new Response('Not allowed', { status: 403 });
     if (request.method === 'OPTIONS') {

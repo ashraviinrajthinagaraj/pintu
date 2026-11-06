@@ -1,6 +1,11 @@
 # Lets Cloudflare update the server by itself whenever this repository changes.
 name = "pintu"
+account_id = "95648b26cfb6dbb11b9e56fea8980798"
 main = "worker.js"
 compatibility_date = "2025-09-01"
 # Anything added in Cloudflare's dashboard stays as it is. Secrets always do.
 keep_vars = true
+
+# Keeps the logs that are already switched on in Cloudflare.
+[observability]
+enabled = true

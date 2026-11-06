@@ -41,7 +41,7 @@ test('only answers Pintu\'s own page', async () => {
 test('says it\'s running when opened in a browser, and nothing more', async () => {
   const res = await ask('/', { origin: null });
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /running/);
+  assert.match(await res.text(), /running\. Version \d{4}-\d{2}-\d{2}\./);
 });
 
 test('only GET', async () => {
@@ -869,6 +869,7 @@ test('the settings for updating the server point at the real thing', () => {
   const [, main] = settings.match(/^main = "([^"]+)"$/m);
   assert.ok(existsSync(new URL(`../server/${main}`, import.meta.url)));
   assert.match(settings, /^keep_vars = true$/m);
+  assert.match(settings, /^account_id = "[0-9a-f]{32}"$/m);
 });
 
 test('the same settings work from the top of the repository', () => {
@@ -877,4 +878,5 @@ test('the same settings work from the top of the repository', () => {
   const [, main] = settings.match(/^main = "([^"]+)"$/m);
   assert.ok(existsSync(new URL(`../${main}`, import.meta.url)));
   assert.match(settings, /^keep_vars = true$/m);
+  assert.match(settings, /^account_id = "[0-9a-f]{32}"$/m);
 });
