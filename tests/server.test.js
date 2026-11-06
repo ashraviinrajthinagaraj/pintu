@@ -1,6 +1,7 @@
 // Pintu's small server, run here against stand-ins for the sites it talks to.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
 import worker from '../server/worker.js';
 import { CHARACTER_IDS } from '../js/characters.js';
 
@@ -860,4 +861,12 @@ test('a shelf that throws at once still never costs the line', async () => {
   } finally {
     delete globalThis.caches;
   }
+});
+
+test('the settings for updating the server point at the real thing', () => {
+  const settings = readFileSync(new URL('../server/wrangler.toml', import.meta.url), 'utf8');
+  assert.match(settings, /^name = "pintu"$/m, 'must match the Worker\'s name in Cloudflare');
+  const [, main] = settings.match(/^main = "([^"]+)"$/m);
+  assert.ok(existsSync(new URL(`../server/${main}`, import.meta.url)));
+  assert.match(settings, /^keep_vars = true$/m);
 });
