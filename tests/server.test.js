@@ -870,3 +870,11 @@ test('the settings for updating the server point at the real thing', () => {
   assert.ok(existsSync(new URL(`../server/${main}`, import.meta.url)));
   assert.match(settings, /^keep_vars = true$/m);
 });
+
+test('the same settings work from the top of the repository', () => {
+  const settings = readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
+  assert.match(settings, /^name = "pintu"$/m);
+  const [, main] = settings.match(/^main = "([^"]+)"$/m);
+  assert.ok(existsSync(new URL(`../${main}`, import.meta.url)));
+  assert.match(settings, /^keep_vars = true$/m);
+});
