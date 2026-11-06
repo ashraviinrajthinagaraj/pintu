@@ -15,7 +15,7 @@
 // neither, /speak says so and the page uses the phone's own voice.
 
 // Shown when the server's address is opened, so it's clear which code is running.
-const SERVER_VERSION = '2026-11-07';
+const SERVER_VERSION = '2026-11-07.2';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -154,7 +154,7 @@ function parseShops(html) {
 /* ---------- Human voices ---------- */
 
 // Change this when a character's voice changes, so old recordings aren't reused.
-const SPEECH_VERSION = '1';
+const SPEECH_VERSION = '2';
 const MAX_SPEECH = 420;
 const AUDIO_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
 
@@ -498,11 +498,26 @@ async function designedVoice(who, lang, key, trace) {
   return id;
 }
 
-// The last audio in Google's answer, found without reading the whole thing as data.
+// The first bytes of encoded sound, to see what kind it is: "52 49 46 46" is a WAV file.
+function headOf(encoded) {
+  try {
+    return [...atob(encoded.slice(0, 8))].slice(0, 4).map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ');
+  } catch {
+    return '';
+  }
+}
+
+// The last audio in Google's answer, found without reading the whole thing as data,
+// with the kind of sound it says it is. The phone needs that: Google's audio is often
+// bare sound with no header, which can't be played until it's wrapped up.
 function encodedAudio(answer) {
   let found = null;
   for (const m of answer.matchAll(/"data"\s*:\s*"([A-Za-z0-9+/=\\]{8,})"/g)) found = m[1];
-  return found ? { audio: found.replace(/\\/g, ''), type: ENCODED_AUDIO } : null;
+  if (!found) return null;
+  const audio = found.replace(/\\/g, '');
+  const at = Math.max(answer.lastIndexOf('"mime_type"'), answer.lastIndexOf('"mimeType"'));
+  const kind = at < 0 ? '' : (answer.slice(at, at + 160).match(/"mime_?[tT]ype"\s*:\s*"([^"\n]{1,100})"/)?.[1] || '');
+  return { audio: kind ? `${kind}\n${audio}` : audio, type: ENCODED_AUDIO, kind, size: audio.length, head: headOf(audio) };
 }
 
 async function geminiSpeak(text, lang, who, key, trace) {
@@ -535,7 +550,7 @@ async function geminiSpeak(text, lang, who, key, trace) {
       const ms = Date.now() - started;
       if (res.ok) {
         const clip = encodedAudio(answer);
-        trace?.push({ step: 'speak', model, voice: name, status: res.status, ms, ...(clip ? { size: clip.audio.length } : { why: `no audio: ${reason(answer, key)}` }) });
+        trace?.push({ step: 'speak', model, voice: name, status: res.status, ms, ...(clip ? { size: clip.size, kind: clip.kind, head: clip.head } : { why: `no audio: ${reason(answer, key)}` }) });
         if (clip) return clip;
         lastWhy = 'Google answered with no audio';
         continue;

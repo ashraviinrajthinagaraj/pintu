@@ -535,7 +535,7 @@ test('Google: a line comes back as audio, asked for the way its documents say', 
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type'), /base64/, 'left for the phone to decode');
   assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
-  assert.equal(await res.text(), SOUND);
+  assert.equal(await res.text(), `audio/wav\n${SOUND}`, 'with what kind of sound it is');
   const [call] = interactions(asked);
   assert.equal(call.method, 'POST');
   assert.equal(call.headers['x-goog-api-key'], env.GEMINI_API_KEY);
@@ -758,7 +758,7 @@ test('Google: a recording kept on the shelf keeps its kind of audio', async () =
     await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env });
     const again = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env });
     assert.match(again.headers.get('content-type'), /base64/);
-    assert.equal(await again.text(), SOUND);
+    assert.equal(await again.text(), `audio/wav\n${SOUND}`);
     assert.equal(interactions(asked).length, 1);
   } finally {
     delete globalThis.caches;
@@ -879,4 +879,23 @@ test('the same settings work from the top of the repository', () => {
   assert.ok(existsSync(new URL(`../${main}`, import.meta.url)));
   assert.match(settings, /^keep_vars = true$/m);
   assert.match(settings, /^account_id = "[0-9a-f]{32}"$/m);
+});
+
+test('Google: bare sound is passed on with what it is, so the phone can wrap it up', async () => {
+  const pcm = Buffer.alloc(48, 1).toString('base64');
+  google({
+    voices: [{ id: 'v', display_name: 'pintu-captain-ms' }],
+    speak: () => new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'audio', mime_type: 'audio/L16;codec=pcm;rate=24000', data: pcm }] }] })),
+  });
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(await res.text(), `audio/L16;codec=pcm;rate=24000\n${pcm}`);
+});
+
+test('the voice test says what kind of sound came back', async () => {
+  google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }] });
+  const report = await (await say('/speak?test=1&who=captain&lang=ms', { env: freshKey() })).json();
+  const spoke = report.steps.find((n) => n.step === 'speak');
+  assert.equal(spoke.kind, 'audio/wav');
+  assert.equal(spoke.head, '52 49 46 46');
+  assert.equal(spoke.size, SOUND.length);
 });

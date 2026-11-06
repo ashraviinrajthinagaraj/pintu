@@ -2751,9 +2751,9 @@ await check('human voice: recordings stay on the phone, through a reload and an 
   await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
   await line();
   await page.waitForFunction(() => window.__played.length > 0);
-  await page.waitForFunction(async () => (await (await caches.open('pintu-voice-1')).keys()).length > 0);
+  await page.waitForFunction(async () => (await (await caches.open('pintu-voice-2')).keys()).length > 0);
   const sw = await readFile(path.join(root, 'sw.js'), 'utf8');
-  assert.match(sw, /VOICE = 'pintu-voice-1'/);
+  assert.match(sw, /VOICE = 'pintu-voice-2'/);
   assert.match(sw, /new Set\(\[SHELL, LIBS, TILES, VOICE\]\)/);
   await page.reload();
   await page.waitForFunction(() => window.__map?.ready);
@@ -2776,7 +2776,7 @@ await check('human voice: with the server gone, what\'s on the phone still plays
   await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
   await line('Belok kiri.');
   await page.waitForFunction(() => window.__played.length > 0);
-  await page.waitForFunction(async () => (await (await caches.open('pintu-voice-1')).keys()).length > 0);
+  await page.waitForFunction(async () => (await (await caches.open('pintu-voice-2')).keys()).length > 0);
   gone = true;
   await page.reload();
   await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'off');
@@ -2910,13 +2910,35 @@ await check('human voice: audio left encoded by the server is decoded and really
   assert.equal(heard, 'human');
   assert.deepEqual(await said(page), []);
   const kept = await page.evaluate(async () => {
-    const box = await caches.open('pintu-voice-1');
+    const box = await caches.open('pintu-voice-2');
     const [first] = await box.keys();
     const blob = await (await box.match(first)).blob();
     return { size: blob.size, type: blob.type };
   });
   assert.equal(kept.size, wav.length);
   assert.equal(kept.type, 'audio/wav');
+  await ctx.close();
+});
+
+await check('human voice: bare sound from Google is wrapped up and really plays', async () => {
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return { ready: true };
+    return { __encoded: `audio/L16;codec=pcm;rate=24000\n${Buffer.alloc(9600).toString('base64')}` };
+  };
+  const { ctx, page } = await newApp(browser, { ...withCast('standard'), realAudio: true, appServer: server });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await page.click('#btn-settings');
+  const heard = await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('Belok kiri.', { evenIfMuted: true, wait: 5000 })));
+  assert.equal(heard, 'human');
+  assert.deepEqual(await said(page), []);
+  const kept = await page.evaluate(async () => {
+    const box = await caches.open('pintu-voice-2');
+    const [first] = await box.keys();
+    const blob = await (await box.match(first)).blob();
+    return { size: blob.size, type: blob.type };
+  });
+  assert.deepEqual(kept, { size: 44 + 9600, type: 'audio/wav' });
   await ctx.close();
 });
 

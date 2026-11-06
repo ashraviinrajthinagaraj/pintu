@@ -1,18 +1,18 @@
 // Keeps Pintu opening with poor signal. The app's own files come from the
 // network when possible so updates arrive by themselves. Searches, routes and
 // stops are never stored here.
-const VERSION = 'pintu-0.6.2';
+const VERSION = 'pintu-0.6.3';
 const SHELL = `${VERSION}-shell`;
 const LIBS = `${VERSION}-libs`;
 const TILES = 'pintu-tiles-1';
-const VOICE = 'pintu-voice-1';   // recordings of spoken lines, kept by voice.js
+const VOICE = 'pintu-voice-2';   // recordings of spoken lines, kept by voice.js
 const MAX_TILES = 2500;
 
 const FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/car-gl.js', 'js/car-mesh.js', 'js/config.js', 'js/format.js', 'js/geo.js', 'js/guidance.js', 'js/i18n.js',
   'js/icons.js', 'js/instructions.js', 'js/lanes.js', 'js/location.js', 'js/map.js', 'js/motion.js', 'js/places.js',
-  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/tiles.js', 'js/vehicle.js', 'js/characters.js', 'js/delivery.js', 'js/drive-watch.js',
+  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/tiles.js', 'js/vehicle.js', 'js/characters.js', 'js/audio.js', 'js/delivery.js', 'js/drive-watch.js',
   'js/cast/adik.js', 'js/cast/agent.js', 'js/cast/captain.js', 'js/cast/cikgu.js', 'js/cast/commentator.js', 'js/cast/makcik.js', 'js/cast/trailer.js', 'js/cast/uncle.js', 'js/links.js', 'js/malls.js', 'js/net.js', 'js/weather.js', 'js/vehicle-ui.js',
   'js/voice.js',
   'fonts/Barlow-Medium.woff', 'fonts/Barlow-SemiBold.woff', 'fonts/Barlow-Bold.woff',

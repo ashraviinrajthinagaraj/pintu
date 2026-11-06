@@ -4,6 +4,7 @@
 // A direction must never be lost or late, so a recording only gets a moment to
 // arrive. If it isn't here in time, the phone speaks straight away.
 import { CONFIG } from './config.js';
+import { decodeAudio } from './audio.js';
 import { clipsOf, isDirection, plainSpeech } from './delivery.js';
 
 const synth = () => (typeof speechSynthesis !== 'undefined' ? speechSynthesis : null);
@@ -20,9 +21,9 @@ const REST_MS = 30 * 60000;           // today's free allowance has run out
 const JOKE_LATE_MS = 1500;            // how long a joke can keep people waiting after a direction
 const BETWEEN_CLIPS_MS = 200;         // a person draws breath before the punchline
 const MAX_CLIP_MS = 30000;            // in case a phone never says a recording has ended
-const SPEECH_VERSION = '1';           // matches the server's, so old recordings retire
+const SPEECH_VERSION = '2';           // matches the server's, so old recordings retire
 const MAX_SPEECH = 420;               // the longest line the server takes
-const CLIP_CACHE = 'pintu-voice-1';
+const CLIP_CACHE = 'pintu-voice-2';
 const MAX_KEPT_CLIPS = 400;
 const MAX_MEMORY_CLIPS = 80;
 const AT_ONCE = 2;                    // recordings fetched at the same time, ahead of need
@@ -167,14 +168,6 @@ async function keptClip(address) {
 let lastProblem = null;
 export const voiceProblem = () => lastProblem;
 
-// Google's audio arrives encoded, because the server's too small to decode it.
-function decodeClip(encoded) {
-  const raw = atob(encoded.trim());
-  const bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  return new Blob([bytes], { type: 'audio/wav' });
-}
-
 async function fetchClip(address) {
   let res;
   try {
@@ -199,7 +192,8 @@ async function fetchClip(address) {
     throw new Error(said);
   }
   const type = res.headers.get('content-type') || '';
-  const blob = /base64/.test(type) ? decodeClip(await res.text()) : await res.blob();
+  // Google's audio arrives encoded, because the server's too small to decode it.
+  const blob = /base64/.test(type) ? decodeAudio(await res.text()) : await res.blob();
   humanState = 'on';
   lastProblem = null;
   const box = await shelf();
