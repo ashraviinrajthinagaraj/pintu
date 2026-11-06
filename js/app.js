@@ -11,7 +11,11 @@ import { MapView } from './map.js';
 import { Motion } from './motion.js';
 import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
-import { RouteError, distanceAfter, fetchLaneCounts, fetchRoutes, timeBetween } from './routing.js';
+import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, timeBetween } from './routing.js';
+import { CHARACTER_IDS, characterAbout, characterName, characterVoice, dress, pick, sample } from './characters.js';
+import { checkRouteWeather } from './weather.js';
+import { parseLocationText, readResolved, resolveShortLink } from './links.js';
+import { fetchShops, mallFor, searchShops } from './malls.js';
 import { reversePlace, searchPlaces } from './search.js';
 import { load, remove, save } from './store.js';
 import { DEFAULT_LOOKS, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from './vehicle.js';
@@ -38,6 +42,15 @@ const SIM_SPEEDS = [1, 4, 10, 30];
 const SIM_FAST = 10;           // from here it's too quick to talk over, or to read lanes
 const SIM_LEAD_M = 150;        // jumping to a turn lands this far before it
 const SIM_END_GAP_M = 60;      // a jump doesn't end the trip by itself
+const OVER_BY_KMH = 5;         // speedometers and GPS differ a little
+const OVER_HOLD_MS = 4000;     // passing a slower car shouldn't set it off
+const OVER_REPEAT_MS = 90000;
+const TURNS_ONLY = new Set(['now', 'arrive', 'stop', 'repeat']);
+const WEATHER_REFRESH_MS = 20 * 60000;
+const RAIN_CHIP_M = 30000;     // far enough ahead to matter
+const RAIN_SAY_M = 15000;
+const HUD_CONTROLS_MS = 6000;
+const HUD_BAR_M = 500;         // the bar fills over the last stretch before a turn
 
 const S = {
   view: 'idle',
@@ -53,7 +66,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -64,6 +77,14 @@ const S = {
   simStops: [],
   simPlan: null,
   simScrub: false,
+  greeted: false,
+  overSince: null,
+  lastOverSaid: 0,
+  weather: null,
+  weatherSaid: null,
+  arrivedAt: null,
+  returnMode: null,
+  mall: null,
   following: true,
   followTimer: null,
   followPad: { top: 0, bottom: 0, left: 0, right: 0 },
@@ -107,23 +128,25 @@ let mapView;
 
 const vehicleUI = initVehicleUI({
   getVehicle: () => vehicle(),
-  getLook: () => S.looks[S.mode],
+  getLook: () => S.looks[driveMode()],
   setLook: (look) => {
-    S.looks[S.mode] = look;
+    S.looks[driveMode()] = look;
     save('looks', S.looks);
     S.lastPose = null;
   },
   setVehicle: (v) => {
-    if (v) S.vehicles[S.mode] = v;
-    else delete S.vehicles[S.mode];
+    if (v) S.vehicles[driveMode()] = v;
+    else delete S.vehicles[driveMode()];
     saveVehicles();
     renderAfterVehicleChange();
   },
-  getMode: () => S.mode,
+  getMode: () => driveMode(),
   onDone: () => history.back(),
 });
 
 function vehicle() { return S.vehicles[S.mode] || null; }
+// The vehicle in question, even while you're on foot.
+function driveMode() { return S.mode === 'walk' ? (S.returnMode || load('mode', 'car')) : S.mode; }
 function saveVehicles() { save('vehicles', S.vehicles); }
 
 /* ---------- Words and icons ---------- */
@@ -158,6 +181,7 @@ function applyStaticText() {
   $('recents-clear').textContent = t('clear');
   $('mode-car').textContent = t('car');
   $('mode-moto').textContent = t('moto');
+  $('mode-walk').textContent = t('walk');
   $('avoid-tolls-label').textContent = t('avoidTolls');
   $('add-stop-label').textContent = t('addStopShort');
   $('add-stop').setAttribute('aria-label', t('addStop'));
@@ -186,6 +210,45 @@ function applyStaticText() {
   $('set-lang-title').textContent = t('setLang');
   $('set-voice-title').textContent = t('setVoice');
   $('voice-test').textContent = t('voiceTest');
+  $('voice-level-label').textContent = t('setVoiceLevel');
+  $('voice-full').textContent = t('voiceFull');
+  $('voice-turns').textContent = t('voiceTurns');
+  $('voice-char-label').textContent = t('setVoiceChar');
+  $('voice-char-note').textContent = t('voiceCharNote');
+  $('set-limit-title').textContent = t('setLimit');
+  $('limit-text').textContent = t('limitText');
+  $('limit-on-label').textContent = t('limitOn');
+  $('set-weather-title').textContent = t('setWeather');
+  $('weather-text').textContent = t('weatherText');
+  $('weather-on-label').textContent = t('weatherOn');
+  label($('weather-back'), t('back'), UI.close);
+  label($('mall-back'), t('back'), UI.close);
+  $('weather-title').textContent = t('weatherTitle');
+  $('weather-note').textContent = t('weatherNote');
+  $('weather-credit').textContent = t('weatherCredit');
+  $('weather-rivers').textContent = t('checkRivers');
+  $('weather-rivers').href = CONFIG.weather.riversUrl;
+  $('weather-roads').textContent = t('checkRoads');
+  $('weather-roads').href = CONFIG.weather.roadsUrl;
+  $('plan-weather-icon').innerHTML = UI.rain;
+  $('plan-weather-chev').innerHTML = UI.chevron;
+  $('plan-mall-icon').innerHTML = UI.store;
+  $('plan-mall-chev').innerHTML = UI.chevron;
+  $('mall-map').textContent = t('mallMap');
+  $('mall-list').textContent = t('mallList');
+  $('mall-search').placeholder = t('mallSearch');
+  $('mall-search').setAttribute('aria-label', t('mallSearch'));
+  $('mall-note').textContent = t('mallNote');
+  $('btn-hud').textContent = 'HUD';
+  $('btn-hud').setAttribute('aria-label', t('hudOpen'));
+  $('hm-unit').textContent = t('speedUnit');
+  $('hm-tip').textContent = t('hudTip');
+  $('hm-close').textContent = t('hudClose');
+  renderHudMirror();
+  $('arrival-walk').textContent = t('walkToDoor');
+  $('search-paste-icon').innerHTML = UI.paste;
+  $('search-paste-label').textContent = t('pasteLink');
+  renderCharacters();
   $('set-theme-title').textContent = t('setTheme');
   $('theme-auto').textContent = t('themeAuto');
   $('theme-day').textContent = t('themeDay');
@@ -262,6 +325,11 @@ function renderSegments() {
   const set = (id, on) => $(id).setAttribute('aria-checked', String(on));
   set('mode-car', S.mode === 'car');
   set('mode-moto', S.mode === 'motorcycle');
+  set('mode-walk', S.mode === 'walk');
+  set('voice-full', S.settings.voiceLevel === 'full');
+  set('voice-turns', S.settings.voiceLevel === 'turns');
+  $('limit-on').checked = S.settings.speedLimit;
+  $('weather-on').checked = S.settings.weather;
   set('lang-ms', S.settings.lang === 'ms');
   set('lang-en', S.settings.lang === 'en');
   set('theme-auto', S.settings.theme === 'auto');
@@ -270,7 +338,7 @@ function renderSegments() {
   $('avoid-tolls').checked = S.avoidTolls;
   $('solat-on').checked = S.settings.solat;
   // Motorcycles don't pay tolls in Malaysia, so the switch means nothing for them.
-  $('toll-wrap').hidden = S.mode === 'motorcycle';
+  $('toll-wrap').hidden = S.mode !== 'car';
 }
 
 function renderClock() {
@@ -327,6 +395,9 @@ function render() {
   $('preview').hidden = view !== 'preview' || overlay === 'pickmap' || overlay === 'stops';
   $('map-pick').hidden = overlay !== 'pickmap';
   $('steps').hidden = overlay !== 'steps';
+  $('weather').hidden = overlay !== 'weather';
+  $('mall').hidden = overlay !== 'mall';
+  $('hudmode').hidden = overlay !== 'hudmode';
   $('nav').hidden = view !== 'nav';
   $('arrival').hidden = view !== 'arrival';
   $('settings').hidden = overlay !== 'settings';
@@ -359,9 +430,11 @@ addEventListener('popstate', (e) => {
   if (was === 'stops' && S.overlay !== 'stopsearch') closeStopsPanel();
   if (was === 'stopsearch' && !S.overlay) closeStopsPanel();
   if (was === 'endsearch' || was === 'stopsearch') S.searchFor = null;
+  if (was === 'hudmode') leaveFullscreen();
+  if (was === 'mall') S.mallCtrl?.abort();
   if (st.view === 'idle' && (S.view === 'preview' || S.view === 'search')) leaveDestination();
   // History can point at a trip that has already ended.
-  const stale = (st.view === 'nav' && S.view !== 'nav') || st.view === 'arrival' || (st.view === 'preview' && !S.dest);
+  const stale = (st.view === 'nav' && S.view !== 'nav') || (st.view === 'arrival' && S.view !== 'arrival') || (st.view === 'preview' && !S.dest);
   show(stale ? 'idle' : st.view);
   // Choosing on the map moved it. Put the route back in view.
   if (was === 'pickmap' && S.overlay !== 'pickmap' && S.view === 'preview') fitRoutes();
@@ -372,7 +445,7 @@ const bottomObserver = 'ResizeObserver' in window ? new ResizeObserver(() => upd
 function observeBottom() {
   if (bottomObserver) {
     bottomObserver.disconnect();
-    for (const id of ['preview', 'nav-bar', 'where', 'stops', 'steps']) bottomObserver.observe($(id));
+    for (const id of ['preview', 'nav-bar', 'where', 'stops', 'steps', 'weather']) bottomObserver.observe($(id));
   }
   updateBottomInset();
 }
@@ -380,7 +453,8 @@ function observeBottom() {
 function bottomElement() {
   if (S.overlay === 'stops') return $('stops');
   if (S.overlay === 'steps') return $('steps');
-  if (S.overlay === 'pickmap') return null;
+  if (S.overlay === 'weather') return $('weather');
+  if (S.overlay === 'pickmap' || S.overlay === 'hudmode') return null;
   if (S.view === 'preview') return $('preview');
   if (S.view === 'nav') return $('nav-bar');
   if (S.view === 'idle') return $('where');
@@ -506,6 +580,10 @@ function frame(now) {
 
 function updateCar(lng, lat, heading) {
   S.carDirty = false;
+  if (S.mode === 'walk') {
+    mapView.setCarOn(false);
+    return;
+  }
   const look = S.looks[S.mode];
   const lane = S.cam.lane || 0;
   const lanePx = CAR_LANE_M / mapView.metresPerPixel(lat);
@@ -522,8 +600,9 @@ function navFrame(pose, now, dt, moved, inLanes) {
   const speedUp = S.sim ? Math.max(0, Math.log2(S.sim.factor / 4)) * 0.65 : 0;
   // A paused simulated car is still on that road, so the view holds still.
   const speedNow = S.sim ? S.sim.roadSpeed : S.fix?.speed;
-  const targetZoom = inLanes ? laneZoom(speedNow) : zoomForSpeed(speedNow) - speedUp;
-  const targetPitch = S.settings.view3d ? (inLanes ? 68 : 60) : 0;
+  const walking = S.mode === 'walk';
+  const targetZoom = walking ? 18.4 : inLanes ? laneZoom(speedNow) : zoomForSpeed(speedNow) - speedUp;
+  const targetPitch = !S.settings.view3d ? 0 : walking ? 45 : inLanes ? 68 : 60;
   const ease = 1 - Math.exp(-dt * (inLanes ? 1.4 : 1.1));
   const before = { ...S.cam };
   S.cam.zoom += (targetZoom - S.cam.zoom) * ease;
@@ -564,27 +643,33 @@ function laneZoom(speed) {
 
 function startScene(route) {
   S.scene = new LaneScene(route);
-  S.laneFetch = { routeId: route.id, until: 0, busy: false, retryAt: 0, failures: 0, counts: [] };
+  S.laneFetch = { routeId: route.id, until: 0, busy: false, retryAt: 0, failures: 0, counts: [], limits: [] };
   mapView?.setLanes(NO_LANES);
 }
 
-// Lane counts come a stretch at a time, as the road ahead needs them.
-async function loadLaneCounts(s) {
+// Lane counts and speed limits come a stretch at a time, as the road ahead needs them.
+async function loadRoadDetails(s) {
   const f = S.laneFetch;
   const route = S.route;
-  if (!route || !S.settings.view3d || f.busy || f.failures >= 3 || Date.now() < f.retryAt) return;
+  if (!route || S.mode === 'walk' || !(S.settings.view3d || S.settings.speedLimit)) return;
+  if (f.busy || f.failures >= 3 || Date.now() < f.retryAt) return;
   if (s < f.until - 3000 || f.until >= route.length) return;
   f.busy = true;
   const from = Math.max(0, Math.max(s, f.until) - 50);
   const to = Math.min(route.length, from + LANE_CHUNK_M);
   try {
-    const segs = await fetchLaneCounts(route, from, to, { mode: S.mode });
+    const { counts, limits } = await fetchRoadDetails(route, from, to, { mode: S.mode });
     if (S.laneFetch !== f || !S.scene) return;
-    f.counts.push(...segs);
+    f.counts.push(...counts);
+    f.limits.push(...limits);
     f.until = to;
     f.failures = 0;
     S.scene.setCounts(f.counts);
-    if (S.lastState && S.fix) updateScene(S.lastState, S.fix);
+    if (S.lastState && S.fix) {
+      updateScene(S.lastState, S.fix);
+      renderSpeed(S.fix, S.lastState);
+      if (S.overlay === 'hudmode') renderHud(S.lastState, S.fix);
+    }
   } catch {
     f.failures++;
     f.retryAt = Date.now() + LANE_RETRY_MS;
@@ -597,7 +682,8 @@ function updateScene(st, fix) {
   const scene = S.scene;
   if (!scene) return;
   const tooQuick = S.simScrub || (S.sim && S.sim.factor >= SIM_FAST);
-  if (!S.settings.view3d || !st.onRoute || tooQuick) {
+  if (!tooQuick) loadRoadDetails(st.s);
+  if (!S.settings.view3d || !st.onRoute || tooQuick || S.mode === 'walk') {
     if (scene.active) {
       scene.active = false;
       scene.builtAt = null;
@@ -607,13 +693,12 @@ function updateScene(st, fix) {
     }
     return;
   }
-  loadLaneCounts(st.s);
   const wasActive = scene.active;
   if (scene.update(st.s, fix.speed)) {
     mapView?.setLanes(scene.features);
     S.lastTrimS = null;
   }
-  if (scene.active && !wasActive && !load('laneNoteSeen', false)) {
+  if (scene.active && !wasActive && S.overlay !== 'hudmode' && !load('laneNoteSeen', false)) {
     save('laneNoteSeen', true);
     // Up high, so it never covers the car or the lanes it's talking about.
     toast(t('laneNote'), 7000, { top: true });
@@ -702,6 +787,7 @@ function renderSearch(results) {
   $('recents-wrap').hidden = !empty || !recents.length;
   $('recents').replaceChildren(...recents.map((p) => placeButton(p, pick)));
   $('search-tip').hidden = !empty || S.searchFor === 'start';
+  $('search-paste').hidden = !empty || !navigator.clipboard?.readText;
   $('search-quick').hidden = !empty || S.searchFor !== 'start';
 }
 
@@ -714,8 +800,83 @@ function onSearchInput() {
     renderSearch([]);
     return;
   }
+  const shared = parseLocationText(q);
+  if (shared) {
+    openShared(shared);
+    return;
+  }
   $('search-status').textContent = t('searching');
   S.searchTimer = setTimeout(() => runSearch(q), 350);
+}
+
+// A link or coordinates someone sent, ready to go to.
+async function openShared(shared) {
+  const status = $('search-status');
+  const ctrl = new AbortController();
+  S.searchCtrl = ctrl;
+  let found = shared;
+  if (found.kind === 'short') {
+    if (!CONFIG.server) {
+      status.textContent = t('linkNeedsServer');
+      renderSearch([]);
+      return;
+    }
+    status.textContent = t('linkOpening');
+    renderSearch([]);
+    try {
+      found = readResolved(await resolveShortLink(found.url, { signal: ctrl.signal }), found.name);
+    } catch {
+      if (ctrl.signal.aborted) return;
+      status.textContent = t('linkFailed');
+      return;
+    }
+    if (ctrl.signal.aborted) return;
+  }
+  if (found.kind === 'place') {
+    status.textContent = '';
+    renderSearch([found.place]);
+  } else if (found.kind === 'search') {
+    status.textContent = t('searching');
+    runSearch(found.query);
+  } else {
+    status.textContent = t('linkUnknown');
+    renderSearch([]);
+  }
+}
+
+async function pasteLink() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) throw new Error('nothing to paste');
+    $('search-input').value = text.trim();
+    onSearchInput();
+  } catch {
+    toast(t('pasteFailed'), 5000);
+    $('search-input').focus();
+  }
+}
+
+// Arriving with a link: shared to Pintu from another app, or opened from a message.
+function openIncoming() {
+  const q = new URLSearchParams(location.search);
+  const text = q.get('to') || [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n');
+  if (!text) return;
+  history.replaceState(history.state, '', location.pathname);
+  const shared = parseLocationText(text);
+  if (shared?.kind === 'place') {
+    if (q.get('name')) {
+      shared.place.name = q.get('name');
+      shared.place.unnamed = false;
+    }
+    gps.start();
+    pushHistory('preview');
+    S.stops = [];
+    openPreview(shared.place);
+    return;
+  }
+  openSearch();
+  $('search-input').value = text;
+  onSearchInput();
 }
 
 async function runSearch(q) {
@@ -742,7 +903,7 @@ function addRecent(place) {
 
 function chooseFromSearch(place) {
   $('search-input').blur();
-  addRecent(place);
+  if (!place.unnamed) addRecent(place);
   replaceHistory('preview');
   S.stops = [];
   openPreview(place);
@@ -880,6 +1041,22 @@ function openPreview(place) {
   show('preview');
   renderSegments();
   loadRoutes();
+  if (place.unnamed) nameDestination(place);
+}
+
+// All we have is a position. The search service can usually put a name to it.
+async function nameDestination(place) {
+  try {
+    const named = await reversePlace(place.lng, place.lat);
+    if (!named || S.dest !== place) return;
+    S.dest = named;
+    $('dest-name').textContent = named.name;
+    $('dest-detail').textContent = named.detail || '';
+    $('dest-detail').hidden = !named.detail;
+    renderEnds();
+    addRecent(named);
+    renderPlanMall();
+  } catch { /* the coordinates still work */ }
 }
 
 function leaveDestination() {
@@ -903,22 +1080,12 @@ async function onLongPress(lngLat) {
     lng: lngLat.lng,
     lat: lngLat.lat,
     country: '',
+    unnamed: true,
   };
   gps.start();
   pushHistory('preview');
   S.stops = [];
   openPreview(place);
-  try {
-    const named = await reversePlace(lngLat.lng, lngLat.lat);
-    if (named && S.dest === place) {
-      S.dest = named;
-      $('dest-name').textContent = named.name;
-      $('dest-detail').textContent = named.detail || '';
-      $('dest-detail').hidden = !named.detail;
-      renderEnds();
-      addRecent(named);
-    }
-  } catch { /* the coordinates still work */ }
 }
 
 async function loadRoutes() {
@@ -1092,6 +1259,8 @@ function renderPlan() {
   }));
 
   renderPlanFuel(route);
+  renderPlanWeather(route);
+  renderPlanMall();
   renderPlanPrayer(route);
   renderStrip($('preview-strip'), route, 0, false);
   // A line with nothing on it but the destination says nothing.
@@ -1101,6 +1270,7 @@ function renderPlan() {
 function renderPlanFuel(route) {
   const v = vehicle();
   const row = $('plan-fuel');
+  row.hidden = S.mode === 'walk';
   const kind = v?.kind || 'petrol';
   $('plan-fuel-icon').innerHTML = kind === 'ev' ? UI.ev : UI.fuel;
   $('plan-fuel-edit').textContent = t(v ? 'vehEditBtn' : 'vehAddBtn');
@@ -1412,7 +1582,12 @@ function saveTrip() {
 }
 
 function startGuidance({ simulate }) {
-  S.guidance = new Guidance(S.route);
+  S.guidance = new Guidance(S.route, { walking: S.mode === 'walk' });
+  S.greeted = false;
+  S.overSince = null;
+  S.lastOverSaid = 0;
+  $('arrival-quip').textContent = '';
+  S.carDirty = true;
   motion.setRoute(S.route);
   startScene(S.route);
   S.lastState = null;
@@ -1480,13 +1655,16 @@ function onNavFix(fix, now) {
 
   renderSign(st);
   renderEta(st);
-  renderSpeed(fix);
+  renderSpeed(fix, st);
   updateScene(st, fix);
   renderNavRange(st);
+  keepWeatherFresh(st);
   renderChips();
   renderStrip($('nav-strip'), S.route, st.s, true);
+  if (S.overlay === 'hudmode') renderHud(st, fix);
 
   for (const p of st.prompts) say(p);
+  if (!st.prompts.length) sayWeather(st);
   if (st.stopReached != null) onStopReached();
 
   if (st.arrived) { finishTrip(); return; }
@@ -1497,8 +1675,24 @@ function onNavFix(fix, now) {
 function say(prompt) {
   // Too quick to talk over, except to say you've arrived.
   if (S.sim && S.sim.factor >= SIM_FAST && prompt.kind !== 'arrive') return;
-  const text = speech(prompt, S.route.maneuvers, getLang());
-  if (!text) return;
+  if (S.settings.voiceLevel === 'turns' && !TURNS_ONLY.has(prompt.kind)) return;
+  const lang = getLang();
+  const who = S.settings.voiceCharacter;
+  const base = speech(prompt, S.route.maneuvers, lang);
+  if (!base) return;
+  if (prompt.kind === 'arrive') {
+    const quip = pick(who, 'arrive', lang);
+    $('arrival-quip').textContent = quip;
+    speakText(quip ? `${base} ${quip}` : base);
+    return;
+  }
+  let text = dress(who, prompt.kind, base, lang);
+  // Once, at the start of a trip, and the instruction still follows at once.
+  if (prompt.kind === 'intro' && !S.greeted) {
+    S.greeted = true;
+    const hello = pick(who, 'start', lang);
+    if (hello) text = `${hello} ${text}`;
+  }
   speakText(text);
 }
 
@@ -1572,10 +1766,35 @@ function renderEta(st) {
   $('eta-rest').textContent = t('arrivalIn', { distance: fmtDistance(st.remainingDistance), clock });
 }
 
-function renderSpeed(fix) {
-  const known = fix.speed != null;
+function currentLimit(st) {
+  if (S.mode === 'walk' || !S.settings.speedLimit || !st.onRoute) return null;
+  return limitAt(S.laneFetch?.limits, st.s);
+}
+
+function renderSpeed(fix, st) {
+  const known = fix.speed != null && S.mode !== 'walk';
   $('speed').hidden = !known;
   if (known) $('speed-value').textContent = String(Math.round(fix.speed * 3.6));
+
+  const limit = currentLimit(st);
+  const sign = $('speed-limit');
+  sign.hidden = !limit;
+  if (limit) {
+    sign.textContent = String(limit);
+    sign.setAttribute('aria-label', t('limitAria', { limit }));
+  }
+  const over = known && limit && fix.speed * 3.6 > limit + OVER_BY_KMH;
+  $('speed').classList.toggle('is-over', !!over);
+  if (!over) {
+    S.overSince = null;
+    return;
+  }
+  S.overSince ??= fix.time;
+  if (fix.time - S.overSince < OVER_HOLD_MS || Date.now() - S.lastOverSaid < OVER_REPEAT_MS) return;
+  if (S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) return;
+  S.lastOverSaid = Date.now();
+  const lang = getLang();
+  speakText(dress(S.settings.voiceCharacter, 'overspeed', t('overspeedSay', { limit }), lang, { vars: { limit } }));
 }
 
 function renderNavRange(st) {
@@ -1595,7 +1814,7 @@ function renderNavRange(st) {
     if (S.rangeSpoken < level) {
       S.rangeSpoken = level;
       const km = sayDistance(warning.left * 1000, getLang());
-      speakText(t(v.kind === 'ev' ? 'rangeSayEv' : 'rangeSayFuel', { km }));
+      speakText(dress(S.settings.voiceCharacter, 'fuel', t(v.kind === 'ev' ? 'rangeSayEv' : 'rangeSayFuel', { km }), getLang()));
     }
   }
 }
@@ -1618,6 +1837,11 @@ function renderChips() {
       action: () => openStops(ev ? 'ev' : 'fuel'),
     });
   }
+  const rain = S.lastState ? rainAhead(S.lastState.s) : null;
+  if (rain && rain.ahead <= RAIN_CHIP_M) {
+    chips.push({ text: t(`${rain.kind}Chip`, { distance: fmtDistance(Math.max(rain.ahead, 100)) }), action: openWeather });
+  }
+  if (S.weather?.warnings?.length) chips.push({ text: t('warningsTitle'), quiet: true, action: openWeather });
   const p = S.settings.solat ? closePrayer(prayers.data, Date.now()) : null;
   if (p) chips.push({ text: `${prayerText(p)}. ${t('findSurau')}`, quiet: true, action: () => openStops('surau') });
 
@@ -1640,7 +1864,7 @@ async function reroute(fix, { added = false } = {}) {
   S.lastReroute = now;
   S.rerouting = true;
   const before = S.lastState ? S.lastState.remainingTime : null;
-  if (!S.rerouteFailed && !added) speakText(t('rerouteSay'));
+  if (!S.rerouteFailed && !added) speakText(dress(S.settings.voiceCharacter, 'reroute', t('rerouteSay'), getLang()));
   renderChips();
   try {
     const moving = (fix.speed ?? 0) > 3;
@@ -1654,7 +1878,7 @@ async function reroute(fix, { added = false } = {}) {
     });
     if (S.view !== 'nav') return;
     S.route = route;
-    S.guidance = new Guidance(route);
+    S.guidance = new Guidance(route, { walking: S.mode === 'walk' });
     motion.setRoute(route);
     startScene(route);
     if (S.sim) {
@@ -1695,6 +1919,8 @@ function keepVehicleLevel() {
 // The trip's over one way or another: put everything back.
 function stopGuidance() {
   keepVehicleLevel();
+  leaveFullscreen();
+  S.weatherSaid = null;
   if (S.sim) {
     S.sim.stop();
     S.sim = null;
@@ -1735,6 +1961,8 @@ function arrivalStats() {
 
 function finishTrip() {
   const place = S.dest;
+  const onFoot = S.mode === 'walk';
+  const simulated = !!S.sim;
   $('arrival-stats').textContent = arrivalStats();
   stopGuidance();
   mapView?.clearRoutes();
@@ -1744,6 +1972,12 @@ function finishTrip() {
   S.dest = null;
   S.start = null;
   $('arrival-place').textContent = place ? place.name : '';
+  S.arrivedAt = place;
+  // Where the road ends isn't always where the door is.
+  $('arrival-walk').hidden = onFoot || simulated || !place;
+  S.mall = mallFor(place);
+  $('arrival-mall').hidden = !S.mall;
+  if (S.mall) $('arrival-mall').textContent = t('mallOpen', { name: S.mall.name });
   replaceHistory('arrival');
   S.overlay = null;
   show('arrival');
@@ -1757,6 +1991,7 @@ function endTrip() {
     return;
   }
   stopGuidance();
+  backOnWheels();
   S.dest = null;
   S.start = null;
   S.routes = [];
@@ -1795,6 +2030,321 @@ function backToPlan() {
   renderRoutes();
   mapView?.showRoutes(S.routes, S.selected);
   fitRoutes();
+  // A simulated walk ended here too, so you're back in the car.
+  backOnWheels();
+}
+
+/* ---------- Walking to the door ---------- */
+
+function walkToDoor() {
+  const place = S.arrivedAt;
+  if (!place) return;
+  S.returnMode = S.mode;
+  S.mode = 'walk';
+  S.carDirty = true;
+  S.startWhenRouted = true;
+  S.stops = [];
+  replaceHistory('preview');
+  S.overlay = null;
+  openPreview(place);
+}
+
+// Walking was only for this last bit. Next time, you're back in the car.
+function backOnWheels() {
+  if (S.mode !== 'walk' || !S.returnMode) return;
+  S.mode = S.returnMode;
+  S.returnMode = null;
+  S.carDirty = true;
+  renderSegments();
+  renderRangePill();
+}
+
+/* ---------- Inside a mall ---------- */
+
+function renderPlanMall() {
+  const mall = mallFor(S.dest);
+  S.mall = mall;
+  $('plan-mall').hidden = !mall;
+  if (!mall) return;
+  $('plan-mall-title').textContent = t('mallOpen', { name: mall.name });
+  $('plan-mall-detail').textContent = t('mallDetail');
+}
+
+function openMall() {
+  const mall = S.mall;
+  if (!mall) return;
+  $('mall-title').textContent = mall.name;
+  $('mall-map').href = mall.map;
+  $('mall-list').href = mall.directory;
+  $('mall-search').value = '';
+  $('mall-results').replaceChildren();
+  openOverlay('mall');
+  loadShops(mall);
+}
+
+async function loadShops(mall) {
+  const status = $('mall-status');
+  const box = $('mall-search');
+  box.hidden = true;
+  if (!CONFIG.server) {
+    status.textContent = t('mallNoServer');
+    return;
+  }
+  S.mallCtrl?.abort();
+  const ctrl = new AbortController();
+  S.mallCtrl = ctrl;
+  status.textContent = t('mallLoading');
+  try {
+    S.shops = await fetchShops(mall, { signal: ctrl.signal });
+    if (ctrl.signal.aborted) return;
+    status.textContent = '';
+    box.hidden = false;
+  } catch {
+    if (!ctrl.signal.aborted) status.textContent = t('mallFailed');
+  }
+}
+
+function renderShops() {
+  const q = $('mall-search').value.trim();
+  const found = searchShops(S.shops || [], q);
+  $('mall-status').textContent = q && !found.length ? t('mallNone', { q }) : '';
+  $('mall-results').replaceChildren(...found.map((shop) => {
+    const li = document.createElement('li');
+    li.className = 'shop';
+    const name = document.createElement('strong');
+    name.textContent = shop.name;
+    const lot = document.createElement('span');
+    lot.textContent = shop.lot;
+    li.append(name, lot);
+    return li;
+  }));
+}
+
+/* ---------- Rain and floods ---------- */
+
+async function loadWeather(route, fromS = 0) {
+  if (!S.settings.weather || S.mode === 'walk') {
+    S.weather = null;
+    return;
+  }
+  S.weatherCtrl?.abort();
+  const ctrl = new AbortController();
+  S.weatherCtrl = ctrl;
+  S.weather = { routeId: route.id, at: Date.now(), pending: true, warnings: [] };
+  renderPlanWeather(route);
+  try {
+    const result = await checkRouteWeather(route, fromS, { signal: ctrl.signal });
+    if (ctrl.signal.aborted) return;
+    S.weather = { routeId: route.id, at: Date.now(), ...result };
+  } catch {
+    if (ctrl.signal.aborted) return;
+    S.weather = { routeId: route.id, at: Date.now(), rain: null, rainFailed: true, warnings: [], warningsFailed: true };
+  }
+  renderPlanWeather(route);
+  if (S.overlay === 'weather') renderWeatherSheet();
+}
+
+function keepWeatherFresh(st) {
+  if (!S.settings.weather || S.mode === 'walk' || S.simScrub) return;
+  const stale = S.weather?.routeId !== S.route.id || Date.now() - S.weather.at > WEATHER_REFRESH_MS;
+  if (stale) loadWeather(S.route, st.s);
+}
+
+// The next rain still ahead of where you are now.
+function rainAhead(s) {
+  const first = S.weather?.rain?.first;
+  if (!first || first.s < s - 1000) return null;
+  return { ...first, ahead: Math.max(0, first.s - s) };
+}
+
+function rainLine(rain, ahead) {
+  if (ahead < 1000) return t(`${rain.kind}Here`);
+  return t(`${rain.kind}Ahead`, { distance: fmtDistance(ahead), clock: fmtClock(new Date(rain.at), getLang()) });
+}
+
+function renderPlanWeather(route) {
+  const row = $('plan-weather');
+  const w = S.weather;
+  row.hidden = !S.settings.weather || S.mode === 'walk';
+  if (row.hidden) return;
+  if (route && w?.routeId !== route.id) {
+    loadWeather(route);
+    return;
+  }
+  const title = $('plan-weather-title');
+  const detail = $('plan-weather-detail');
+  row.classList.toggle('is-wet', !!(w?.rain?.first || w?.warnings?.length));
+  if (!w || w.pending) {
+    title.textContent = t('weatherChecking');
+    detail.textContent = '';
+    return;
+  }
+  if (w.rain?.first) title.textContent = rainLine(w.rain.first, w.rain.first.s);
+  else title.textContent = t(w.rainFailed ? 'weatherFailed' : 'weatherClear');
+  const n = w.warnings?.length || 0;
+  detail.textContent = n === 1 ? t('warningsOne') : n > 1 ? t('warningsMany', { n }) : '';
+}
+
+function openWeather() {
+  renderWeatherSheet();
+  openOverlay('weather');
+}
+
+function renderWeatherSheet() {
+  const w = S.weather;
+  const lang = getLang();
+  const s = S.lastState?.s ?? 0;
+  const rain = $('weather-rain');
+  if (!w || w.pending) rain.textContent = t('weatherChecking');
+  else if (w.rainFailed) rain.textContent = t('weatherFailed');
+  else if (!w.rain?.first) rain.textContent = t('weatherClear');
+  else {
+    const first = w.rain.first;
+    rain.textContent = rainLine(first, Math.max(0, first.s - s));
+    const worst = w.rain.worst;
+    if (worst && worst.kind !== first.kind) {
+      const more = document.createElement('span');
+      more.textContent = t('worstLater', { what: rainLine(worst, Math.max(0, worst.s - s)) });
+      rain.append(more);
+    }
+  }
+  const box = $('weather-warnings');
+  const parts = [];
+  if (w?.warnings?.length) {
+    const head = document.createElement('p');
+    head.className = 'warnings-title';
+    head.textContent = t('warningsTitle');
+    parts.push(head);
+    for (const item of w.warnings) {
+      const card = document.createElement('div');
+      card.className = `warning${item.danger ? ' is-danger' : ''}`;
+      const strong = document.createElement('strong');
+      strong.textContent = item.heading[lang] || item.heading.en;
+      const text = document.createElement('p');
+      text.textContent = item.text[lang] || item.text.en;
+      card.append(strong, text);
+      if (item.until) {
+        const until = document.createElement('p');
+        until.textContent = t('warningUntil', { when: fmtClock(new Date(item.until), lang) });
+        card.append(until);
+      }
+      parts.push(card);
+    }
+    if (w.warnings.some((x) => x.flood)) {
+      const flood = document.createElement('p');
+      flood.className = 'warnings-title';
+      flood.textContent = t('floodRisk');
+      parts.push(flood);
+    }
+  } else if (w?.warningsFailed) {
+    const failed = document.createElement('p');
+    failed.className = 'tip';
+    failed.textContent = t('warningsFailed');
+    parts.push(failed);
+  }
+  box.replaceChildren(...parts);
+}
+
+function sayWeather(st) {
+  if (S.settings.voiceLevel !== 'full' || S.simScrub || (S.sim && S.sim.factor >= SIM_FAST)) return;
+  const rain = rainAhead(st.s);
+  if (!rain || rain.ahead > RAIN_SAY_M || st.distanceToNext < 400) return;
+  const key = `${S.route.id}:${rain.kind}`;
+  if (S.weatherSaid === key) return;
+  S.weatherSaid = key;
+  const lang = getLang();
+  const text = t(`${rain.kind}Say`, { distance: sayDistance(Math.max(rain.ahead, 200), lang) });
+  speakText(dress(S.settings.voiceCharacter, 'rain', text, lang));
+}
+
+/* ---------- Who's talking ---------- */
+
+function renderCharacters() {
+  const lang = getLang();
+  $('voice-chars').replaceChildren(...CHARACTER_IDS.map((id) => {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'char-opt';
+    btn.setAttribute('role', 'radio');
+    btn.setAttribute('aria-checked', String(S.settings.voiceCharacter === id));
+    const name = document.createElement('strong');
+    name.textContent = characterName(id, lang);
+    const about = document.createElement('span');
+    about.textContent = characterAbout(id, lang);
+    btn.append(name, about);
+    btn.addEventListener('click', () => chooseCharacter(id));
+    li.append(btn);
+    return li;
+  }));
+}
+
+function chooseCharacter(id) {
+  setSetting('voiceCharacter', id);
+  voice.setVoiceStyle(characterVoice(id));
+  renderCharacters();
+  trySample();
+}
+
+function trySample() {
+  voice.speak(sample(S.settings.voiceCharacter, getLang(), t('voiceSample')), { evenIfMuted: true });
+}
+
+function setVoiceLevel(level) {
+  setSetting('voiceLevel', level);
+  renderSegments();
+}
+
+/* ---------- HUD: read in the windscreen ---------- */
+
+function openHud() {
+  openOverlay('hudmode');
+  $('hudmode').classList.toggle('is-mirror', S.settings.hudMirror);
+  document.documentElement.requestFullscreen?.()?.catch?.(() => {});
+  S.hudKey = null;
+  showHudControls();
+  if (S.lastState && S.fix) renderHud(S.lastState, S.fix);
+}
+
+function leaveFullscreen() {
+  clearTimeout(S.hudTimer);
+  if (document.fullscreenElement) document.exitFullscreen?.()?.catch?.(() => {});
+}
+
+function showHudControls() {
+  $('hm-controls').classList.remove('is-hidden');
+  clearTimeout(S.hudTimer);
+  S.hudTimer = setTimeout(() => $('hm-controls').classList.add('is-hidden'), HUD_CONTROLS_MS);
+}
+
+function renderHudMirror() {
+  $('hm-mirror').textContent = t(S.settings.hudMirror ? 'hudMirrorOn' : 'hudMirrorOff');
+  $('hudmode').classList.toggle('is-mirror', S.settings.hudMirror);
+}
+
+function renderHud(st, fix) {
+  const next = st.next;
+  const key = `${st.nextIndex}:${S.route.id}:${getLang()}`;
+  if (S.hudKey !== key) {
+    S.hudKey = key;
+    $('hm-arrow').innerHTML = turnIcon(next);
+    const d = describe(next, getLang());
+    $('hm-road').textContent = d.road || d.ref || d.action;
+  }
+  $('hm-distance').textContent = fmtDistance(st.distanceToNext);
+  $('hm-bar-fill').style.transform = `scaleX(${clamp(1 - st.distanceToNext / HUD_BAR_M, 0, 1)})`;
+  const known = fix.speed != null;
+  const kmh = known ? Math.round(fix.speed * 3.6) : 0;
+  $('hm-speed').textContent = known ? String(kmh) : '–';
+  const limit = currentLimit(st);
+  $('hm-limit').hidden = !limit;
+  if (limit) $('hm-limit').textContent = String(limit);
+  $('hm-speed').parentElement.classList.toggle('is-over', !!(limit && kmh > limit + OVER_BY_KMH));
+  const lang = getLang();
+  $('hm-eta').replaceChildren(fmtDuration(st.remainingTime, lang));
+  const rest = document.createElement('span');
+  rest.textContent = fmtClock(new Date(Date.now() + st.remainingTime * 1000), lang);
+  $('hm-eta').append(rest);
 }
 
 /* ---------- Controlling a simulated drive ---------- */
@@ -2097,6 +2647,31 @@ function wire() {
   $('preview-back').addEventListener('click', () => history.back());
   $('mode-car').addEventListener('click', () => setMode('car'));
   $('mode-moto').addEventListener('click', () => setMode('motorcycle'));
+  $('mode-walk').addEventListener('click', () => setMode('walk'));
+  $('search-paste').addEventListener('click', pasteLink);
+  $('plan-weather').addEventListener('click', openWeather);
+  $('plan-mall').addEventListener('click', openMall);
+  $('weather-back').addEventListener('click', () => history.back());
+  $('mall-back').addEventListener('click', () => history.back());
+  $('mall-search').addEventListener('input', renderShops);
+  $('arrival-walk').addEventListener('click', walkToDoor);
+  $('arrival-mall').addEventListener('click', openMall);
+  $('btn-hud').addEventListener('click', openHud);
+  $('hudmode').addEventListener('click', showHudControls);
+  $('hm-close').addEventListener('click', (e) => { e.stopPropagation(); history.back(); });
+  $('hm-mirror').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setSetting('hudMirror', !S.settings.hudMirror);
+    renderHudMirror();
+    showHudControls();
+  });
+  $('voice-full').addEventListener('click', () => setVoiceLevel('full'));
+  $('voice-turns').addEventListener('click', () => setVoiceLevel('turns'));
+  $('limit-on').addEventListener('change', (e) => setSetting('speedLimit', e.target.checked));
+  $('weather-on').addEventListener('change', (e) => {
+    setSetting('weather', e.target.checked);
+    S.weather = null;
+  });
   $('avoid-tolls').addEventListener('change', (e) => {
     S.avoidTolls = e.target.checked;
     save('avoidTolls', S.avoidTolls);
@@ -2181,6 +2756,7 @@ function wire() {
 
   $('arrival-done').addEventListener('click', () => {
     if (S.simPlan) { backToPlan(); return; }
+    backOnWheels();
     replaceHistory('idle');
     show('idle');
   });
@@ -2190,7 +2766,7 @@ function wire() {
 
   $('lang-ms').addEventListener('click', () => changeLanguage('ms'));
   $('lang-en').addEventListener('click', () => changeLanguage('en'));
-  $('voice-test').addEventListener('click', () => voice.speak(t('voiceSample'), { evenIfMuted: true }));
+  $('voice-test').addEventListener('click', trySample);
   for (const theme of ['auto', 'day', 'night']) {
     $(`theme-${theme}`).addEventListener('click', () => {
       setSetting('theme', theme);
@@ -2240,7 +2816,9 @@ function openVehicle() {
 function setMode(mode) {
   if (S.mode === mode) return;
   S.mode = mode;
-  save('mode', mode);
+  S.returnMode = null;
+  // You won't want to open Pintu on foot next time just because you did today.
+  if (mode !== 'walk') save('mode', mode);
   S.carDirty = true;
   renderSegments();
   renderRangePill();
@@ -2280,6 +2858,7 @@ async function main() {
   setLang(S.settings.lang);
   voice.setVoiceLang(S.settings.lang);
   voice.setMuted(S.settings.muted);
+  voice.setVoiceStyle(characterVoice(S.settings.voiceCharacter));
   applyTheme();
   applyStaticText();
   renderSegments();
@@ -2290,6 +2869,7 @@ async function main() {
   startGpsIfAllowed();
   requestAnimationFrame(frame);
   await startMap();
+  openIncoming();
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

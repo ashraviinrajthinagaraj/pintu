@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.4.0',
+  version: '0.5.0',
 
   maplibre: {
     version: '5.24.0',
@@ -29,6 +29,14 @@ export const CONFIG = {
   },
 
   // Stops along the route come from OpenStreetMap through these, tried in order.
+  // Pintu's small server, for jobs a web page can't do by itself. See server/worker.js.
+  server: null,
+  weather: {
+    forecastUrl: 'https://api.open-meteo.com/v1/forecast',
+    warningsUrl: 'https://api.data.gov.my/weather/warning',
+    riversUrl: 'https://publicinfobanjir.water.gov.my/?lang=en',
+    roadsUrl: 'https://bencana.jkr.gov.my/',
+  },
   // The map's own tiles, for finding stops when the map hasn't said where it gets them.
   poiTiles: 'https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf',
   // The main server is often overloaded, so it isn't asked first.

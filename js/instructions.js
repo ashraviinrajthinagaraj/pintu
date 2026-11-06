@@ -40,6 +40,7 @@ const ACTIONS = {
     rbNth: (n) => `Di bulatan, ambil jalan keluar ${n}`,
     exitNo: (n) => `Keluar di susur ${n}`,
     stop: 'Hentian anda', stopR: 'Hentian di sebelah kanan', stopL: 'Hentian di sebelah kiri',
+    lift: 'Guna lif', stairs: 'Guna tangga', escalator: 'Guna eskalator', enter: 'Masuk ke bangunan', leave: 'Keluar dari bangunan',
     onto: 'ke', toward: 'menuju',
   },
   en: {
@@ -59,6 +60,7 @@ const ACTIONS = {
     rbNth: (n) => `At the roundabout, take the ${n} exit`,
     exitNo: (n) => `Take exit ${n}`,
     stop: 'Your stop', stopR: 'Your stop is on the right', stopL: 'Your stop is on the left',
+    lift: 'Take the lift', stairs: 'Take the stairs', escalator: 'Take the escalator', enter: 'Enter the building', leave: 'Leave the building',
     onto: 'onto', toward: 'towards',
   },
 };
@@ -76,6 +78,7 @@ const BY_TYPE = {
   25: 'merge', 37: 'mergeR', 38: 'mergeL',
   26: 'rbEnter', 27: 'rbExit',
   28: 'ferryIn', 29: 'ferryOut',
+  39: 'lift', 40: 'stairs', 41: 'escalator', 42: 'enter', 43: 'leave',
 };
 
 // { action: 'Belok kiri', road: 'Jalan Ampang', ref: 'FT2', toward: '' }

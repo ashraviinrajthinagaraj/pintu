@@ -77,7 +77,7 @@ test('asks for lane counts along the exact stretch, with fallback', async () => 
   assert.ok(segs[0].from >= 500 && segs[0].from < 560, String(segs[0].from));
   const body = JSON.parse(decodeURIComponent(urls[1].u.split('json=')[1]));
   assert.equal(body.shape_match, 'edge_walk');
-  assert.deepEqual(body.filters.attributes, ['edge.lane_count', 'edge.length']);
+  assert.deepEqual(body.filters.attributes, ['edge.lane_count', 'edge.length', 'edge.speed_limit']);
   const line = decodePolyline(body.encoded_polyline);
   assert.ok(line.length >= 2);
   assert.ok(Math.abs(line[0][0] - 101.7045) < 0.002, String(line[0][0]));

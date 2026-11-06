@@ -8,7 +8,8 @@ const DEST_RADIUS = 25;     // metres from the destination that count as arrived
 const OFF_SECONDS = 6;      // how long you must be away before re-routing
 const WRONG_WAY_SECONDS = 8;
 
-export function promptDistances(speed) {
+export function promptDistances(speed, walking = false) {
+  if (walking) return { far: 60, now: 20 };
   const v = Math.max(speed || 0, 8);
   if (v >= 22) return { far: 2000, now: v * 9 };   // from about 80 km/h
   if (v >= 14) return { far: 700, now: v * 6 };    // from about 50 km/h
@@ -16,8 +17,12 @@ export function promptDistances(speed) {
 }
 
 export class Guidance {
-  constructor(route) {
+  constructor(route, { walking = false } = {}) {
     this.route = route;
+    // On foot, GPS wanders more among buildings and the turns come closer together.
+    this.walking = walking;
+    this.destRadius = walking ? 15 : DEST_RADIUS;
+    this.offSeconds = walking ? 20 : OFF_SECONDS;
     this.s = 0;
     this.seg = 0;
     this.lastTime = null;
@@ -41,7 +46,7 @@ export class Guidance {
     if (!this.firstFix) this.firstFix = p;
 
     const weak = accuracy > 100;
-    const threshold = clamp(accuracy * 1.5, 30, 75);
+    const threshold = this.walking ? clamp(accuracy * 2, 40, 100) : clamp(accuracy * 1.5, 30, 75);
     const dt = this.lastTime ? Math.max(1, (fix.time - this.lastTime) / 1000) : 1;
     this.lastTime = fix.time;
 
@@ -147,7 +152,7 @@ export class Guidance {
     // until you've actually moved away from where you began.
     if (!this.everOn && haversine(p, this.firstFix) < 150) { this.offSince = null; return false; }
     if (this.offSince == null) this.offSince = t;
-    return t - this.offSince >= OFF_SECONDS * 1000;
+    return t - this.offSince >= this.offSeconds * 1000;
   }
 
   _state(p, fix, onRoute, match, offRoute, weak, accuracy) {
@@ -168,7 +173,7 @@ export class Guidance {
 
     const toEnd = haversine(p, coords[coords.length - 1]);
     if (!this.arrived && !weak && this.everOn &&
-        (remainingDistance < DEST_RADIUS || (toEnd < DEST_RADIUS && s > length * 0.5))) {
+        (remainingDistance < this.destRadius || (toEnd < this.destRadius && s > length * 0.5))) {
       this.arrived = true;
     }
 
@@ -220,7 +225,7 @@ export class Guidance {
     if (st.stopReached != null) out.push({ kind: 'stop', index: st.stopReached });
     const i = st.nextIndex;
     const d = st.distanceToNext;
-    const { far, now } = promptDistances(speed);
+    const { far, now } = promptDistances(speed, this.walking);
 
     if (!this.started) {
       this.started = true;

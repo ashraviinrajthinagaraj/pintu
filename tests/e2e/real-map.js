@@ -529,6 +529,39 @@ await check('real library: choosing a start on the map, previewing, then jumping
   assert.deepEqual(errors, []);
 });
 
+await check('real library: HUD over a real trip, and walking with no car on the map', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, errors } = await open(browser, { styleFor: demoCity });
+  await toPreview(page);
+  await page.click('#try-sim');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.click('#sim-play');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${shots}/real-nav-buttons.png` });
+  await page.click('#btn-hud');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/real-hud.png` });
+  await page.click('#hm-close');
+  await page.waitForSelector('#hudmode', { state: 'hidden' });
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.click('#mode-walk');
+  await page.waitForFunction(() => document.querySelector('.route-opt'));
+  await page.waitForTimeout(600);
+  await page.click('#try-sim');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.click('#sim-play');
+  await settle(page, 900);
+  const lying = await page.evaluate(() => window.__map.getStyle().layers.length > 0);
+  assert.ok(lying);
+  await page.screenshot({ path: `${shots}/real-walking.png` });
+  assert.equal(await page.locator('#speed').isVisible(), false);
+  assert.ok(trip.length > 0);
+  await ctx.close();
+  assert.deepEqual(errors, []);
+});
+
 await browser.close();
 server.close();
 const failed = results.filter((r) => r[0] === 'FAIL').length;

@@ -58,9 +58,16 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { tiles, hangAll = false, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
+async function newApp(browser, { tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], errors: [], external: new Set() };
+  // As if the small server had been set up.
+  if (appServer) {
+    await ctx.route('**/js/config.js', async (route) => {
+      const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
+      route.fulfill({ contentType: 'text/javascript', body: original.replace('server: null', "server: 'https://pintu.test'") });
+    });
+  }
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const host = new URL(url).hostname;
@@ -70,6 +77,20 @@ async function newApp(browser, { tiles, hangAll = false, viewport = { width: 390
       return route.fulfill({ contentType: 'text/javascript', headers: CORS, body: stub });
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
+    if (host === 'pintu.test') {
+      log.server.push(url);
+      const answer = appServer ? await appServer(new URL(url)) : null;
+      if (!answer) return route.fulfill({ status: 502, json: { error: 'unavailable' }, headers: CORS });
+      return route.fulfill({ json: answer, headers: CORS });
+    }
+    if (host === 'api.open-meteo.com') {
+      log.forecast.push(url);
+      return forecast ? route.fulfill({ json: forecast(url), headers: CORS }) : route.abort();
+    }
+    if (host === 'api.data.gov.my') {
+      log.warnings++;
+      return warnings ? route.fulfill({ json: warnings(), headers: CORS }) : route.abort();
+    }
     // Everything a stop search asks goes silent, and stays silent.
     if (hangAll && (url.endsWith('.pbf') || host.includes('overpass') || host === 'ovp.dresel.systems' || url.includes('include='))) return undefined;
     const tile = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
@@ -119,7 +140,7 @@ async function newApp(browser, { tiles, hangAll = false, viewport = { width: 390
         if (log.photonStopsFail) return route.abort();
         return route.fulfill({ json: { features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [101.7055, 3.1503] }, properties: { name: 'Stesen Dari Photon', osm_type: 'N', osm_id: 9, osm_key: 'amenity', osm_value: 'fuel' } }] }, headers: CORS });
       }
-      return route.fulfill({ json: q === 'zzzz' ? { features: [] } : PHOTON, headers: CORS });
+      return route.fulfill({ json: q === 'zzzz' ? { features: [] } : (photonFeatures ? { features: photonFeatures } : PHOTON), headers: CORS });
     }
     return route.abort();
   });
@@ -147,7 +168,7 @@ async function newApp(browser, { tiles, hangAll = false, viewport = { width: 390
     Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: {
       getVoices: () => vs,
       cancel() {},
-      speak(u) { if (u.text.trim()) window.__said.push({ text: u.text, lang: u.lang, voice: u.voice?.name }); },
+      speak(u) { if (u.text.trim()) window.__said.push({ text: u.text, lang: u.lang, voice: u.voice?.name, pitch: u.pitch, rate: u.rate }); },
       addEventListener() {},
     } });
 
@@ -161,7 +182,7 @@ async function newApp(browser, { tiles, hangAll = false, viewport = { width: 390
   const page = await ctx.newPage();
   page.on('pageerror', (e) => log.errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|net::ERR/.test(m.text())) log.errors.push(`console: ${m.text()}`); });
-  await page.goto(ORIGIN);
+  await page.goto(startUrl || ORIGIN);
   await page.waitForFunction(() => window.__map?.ready || document.querySelector('#map-problem:not([hidden])'));
   return { ctx, page, log };
 }
@@ -218,6 +239,7 @@ const puckAt = (page) => page.evaluate(() => window.__map.markers.find((m) => m.
 
 const results = [];
 async function check(name, fn) {
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return;
   try { await fn(); results.push(['ok', name]); console.log(`ok   ${name}`); }
   catch (e) { results.push(['FAIL', name, e.message]); console.log(`FAIL ${name}\n     ${String(e.message).split('\n').slice(0, 6).join('\n     ')}`); }
 }
@@ -1051,7 +1073,7 @@ await check('lane view: road lane counts draw the lanes, and the camera moves in
   assert.ok(log.trace.length >= 1, 'asked for lane counts');
   assert.equal(log.trace.length, 1, 'one request for this stretch');
   const body = JSON.parse(new URL(log.trace[0]).searchParams.get('json'));
-  assert.deepEqual(body.filters.attributes, ['edge.lane_count', 'edge.length']);
+  assert.deepEqual(body.filters.attributes, ['edge.lane_count', 'edge.length', 'edge.speed_limit']);
   const f = await page.evaluate(() => window.__map.getSource('pintu-lanes').data.features.reduce((m, x) => { m[x.properties.k] = (m[x.properties.k] || 0) + 1; return m; }, {}));
   assert.equal(f.divider, 2);
   assert.ok(f.road > 20 && f.carpet > 20);
@@ -1778,6 +1800,7 @@ await check('simulation: drag anywhere along the trip, forward or back, quietly'
   const y = box.y + box.height / 2;
   const xAt = (f) => box.x + box.width * f;
   const routes = log.fossgis.length;
+  await page.waitForTimeout(120);  // anything said just before pausing has a moment to land
   const before = (await said(page)).length;
 
   await page.mouse.move(xAt(0.1), y);
@@ -1994,6 +2017,460 @@ await check('a real drive has none of the simulation controls', async () => {
   const st = await page.evaluate(() => document.getElementById('eta-rest').textContent);
   assert.ok(st.length > 0);
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.trip')).dest.name), 'Suria KLCC');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+// Rolls along a prepared route at a steady speed, one fix per `every` seconds.
+let rollClock = Date.now();
+async function roll(page, trip, from, to, mps = 12, every = 1) {
+  const pts = [];
+  for (let s = from; ; s += mps * every) {
+    const at = Math.min(s, to);
+    const [lng, lat] = pointAt(trip, at);
+    rollClock += every * 1000;
+    pts.push([lng, lat, rollClock]);
+    if (s >= to) break;
+  }
+  await page.evaluate(([list, speed]) => {
+    for (const [lng, lat, time] of list) window.__gps.push(lng, lat, { accuracy: 8, speed, time });
+  }, [pts, mps]);
+  await page.waitForTimeout(40);
+}
+
+function wetForecast(url, { fromPoint = 0, mm = 12, code = 95, chance = 80 } = {}) {
+  const lats = new URL(url).searchParams.get('latitude').split(',');
+  const hour = Math.floor(Date.now() / 3600000) * 3600;
+  const time = Array.from({ length: 72 }, (_, i) => hour - 3600 + i * 3600);
+  const one = (i) => {
+    const wet = i >= fromPoint;
+    return { hourly: { time, precipitation: time.map(() => (wet ? mm : 0)), precipitation_probability: time.map(() => (wet ? chance : 5)), weather_code: time.map(() => (wet ? code : 3)) } };
+  };
+  return lats.length === 1 ? one(0) : lats.map((_, i) => one(i));
+}
+const dryForecast = (url) => wetForecast(url, { fromPoint: 99 });
+const soon = () => new Date(Date.now() + 6 * 3600000 + 8 * 3600000).toISOString().slice(0, 19);
+const WARNINGS = () => [
+  { warning_issue: { issued: '2026-11-01T00:00:00', title_bm: 'Amaran Hujan Berterusan', title_en: 'Continuous Rain Warning' }, valid_from: '2026-11-01T00:00:00', valid_to: soon(),
+    heading_en: 'Continuous Rain (Danger)', text_en: 'Continuous rain expected in Kuala Lumpur and Selangor.', instruction_en: 'Stay safe', heading_bm: 'Hujan Berterusan (Bahaya)', text_bm: 'Hujan berterusan dijangka di Kuala Lumpur dan Selangor.', instruction_bm: 'Jaga diri' },
+  { warning_issue: { issued: '2026-11-01T00:00:00', title_bm: 'Ribut Petir', title_en: 'Thunderstorm' }, valid_from: '2026-11-01T00:00:00', valid_to: soon(),
+    heading_en: 'Thunderstorms', text_en: 'Thunderstorms expected in Sabah.', heading_bm: 'Ribut Petir', text_bm: 'Ribut petir dijangka di Sabah.' },
+  { warning_issue: { issued: '2026-11-01T00:00:00', title_bm: 'Angin Kencang', title_en: 'Strong Wind and Rough Seas' }, valid_from: '2026-11-01T00:00:00', valid_to: soon(),
+    heading_en: 'Strong Wind and Rough Seas', text_en: 'Rough seas off Kuala Lumpur.', heading_bm: 'Angin Kencang dan Laut Bergelora', text_bm: 'Laut bergelora.' },
+];
+
+await check('voices: choose a character, hear it, and it lasts', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
+  await page.click('#btn-settings');
+  const rows = page.locator('#voice-chars .char-opt');
+  assert.equal(await rows.count(), 7);
+  assert.match(await text(page, '#voice-chars'), /Kapten/);
+  assert.match(await text(page, '#voice-chars'), /Pencerita Filem/);
+  assert.equal(await page.getAttribute('#voice-full', 'aria-checked'), 'true');
+  await rows.filter({ hasText: 'Kapten' }).click();
+  await page.waitForFunction(() => window.__said.length > 0);
+  const heard = (await said(page)).at(-1);
+  assert.match(heard.text, /300 meter/, 'the sample still gives the direction');
+  assert.ok(heard.pitch < 1 && heard.rate < 1, JSON.stringify(heard));
+  await page.locator('#voice-chars').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(120);
+  await page.screenshot({ path: `${shots}/30-voices.png` });
+  await noOverflow(page, 'voices');
+  await page.reload();
+  await page.click('#btn-settings');
+  assert.equal(await rows.filter({ hasText: 'Kapten' }).getAttribute('aria-checked'), 'true');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('voices: a character never loses the instruction, and the first word of a turn is still a turn', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { voiceCharacter: 'adik' } } });
+  await toNav(page);
+  await roll(page, trip, 0, 60);
+  const lines = (await said(page)).map((s) => s.text);
+  assert.match(lines[0], /Dah sampai ke belum/, 'the greeting');
+  assert.match(lines[0], /Terus sejauh|Mula|belok/i, 'and the instruction with it');
+  const before = lines.length;
+  await roll(page, trip, 60, trip.maneuvers[1].beginDist + 5, 12);
+  const after = (await said(page)).slice(before).map((s) => s.text);
+  const now = after.find((l) => /belok kanan ke Jalan Tun Razak\.$/i.test(l) && !/Dalam|Terus/.test(l));
+  assert.ok(now, after.join(' | '));
+  assert.ok(now.length < 70, 'short at the moment of the turn');
+  assert.match(after.join(' '), /Jalan Tun Razak/);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('voices: turns only keeps quiet until a turn', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { voiceLevel: 'turns' } } });
+  await toNav(page);
+  await roll(page, trip, 0, 200);
+  assert.equal((await said(page)).length, 0, 'no intro');
+  await roll(page, trip, 200, trip.maneuvers[1].beginDist + 5, 12);
+  const words = (await said(page)).map((s) => s.text);
+  assert.equal(words.filter((w) => /^Dalam/.test(w)).length, 0, 'no warning a long way out');
+  assert.equal(words.filter((w) => /^Belok kanan/.test(w)).length, 1, words.join(' | '));
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('speed limit: shown where mapped, warns once when over, and stays out of the way otherwise', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
+  log.laneCounts = { edges: [{ length: 1, lane_count: 2 }, { length: 10, lane_count: 2, speed_limit: 60 }] };
+  await toNav(page);
+  await roll(page, trip, 0, 300, 12);
+  assert.equal(await vis(page, '#speed-limit'), false, 'the first stretch has no limit mapped');
+  await roll(page, trip, 300, 1200, 12);
+  await page.waitForFunction(() => document.getElementById('speed-limit').textContent === '60');
+  assert.equal(await vis(page, '#speed-limit'), true);
+  assert.equal(await page.locator('#speed.is-over').count(), 0);
+  await page.screenshot({ path: `${shots}/31-limit.png` });
+  const before = (await said(page)).length;
+  // Just over, briefly: nothing. Then properly over.
+  await roll(page, trip, 1200, 1400, 25, 1);
+  await page.waitForFunction(() => document.getElementById('speed').classList.contains('is-over'));
+  await page.screenshot({ path: `${shots}/32-over-limit.png` });
+  await roll(page, trip, 1400, 1800, 25, 1);
+  const warned = (await said(page)).slice(before).filter((s) => /Had laju 60/.test(s.text));
+  assert.equal(warned.length, 1, JSON.stringify(warned));
+  await roll(page, trip, 1800, 2100, 12);
+  await page.waitForFunction(() => !document.getElementById('speed').classList.contains('is-over'));
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('speed limit: can be turned off, and nothing is guessed when the map has none', async () => {
+  const trip = prepareTrip(cityTrip());
+  const none = await newApp(browser, { ...quiet });
+  none.log.laneCounts = { edges: [{ length: 10, lane_count: 2 }] };
+  await toNav(none.page);
+  await roll(none.page, trip, 0, 400, 25);
+  assert.equal(await vis(none.page, '#speed-limit'), false);
+  assert.equal(await none.page.locator('#speed.is-over').count(), 0);
+  await none.ctx.close();
+  const off = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { speedLimit: false } } });
+  off.log.laneCounts = { edges: [{ length: 10, lane_count: 2, speed_limit: 30 }] };
+  await toNav(off.page);
+  await roll(off.page, trip, 0, 400, 25);
+  assert.equal(await vis(off.page, '#speed-limit'), false);
+  assert.equal(await off.page.locator('#speed.is-over').count(), 0);
+  await off.ctx.close();
+});
+
+await check('rain: shown on the plan with where and when, and official warnings for the area', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 }, forecast: (u) => wetForecast(u, { fromPoint: 1, code: 61, mm: 3 }), warnings: WARNINGS });
+  await toPreview(page);
+  await page.waitForFunction(() => /Mungkin hujan/.test(document.getElementById('plan-weather-title').textContent));
+  assert.match(await text(page, '#plan-weather-title'), /Mungkin hujan .*lagi, sekitar/);
+  await page.waitForFunction(() => /amaran rasmi/.test(document.getElementById('plan-weather-detail').textContent));
+  assert.match(await text(page, '#plan-weather-detail'), /^1 amaran/, 'only the one for this route, and not the sea');
+  await page.locator('#plan-weather').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${shots}/33-plan-rain.png` });
+  await page.click('#plan-weather');
+  assert.equal(await vis(page, '#weather'), true);
+  assert.match(await text(page, '#weather-warnings'), /Hujan Berterusan \(Bahaya\)/);
+  assert.doesNotMatch(await text(page, '#weather-warnings'), /Sabah|Laut/);
+  assert.match(await text(page, '#weather-warnings'), /boleh menyebabkan banjir/);
+  assert.match(await text(page, '#weather-note'), /Tiada amaran tidak bermaksud jalan selamat/);
+  assert.equal(await page.getAttribute('#weather-roads', 'href'), 'https://bencana.jkr.gov.my/');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shots}/34-weather-sheet.png` });
+  await noOverflow(page, 'weather');
+  await page.click('#weather-back');
+  await page.waitForSelector('#weather', { state: 'hidden' });
+  assert.equal(log.forecast.length, 1, 'once per route');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('rain: a failed check says so, and never reads as all clear', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  await toPreview(page);
+  await page.waitForFunction(() => /Tak dapat semak hujan/.test(document.getElementById('plan-weather-title').textContent));
+  await page.click('#plan-weather');
+  assert.doesNotMatch(await text(page, '#weather-rain'), /Tiada hujan/);
+  assert.match(await text(page, '#weather-rain'), /Tak dapat/);
+  assert.match(await text(page, '#weather-warnings'), /tidak bermaksud tiada amaran/);
+  await ctx.close();
+
+  const dry = await newApp(browser, { ...quiet, forecast: dryForecast, warnings: () => [] });
+  await toPreview(dry.page);
+  await dry.page.waitForFunction(() => /Tiada hujan dijangka/.test(document.getElementById('plan-weather-title').textContent));
+  assert.deepEqual(dry.log.errors, []);
+  await dry.ctx.close();
+
+  const off = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { weather: false } } });
+  await toPreview(off.page);
+  await off.page.waitForTimeout(150);
+  assert.equal(await vis(off.page, '#plan-weather'), false);
+  assert.equal(off.log.forecast.length, 0, 'nothing is sent when it is off');
+  assert.equal(off.log.warnings, 0);
+  await off.ctx.close();
+  assert.deepEqual(log.errors, []);
+});
+
+await check('rain: warned about on the way, once, and never over a turn', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, forecast: (u) => wetForecast(u, { fromPoint: 1, code: 95 }), warnings: () => [] });
+  await toNav(page);
+  await roll(page, trip, 0, 200, 12);
+  await page.waitForFunction(() => /Ribut petir/.test(document.getElementById('chips').textContent));
+  const words = (await said(page)).map((s) => s.text);
+  assert.equal(words.filter((w) => /ribut petir/i.test(w)).length, 1, words.join(' | '));
+  await roll(page, trip, 200, 500, 12);
+  assert.equal((await said(page)).filter((s) => /ribut petir/i.test(s.text)).length, 1);
+  await page.locator('#chips .chip', { hasText: 'Ribut petir' }).click();
+  assert.equal(await vis(page, '#weather'), true);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('HUD: big, black, flipped for the windscreen, and easy to leave', async () => {
+  const trip = prepareTrip(cityTrip());
+  for (const viewport of [{ width: 390, height: 664 }, { width: 844, height: 390 }, { width: 320, height: 568 }]) {
+    const name = `${viewport.width}x${viewport.height}`;
+    const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport });
+    log.laneCounts = { edges: [{ length: 10, lane_count: 2, speed_limit: 60 }] };
+    await toNav(page);
+    await roll(page, trip, 0, 500, 12);
+    await page.click('#btn-hud');
+    assert.equal(await vis(page, '#hudmode'), true);
+    await roll(page, trip, 500, 600, 12);
+    await page.waitForFunction(() => document.getElementById('hm-limit').textContent === '60');
+    assert.match(await text(page, '#hm-road'), /Jalan Tun Razak/);
+    assert.match(await text(page, '#hm-distance'), /m|km/);
+    assert.equal(await text(page, '#hm-speed'), '43');
+    assert.equal(await text(page, '#hm-limit'), '60');
+    const flipped = await page.evaluate(() => getComputedStyle(document.getElementById('hm-face')).transform);
+    assert.equal(flipped, 'matrix(1, 0, 0, -1, 0, 0)', 'flipped top to bottom, with left and right kept');
+    const bg = await page.evaluate(() => getComputedStyle(document.getElementById('hudmode')).backgroundColor);
+    assert.equal(bg, 'rgb(0, 0, 0)');
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: `${shots}/35-hud-controls-${name}.png` });
+    await page.evaluate(() => document.getElementById('hm-controls').classList.add('is-hidden'));
+    await page.waitForTimeout(260);
+    await page.screenshot({ path: `${shots}/35-hud-${name}.png` });
+    // Everything fits, even with the longest things in place.
+    await page.evaluate(() => { document.getElementById('hm-speed').textContent = '110'; document.getElementById('hm-distance').textContent = '12.5 km'; });
+    const fits = await page.evaluate(() => [...document.querySelectorAll('#hm-face *')].filter((e) => e.getBoundingClientRect().width && !e.closest('svg')).map((e) => {
+      const r = e.getBoundingClientRect();
+      return { id: e.id || e.className, ok: r.right <= innerWidth + 1 && r.left >= -1 && r.top >= -1 && r.bottom <= innerHeight + 1 };
+    }).filter((x) => !x.ok));
+    assert.deepEqual(fits, [], name);
+    // The options go away by themselves, then come back with a tap.
+    await page.evaluate(() => document.getElementById('hm-controls').classList.add('is-hidden'));
+    await page.mouse.click(viewport.width / 2, viewport.height / 3);
+    assert.equal(await page.locator('#hm-controls.is-hidden').count(), 0);
+    await page.click('#hm-mirror');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('hm-face')).transform), 'none');
+    assert.equal(await text(page, '#hm-mirror'), 'Cermin: mati');
+    await page.waitForTimeout(100);
+    await page.screenshot({ path: `${shots}/36-hud-plain-${name}.png` });
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).hudMirror), false);
+    await page.click('#hm-close');
+    await page.waitForSelector('#hudmode', { state: 'hidden' });
+    assert.equal(await vis(page, '#nav-bar'), true, 'still on the trip');
+    assert.deepEqual(log.errors, []);
+    await ctx.close();
+  }
+});
+
+await check('HUD: arriving leaves it, and it follows a simulated drive', async () => {
+  const short = buildTrip(P.a, [
+    { to: [101.704, 3.15], type: 1, street: 'Jalan Satu', kph: 40 },
+    { to: [101.704, 3.1535], type: 15, street: 'Jalan Dua', kph: 40 },
+  ]);
+  const { ctx, page, log } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: short }) });
+  await toPreview(page);
+  await page.click('#try-sim');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.click('#btn-hud');
+  await page.waitForFunction(() => document.getElementById('hm-distance').textContent.length > 0);
+  await page.waitForSelector('#arrival:not([hidden])', { timeout: 20000 });
+  assert.equal(await vis(page, '#hudmode'), false);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+const typeAndPick = async (page, value) => {
+  await page.fill('#search-input', value);
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForSelector('.route-opt');
+};
+
+await check('shared links: full links, messages and coordinates go straight to the place', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  await typeAndPick(page, 'Jumpa sini\nhttps://www.google.com/maps/place/Kedai+Kopi/@3.1500,101.7000,17z/data=!3m1!4b1!4m6!3m5!1s0x0!8m2!3d3.1579!4d101.7116');
+  assert.deepEqual(log.fossgis.at(-1).locations.at(-1).lat, 3.1579);
+  assert.deepEqual(log.fossgis.at(-1).locations.at(-1).lon, 101.7116);
+  assert.equal(await text(page, '#dest-name'), 'Kedai Kopi');
+  assert.equal(log.photon.filter((u) => !u.includes('/reverse')).length, 0, 'no need to search');
+  await page.click('#preview-back');
+  await page.waitForSelector('#where');
+  await page.click('#where');
+  await typeAndPick(page, 'https://waze.com/ul?ll=3.14%2C101.71&navigate=yes');
+  assert.equal(log.fossgis.at(-1).locations.at(-1).lat, 3.14);
+  // It had no name, so one is looked up.
+  await page.waitForFunction(() => document.getElementById('dest-name').textContent === 'Suria KLCC');
+  await page.click('#preview-back');
+  await page.waitForSelector('#where');
+  await page.click('#where');
+  // A link with only a name becomes a search for it.
+  await page.fill('#search-input', 'https://www.google.com/maps/search/?api=1&query=Suria+KLCC');
+  await page.waitForSelector('#search-results .place');
+  assert.ok(log.photon.at(-1).includes('q=Suria+KLCC'), log.photon.at(-1));
+  // A short link, before the server exists, explains itself.
+  await page.fill('#search-input', 'https://maps.app.goo.gl/AbCdEf');
+  await page.waitForFunction(() => /belum boleh dibuka/.test(document.getElementById('search-status').textContent));
+  assert.equal(log.server.length, 0);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('shared links: short ones go through the server, and failures say so', async () => {
+  const appServer = (url) => {
+    if (url.pathname === '/link' && url.searchParams.get('u').includes('good')) return { lat: 3.145, lng: 101.705, name: 'Tempat Rahsia', url: 'https://www.google.com/maps/place/x' };
+    return null;
+  };
+  const { ctx, page, log } = await newApp(browser, { ...quiet, appServer });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  await page.fill('#search-input', 'https://maps.app.goo.gl/bad');
+  await page.waitForFunction(() => /tak dapat dibuka/.test(document.getElementById('search-status').textContent));
+  await typeAndPick(page, 'https://maps.app.goo.gl/good');
+  assert.equal(await text(page, '#dest-name'), 'Tempat Rahsia');
+  assert.equal(log.fossgis.at(-1).locations.at(-1).lat, 3.145);
+  assert.ok(log.server.some((u) => /\/link\?u=https%3A%2F%2Fmaps\.app\.goo\.gl%2Fgood$/.test(u)), log.server.join());
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('shared links: opening Pintu with a link goes straight there, and the address is tidied', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, url: `${ORIGIN}?to=3.14,101.71&name=Rumah%20Mak` });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.waitForSelector('.route-opt');
+  assert.equal(await text(page, '#dest-name'), 'Rumah Mak');
+  assert.equal(log.fossgis.at(-1).locations.at(-1).lat, 3.14);
+  assert.equal(await page.evaluate(() => location.search), '');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+
+  const sharedIn = await newApp(browser, { ...quiet, url: `${ORIGIN}?title=Suria&text=${encodeURIComponent('Jom sini')}&url=${encodeURIComponent('https://www.google.com/maps?q=3.14,101.71')}` });
+  await sharedIn.page.waitForSelector('#preview:not([hidden])');
+  assert.equal(await sharedIn.page.evaluate(() => location.search), '');
+  assert.deepEqual(sharedIn.log.errors, []);
+  await sharedIn.ctx.close();
+});
+
+const pedestrian = (b) => b.costing === 'pedestrian';
+
+await check('walking: chosen as a mode, with nothing about cars', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 320, height: 568 }, forecast: dryForecast, warnings: () => [] });
+  await toPreview(page);
+  assert.equal(await vis(page, '#toll-wrap'), true);
+  await page.click('#mode-walk');
+  await page.waitForFunction(() => document.getElementById('mode-walk').getAttribute('aria-checked') === 'true');
+  await page.waitForSelector('.route-opt');
+  assert.ok(pedestrian(log.fossgis.at(-1)));
+  assert.equal(await vis(page, '#toll-wrap'), false);
+  assert.equal(await vis(page, '#plan-fuel'), false);
+  assert.equal(await vis(page, '#plan-weather'), false);
+  await noOverflow(page, 'walking');
+  await page.screenshot({ path: `${shots}/37-walk-preview.png` });
+  // A simulated walk, in a browser with no real GPS movement.
+  await page.click('#try-sim');
+  await page.waitForSelector('#sim-panel:not([hidden])');
+  await page.waitForTimeout(400);
+  assert.equal(await vis(page, '#speed'), false, 'no speedometer on foot');
+  assert.equal(log.trace.length, 0, 'no lane or speed limit requests');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.mode') || '"car"')), 'car', 'not remembered for next time');
+  await page.screenshot({ path: `${shots}/38-walking.png` });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('walking: from the arrival screen to the door, then back in the car', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, routeResponse: (b) => ({ trip: pedestrian(b) ? buildTrip(trip.coords.at(-1), [{ to: [P.d[0] + 0.0005, P.d[1]], type: 1, street: 'Laluan Pejalan Kaki', kph: 5 }, { to: [P.d[0] + 0.0005, P.d[1] + 0.0004], type: 42, kph: 5 }, { to: [P.d[0] + 0.0005, P.d[1] + 0.0008], type: 4, kph: 5 }]) : cityTrip() }) });
+  await toNav(page);
+  await roll(page, trip, 0, trip.length, 15);
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.equal(await text(page, '#arrival-walk'), 'Jalan ke pintu');
+  assert.equal(await vis(page, '#arrival-mall'), false);
+  await page.screenshot({ path: `${shots}/39-arrival-walk.png` });
+  await page.click('#arrival-walk');
+  await page.waitForSelector('#nav-bar');
+  await page.waitForFunction(() => !document.getElementById('nav').hidden);
+  assert.ok(pedestrian(log.fossgis.at(-1)));
+  const walk = prepareTrip(log.routeResponseLast || buildTrip(trip.coords.at(-1), [{ to: [P.d[0] + 0.0005, P.d[1]], type: 1, street: 'Laluan Pejalan Kaki', kph: 5 }, { to: [P.d[0] + 0.0005, P.d[1] + 0.0004], type: 42, kph: 5 }, { to: [P.d[0] + 0.0005, P.d[1] + 0.0008], type: 4, kph: 5 }]));
+  await roll(page, walk, 0, walk.length * 0.2, 1.4, 5);
+  await page.waitForFunction(() => /Masuk ke bangunan/.test(document.getElementById('sign-action').textContent));
+  assert.equal(await vis(page, '#speed'), false);
+  await roll(page, walk, walk.length * 0.2, walk.length, 1.4, 5);
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.equal(await vis(page, '#arrival-walk'), false, 'already at the door');
+  await page.click('#arrival-done');
+  await page.waitForSelector('#where');
+  await toPreview(page);
+  assert.equal(await page.getAttribute('#mode-car', 'aria-checked'), 'true');
+  assert.equal(log.fossgis.at(-1).costing, 'auto');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('malls: links to the map and shops, and a shop search once the server is there', async () => {
+  const mallPlace = { type: 'Feature', geometry: { type: 'Point', coordinates: [101.7149, 2.9701] }, properties: { name: 'IOI City Mall', city: 'Putrajaya', state: 'Selangor', countrycode: 'MY' } };
+  const shops = [{ name: 'UNIQLO', lot: 'G11-3' }, { name: "MCDONALD'S", lot: 'LG57-2' }, { name: 'AEON', lot: '2AT1-2' }];
+  const appServer = (url) => (url.pathname === '/mall' && url.searchParams.get('id') === 'ioi-city' ? { shops } : null);
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 }, appServer, photonFeatures: [mallPlace] });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  await typeAndPick(page, 'ioi city');
+  assert.match(await text(page, '#plan-mall-title'), /IOI City Mall/);
+  await page.click('#plan-mall');
+  assert.equal(await page.getAttribute('#mall-map', 'href'), 'https://map.abuzzsolutions.asia/amap/map.php?site=ICM&servicesHtml=true&sharePoi=false&player=website');
+  assert.match(await page.getAttribute('#mall-list', 'href'), /ioicitymall\.com\.my/);
+  await page.waitForSelector('#mall-search:not([hidden])');
+  await page.fill('#mall-search', 'uniq');
+  assert.match(await text(page, '#mall-results'), /UNIQLO\s*G11-3/);
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${shots}/40-mall.png` });
+  await noOverflow(page, 'mall');
+  await page.fill('#mall-search', 'tiada');
+  assert.match(await text(page, '#mall-status'), /Tiada kedai/);
+  await page.click('#mall-back');
+  await page.waitForSelector('#mall', { state: 'hidden' });
+  assert.equal(await vis(page, '#preview'), true);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('malls: without the server it still offers the mall\'s own pages, also after arriving', async () => {
+  const mallPlace = { type: 'Feature', geometry: { type: 'Point', coordinates: [P.d[0], P.d[1]] }, properties: { name: 'IOI City Mall', city: 'Putrajaya', state: 'Selangor', countrycode: 'MY' } };
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, photonFeatures: [mallPlace] });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  await typeAndPick(page, 'ioi city');
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  await roll(page, trip, 0, trip.length, 15);
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.match(await text(page, '#arrival-mall'), /IOI City Mall/);
+  await page.click('#arrival-mall');
+  assert.equal(await vis(page, '#mall'), true);
+  assert.equal(await vis(page, '#mall-search'), false);
+  assert.match(await text(page, '#mall-status'), /belum tersedia/);
+  assert.equal(log.server.length, 0);
+  await page.click('#mall-back');
+  await page.waitForSelector('#mall', { state: 'hidden' });
+  assert.equal(await vis(page, '#arrival-done'), true, 'still on the arrival screen');
   assert.deepEqual(log.errors, []);
   await ctx.close();
 });

@@ -17,6 +17,8 @@ export function resetRouting() { skipped.clear(); lastCall.clear(); }
 
 let nextRouteId = 1;
 
+const COSTING = { car: 'auto', motorcycle: 'motorcycle', walk: 'pedestrian' };
+
 function buildBody({ from, to, stops = [], mode, avoidTolls, heading, alternates }) {
   const start = { lat: from.lat, lon: from.lng, type: 'break' };
   if (heading != null) { start.heading = Math.round(heading); start.heading_tolerance = 45; }
@@ -26,14 +28,14 @@ function buildBody({ from, to, stops = [], mode, avoidTolls, heading, alternates
       ...stops.map((p) => ({ lat: p.lat, lon: p.lng, type: 'break' })),
       { lat: to.lat, lon: to.lng, type: 'break' },
     ],
-    costing: mode === 'motorcycle' ? 'motorcycle' : 'auto',
+    costing: COSTING[mode] || 'auto',
     units: 'kilometers',
     language: 'en-GB',
     turn_lanes: true,
   };
   // Valhalla can't offer alternatives once a route has stops.
   if (alternates && !stops.length) body.alternates = alternates;
-  if (mode !== 'motorcycle' && avoidTolls) body.costing_options = { auto: { use_tolls: 0 } };
+  if (mode === 'car' && avoidTolls) body.costing_options = { auto: { use_tolls: 0 } };
   return body;
 }
 
@@ -97,21 +99,26 @@ export async function fetchRoutes(opts, { fetchImpl = (...a) => fetch(...a), pro
 
 // How many lanes each stretch of road has, for the next part of the route.
 // A route only carries lane arrows at junctions that have them mapped. The road's
-// lane count is mapped far more often, and asking for it separately keeps routes quick.
-export async function fetchLaneCounts(route, fromS, toS, { fetchImpl = (...a) => fetch(...a), providers = CONFIG.routing, signal, mode = 'car' } = {}) {
+// lane count is mapped far more often, as is its speed limit, and asking for them
+// separately keeps routes quick.
+export async function fetchLaneCounts(route, fromS, toS, opts = {}) {
+  return (await fetchRoadDetails(route, fromS, toS, opts)).counts;
+}
+
+export async function fetchRoadDetails(route, fromS, toS, { fetchImpl = (...a) => fetch(...a), providers = CONFIG.routing, signal, mode = 'car' } = {}) {
   const { coords, cum } = route;
   const part = [];
   for (let i = 0; i < coords.length; i++) {
     if (cum[i] >= fromS && cum[i] <= toS) part.push(coords[i]);
     if (cum[i] > toS) break;
   }
-  if (part.length < 2) return [];
+  if (part.length < 2) return { counts: [], limits: [] };
   const start = cum[coords.indexOf(part[0])];
   const body = {
     encoded_polyline: encodePolyline(part),
     costing: mode === 'motorcycle' ? 'motorcycle' : 'auto',
     shape_match: 'edge_walk',
-    filters: { attributes: ['edge.lane_count', 'edge.length'], action: 'include' },
+    filters: { attributes: ['edge.lane_count', 'edge.length', 'edge.speed_limit'], action: 'include' },
     directions_options: { units: 'kilometers' },
   };
   for (const provider of providers) {
@@ -125,7 +132,8 @@ export async function fetchLaneCounts(route, fromS, toS, { fetchImpl = (...a) =>
     }
     if (res.status === 401 || res.status === 403) { skipped.add(provider.name); continue; }
     if (!res.ok) continue;
-    return parseLaneCounts(await res.json(), start);
+    const json = await res.json();
+    return { counts: parseLaneCounts(json, start), limits: parseSpeedLimits(json, start) };
   }
   throw new RouteError('offline');
 }
@@ -143,6 +151,31 @@ export function parseLaneCounts(json, baseS = 0) {
     s += len;
   }
   return out;
+}
+
+// Only what's actually mapped. No limit shown is better than a guessed one.
+export function parseSpeedLimits(json, baseS = 0) {
+  const out = [];
+  let s = baseS;
+  for (const edge of json.edges || []) {
+    const len = (edge.length || 0) * 1000;
+    if (len <= 0) continue;
+    const limit = Number(edge.speed_limit);
+    if (limit >= 5 && limit <= 130) {
+      const last = out[out.length - 1];
+      if (last && last.limit === limit && last.to === s) last.to = s + len;
+      else out.push({ from: s, to: s + len, limit });
+    }
+    s += len;
+  }
+  return out;
+}
+
+export function limitAt(segments, s) {
+  for (const seg of segments || []) {
+    if (s >= seg.from && s < seg.to) return seg.limit;
+  }
+  return null;
 }
 
 export function parseResponse(data) {

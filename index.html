@@ -58,6 +58,7 @@
     <input id="search-input" type="search" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
   </div>
   <div id="search-body" class="panel-body">
+    <button id="search-paste" class="paste-row" type="button" hidden><span id="search-paste-icon"></span><span id="search-paste-label"></span></button>
     <div id="search-quick" class="search-quick" hidden>
       <button id="quick-here" class="quick" type="button"><span id="quick-here-icon"></span><span id="quick-here-label"></span></button>
       <button id="quick-map" class="quick" type="button"><span id="quick-map-icon"></span><span id="quick-map-label"></span></button>
@@ -96,6 +97,7 @@
     <div class="segmented" role="radiogroup" id="mode-group">
       <button id="mode-car" type="button" role="radio"></button>
       <button id="mode-moto" type="button" role="radio"></button>
+      <button id="mode-walk" type="button" role="radio"></button>
     </div>
     <label class="switch" id="toll-wrap">
       <input id="avoid-tolls" type="checkbox">
@@ -121,6 +123,16 @@
       </div>
       <button id="plan-fuel-edit" class="link-btn" type="button"></button>
     </div>
+    <button id="plan-weather" class="plan-row" type="button" hidden>
+      <span id="plan-weather-icon" class="plan-icon"></span>
+      <span class="plan-main"><strong id="plan-weather-title"></strong><span id="plan-weather-detail"></span></span>
+      <span id="plan-weather-chev" class="plan-chev"></span>
+    </button>
+    <button id="plan-mall" class="plan-row" type="button" hidden>
+      <span id="plan-mall-icon" class="plan-icon"></span>
+      <span class="plan-main"><strong id="plan-mall-title"></strong><span id="plan-mall-detail"></span></span>
+      <span id="plan-mall-chev" class="plan-chev"></span>
+    </button>
     <button id="plan-prayer" class="plan-row" type="button" hidden>
       <span class="plan-icon" id="plan-prayer-icon"></span>
       <span class="plan-main"><strong id="plan-prayer-title"></strong><span id="plan-prayer-detail"></span></span>
@@ -172,10 +184,12 @@
     </div>
   </div>
   <div class="nav-left">
+    <div id="speed-limit" class="limit-sign" hidden></div>
     <div id="speed" class="speed" hidden><strong id="speed-value"></strong><span id="speed-unit"></span></div>
     <div id="nav-range" class="range-pill" hidden></div>
   </div>
   <div class="nav-float">
+    <button id="btn-hud" class="round round-text round-hud" type="button"></button>
     <button id="btn-3d" class="round round-text" type="button"></button>
     <button id="btn-mute" class="round" type="button"></button>
     <button id="btn-add-stop" class="round" type="button"></button>
@@ -304,8 +318,71 @@
   </div>
   <h2 id="arrival-title"></h2>
   <p id="arrival-place"></p>
+  <p id="arrival-quip" class="arrival-quip"></p>
   <p id="arrival-stats" class="arrival-stats"></p>
+  <button id="arrival-walk" class="arrival-more" type="button" hidden></button>
+  <button id="arrival-mall" class="arrival-more" type="button" hidden></button>
   <button id="arrival-done" class="plate plate-btn" type="button"></button>
+</section>
+
+<!-- Rain and floods along the route -->
+<section id="weather" class="sheet sheet-stops sheet-auto" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="weather-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="weather-title"></h2></div>
+  </div>
+  <div id="weather-rain" class="weather-rain" role="status"></div>
+  <div id="weather-warnings"></div>
+  <p id="weather-note" class="tip"></p>
+  <div class="link-row">
+    <a id="weather-rivers" class="outline-btn" target="_blank" rel="noopener"></a>
+    <a id="weather-roads" class="outline-btn" target="_blank" rel="noopener"></a>
+  </div>
+  <p id="weather-credit" class="tip tip-small"></p>
+</section>
+
+<!-- Inside a mall -->
+<section id="mall" class="sheet sheet-stops sheet-over" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="mall-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="mall-title"></h2></div>
+  </div>
+  <div class="link-row">
+    <a id="mall-map" class="outline-btn" target="_blank" rel="noopener"></a>
+    <a id="mall-list" class="outline-btn" target="_blank" rel="noopener"></a>
+  </div>
+  <input id="mall-search" class="mall-search" type="search" autocomplete="off" hidden>
+  <div id="mall-status" class="route-status" role="status"></div>
+  <ul id="mall-results" class="place-list"></ul>
+  <p id="mall-note" class="tip"></p>
+</section>
+
+<!-- Head-up display: read in the windscreen's reflection -->
+<section id="hudmode" class="hudmode" hidden>
+  <div id="hm-face" class="hm-face">
+    <div class="hm-turn">
+      <span id="hm-arrow" class="hm-arrow"></span>
+      <div class="hm-turn-text">
+        <strong id="hm-distance" class="hm-distance"></strong>
+        <span id="hm-road" class="hm-road"></span>
+      </div>
+    </div>
+    <div class="hm-bar"><span id="hm-bar-fill"></span></div>
+    <div class="hm-foot">
+      <div class="hm-speed"><strong id="hm-speed"></strong><span id="hm-unit"></span></div>
+      <span id="hm-limit" class="limit-sign" hidden></span>
+      <div id="hm-eta" class="hm-eta"></div>
+    </div>
+  </div>
+  <div id="hm-controls" class="hm-controls">
+    <p id="hm-tip"></p>
+    <div class="hm-buttons">
+      <button id="hm-mirror" type="button"></button>
+      <button id="hm-close" type="button"></button>
+    </div>
+  </div>
 </section>
 
 <!-- One-time note before the first trip -->
@@ -337,7 +414,33 @@
     <div class="setting">
       <h3 id="set-voice-title"></h3>
       <p id="voice-status" class="tip"></p>
+      <p id="voice-level-label" class="field-label field-gap"></p>
+      <div class="segmented" role="radiogroup" id="voice-level">
+        <button id="voice-full" type="button" role="radio"></button>
+        <button id="voice-turns" type="button" role="radio"></button>
+      </div>
+      <p id="voice-char-label" class="field-label field-gap"></p>
+      <ul id="voice-chars" class="char-list" role="radiogroup"></ul>
+      <p id="voice-char-note" class="tip"></p>
       <button id="voice-test" class="outline-btn" type="button"></button>
+    </div>
+    <div class="setting">
+      <h3 id="set-limit-title"></h3>
+      <p id="limit-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="limit-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="limit-on-label"></span>
+      </label>
+    </div>
+    <div class="setting">
+      <h3 id="set-weather-title"></h3>
+      <p id="weather-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="weather-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="weather-on-label"></span>
+      </label>
     </div>
     <div class="setting">
       <h3 id="set-theme-title"></h3>
@@ -376,7 +479,9 @@
         <a href="https://github.com/komoot/photon" target="_blank" rel="noopener">Photon</a>,
         <a href="https://overpass-api.de/" target="_blank" rel="noopener">Overpass</a>,
         <a href="https://api.waktusolat.app/" target="_blank" rel="noopener">Waktu Solat API</a>
-        (JAKIM e-Solat).
+        (JAKIM e-Solat),
+        <a href="https://open-meteo.com/" target="_blank" rel="noopener">weather data by Open-Meteo.com</a>,
+        <a href="https://developer.data.gov.my/" target="_blank" rel="noopener">MET Malaysia via data.gov.my</a>.
       </p>
       <p id="version" class="tip"></p>
     </div>

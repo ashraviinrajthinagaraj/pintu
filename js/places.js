@@ -3,6 +3,7 @@
 // in what the tiles don't carry, or step in if the tiles can't be read.
 import { CONFIG } from './config.js';
 import { bearing, haversine, projectOnSegment } from './geo.js';
+import { cancelled, within } from './net.js';
 import { readPlaces, tileAddress, tilesAlongRoute } from './tiles.js';
 
 const MUSLIM_NAME = /masjid|surau|musolla|musalla|musala|mosque|madrasah|مسجد|\bal[- ]/i;
@@ -169,28 +170,6 @@ export function thinAlong(places, max = 40, stretch = 5000) {
 const cache = new Map();
 const resting = new Map();
 export const clearPlacesCache = () => { cache.clear(); resting.clear(); };
-
-const aborted = () => new DOMException('The request was cancelled', 'AbortError');
-
-// Runs a request with a limit on it. The limit holds even if the request
-// ignores being cancelled, because nothing here may wait forever.
-async function within(ms, signal, run) {
-  const ctrl = new AbortController();
-  const stop = () => ctrl.abort();
-  const timer = setTimeout(stop, ms);
-  if (signal?.aborted) stop();
-  signal?.addEventListener('abort', stop);
-  const gaveUp = new Promise((_, reject) => {
-    if (ctrl.signal.aborted) reject(aborted());
-    ctrl.signal.addEventListener('abort', () => reject(aborted()));
-  });
-  try {
-    return await Promise.race([run(ctrl.signal), gaveUp]);
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', stop);
-  }
-}
 
 // The map's tiles along the route, the nearest first, reporting as they come.
 async function fromTiles(route, category, fromS, { signal, fetchImpl, tileUrl, waits }, report) {
@@ -367,7 +346,7 @@ export async function findAlongRoute(route, category, fromS, {
     // Nothing yet, or the tiles couldn't be read: worth asking elsewhere before giving up.
     if (!partial && !ranked.length && !ctrl.signal.aborted) sure = (await settle(moreFromServers())) || tilesOk;
 
-    if (signal?.aborted) throw aborted();
+    if (signal?.aborted) throw cancelled();
     if (sure) cache.set(key, { at: Date.now(), places });
     else if (!ranked.length) throw new Error('no server answered');
     return ranked.sort((a, b) => a.ahead - b.ahead);

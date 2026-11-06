@@ -3,9 +3,12 @@ const synth = () => (typeof speechSynthesis !== 'undefined' ? speechSynthesis : 
 
 let muted = false;
 let lang = 'ms';
+let style = { pitch: 1, rate: 1 };
 
 export const setMuted = (v) => { muted = v; if (v) synth()?.cancel(); };
 export const setVoiceLang = (l) => { lang = l; };
+// How the current character sounds: phones can change a voice's pitch and pace.
+export const setVoiceStyle = (s) => { style = s; };
 
 function voices() {
   try { return synth()?.getVoices() || []; } catch { return []; }
@@ -40,7 +43,8 @@ export function speak(text, { evenIfMuted = false } = {}) {
   const u = new SpeechSynthesisUtterance(text);
   u.lang = tag;
   if (voice) u.voice = voice;
-  u.rate = 1;
+  u.rate = style.rate;
+  u.pitch = style.pitch;
   s.cancel();
   // Some Android browsers drop a sentence spoken straight after cancel().
   setTimeout(() => { try { s.speak(u); } catch { /* no voice today */ } }, 40);

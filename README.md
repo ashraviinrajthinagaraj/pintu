@@ -17,6 +17,8 @@ folder as it is.
 | Map tiles | [OpenFreeMap](https://openfreemap.org/) | No key. No guarantee of uptime |
 | Place search | [Photon](https://photon.komoot.io/) public server | Fair use. Heavy use is throttled |
 | Routing, lane arrows and lane counts | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
+| Rain forecast | [Open-Meteo](https://open-meteo.com/) | Free for non-commercial use, with credit |
+| Official warnings | [MET Malaysia via data.gov.my](https://developer.data.gov.my/realtime-api/weather) | 4 requests a minute |
 | Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
@@ -63,6 +65,71 @@ A simulated drive has a pause button, speeds from 1× to 30×, and a jump to the
 turn on a list. The trip line can be dragged or tapped to go anywhere, forward or back. None of
 this counts as leaving the route. From 10× it's silent apart from arriving, and the lane view
 is off. Ending the drive returns to the route screen with the plan unchanged.
+
+## Voices
+
+Settings has how much Pintu talks (full directions, or turns only) and who's talking. Each
+character (`js/characters.js`) has its own lines and its own pitch and pace, in Malay and English.
+They're all original. Characters from films are protected, so there are none here, but the
+Trailer Voice and the Secret Agent are written in that spirit.
+
+The instruction is never lost: it's said in full, jokes come after it where the next instruction
+cuts them off, and at the moment of a turn a character says a word or two at most.
+
+## Speed limit
+
+Comes from the routing service with the lane counts, wherever OpenStreetMap has it. Where it
+doesn't, nothing is shown rather than a guess. Over by more than 5 km/h for a few seconds, the
+speed turns red and Pintu says so once.
+
+## Rain and floods
+
+- **Rain:** the Open-Meteo forecast at each point along the route, at the time you'd get there.
+- **Official warnings:** MET Malaysia's, through data.gov.my, kept if they name a state the route
+  passes through. Continuous rain warnings are the ones that come with a flood risk.
+- **Rivers and closed roads:** one tap to JPS Public Infobanjir and JKR Bencana. Neither offers
+  data a page can read, and the old data.gov.my flood endpoint was reported to have stopped
+  updating in 2024, so Pintu doesn't show live river levels itself.
+
+These are forecasts and area warnings, not road conditions, so Pintu never says a road is safe. A
+failed check says it failed.
+
+## HUD mode
+
+A black screen with the next turn, the distance and your speed, flipped top to bottom. Lay the phone
+flat on the dashboard and it reads correctly in the windscreen. It works best at night, on full
+brightness. Tap the screen to turn the mirror off or leave.
+
+## Sharing a location
+
+Search takes Google Maps, Waze, Apple Maps and OpenStreetMap links, whole messages with a link in
+them, and coordinates. On Android, once installed, Pintu can also be chosen from the share menu.
+Opening `?to=3.15,101.71&name=Rumah` goes straight to a place.
+
+Short links such as `maps.app.goo.gl` only say where they lead when followed, and a web page isn't
+allowed to do that, so they go through the small server below.
+
+## Walking to the door
+
+The arrival screen offers walking directions to the destination, and Walk is a mode of its own. On
+foot the instructions come closer to each turn, and GPS is allowed to wander more before it counts
+as leaving the route.
+
+### Malls
+
+Pintu can't guide you inside a building. GPS is unreliable indoors, and a web page can't use the
+Wi-Fi or Bluetooth signals that indoor positioning needs. So for a mall listed in `js/malls.js`, it
+opens the mall's own interactive map and shop list, and with the server running it can search the
+shop list for a lot number.
+
+## The small server
+
+`server/worker.js` runs on Cloudflare Workers (the free plan is plenty). It resolves short map links,
+passes on MET warnings if the browser can't get them directly, and reads a mall's shop list. It only
+answers this site, and only ever contacts the sites named in the file.
+
+To set it up: create a Worker from the Hello World template in the Cloudflare dashboard, replace its
+code with `server/worker.js`, deploy, and put its address in `server` in `js/config.js`.
 
 ## The lane view
 
