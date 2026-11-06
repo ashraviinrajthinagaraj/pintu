@@ -12,7 +12,9 @@ import { Motion } from './motion.js';
 import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
 import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, timeBetween } from './routing.js';
-import { CHARACTER_IDS, characterAbout, characterName, characterVoice, dress, pick, sample } from './characters.js';
+import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
+import { plainSpeech } from './delivery.js';
+import { DriveWatch, OVER_BY_KMH } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { parseLocationText, readResolved, resolveShortLink } from './links.js';
 import { fetchShops, mallFor, searchShops } from './malls.js';
@@ -42,9 +44,7 @@ const SIM_SPEEDS = [1, 4, 10, 30];
 const SIM_FAST = 10;           // from here it's too quick to talk over, or to read lanes
 const SIM_LEAD_M = 150;        // jumping to a turn lands this far before it
 const SIM_END_GAP_M = 60;      // a jump doesn't end the trip by itself
-const OVER_BY_KMH = 5;         // speedometers and GPS differ a little
-const OVER_HOLD_MS = 4000;     // passing a slower car shouldn't set it off
-const OVER_REPEAT_MS = 90000;
+const MOMENT_KEEP_MS = 30000;   // a remark that can't be made by then isn't worth making
 const TURNS_ONLY = new Set(['now', 'arrive', 'stop', 'repeat']);
 const WEATHER_REFRESH_MS = 20 * 60000;
 const RAIN_CHIP_M = 30000;     // far enough ahead to matter
@@ -210,6 +210,8 @@ function applyStaticText() {
   $('set-lang-title').textContent = t('setLang');
   $('set-voice-title').textContent = t('setVoice');
   $('voice-test').textContent = t('voiceTest');
+  $('voice-try-label').textContent = t('voiceTryLabel');
+  for (const b of document.querySelectorAll('#voice-try button')) b.textContent = t(`voiceTry_${b.dataset.moment}`);
   $('voice-level-label').textContent = t('setVoiceLevel');
   $('voice-full').textContent = t('voiceFull');
   $('voice-turns').textContent = t('voiceTurns');
@@ -310,8 +312,15 @@ function render3DButtons() {
 function renderVoiceStatus() {
   const status = voice.voiceStatus(getLang());
   const key = { exact: 'voiceExact', near: 'voiceNear', none: 'voiceNone' }[status] || 'voiceMissing';
-  $('voice-status').textContent = t(key);
-  $('voice-test').hidden = key === 'voiceMissing';
+  const human = voice.humanVoice();
+  const parts = human === 'on' ? [t('voiceHuman')]
+    : human === 'refused' ? [t('voiceHumanRefused'), t(key)]
+      : CONFIG.server ? [t('voiceHumanOff'), t(key)]
+        : [t(key)];
+  $('voice-status').textContent = parts.join(' ');
+  const silent = human !== 'on' && key === 'voiceMissing';
+  $('voice-test').hidden = silent;
+  $('voice-try').hidden = silent || S.settings.voiceCharacter === 'standard';
 }
 
 function renderInstall() {
@@ -1584,8 +1593,10 @@ function saveTrip() {
 function startGuidance({ simulate }) {
   S.guidance = new Guidance(S.route, { walking: S.mode === 'walk' });
   S.greeted = false;
-  S.overSince = null;
-  S.lastOverSaid = 0;
+  S.watch = new DriveWatch();
+  S.moment = null;
+  S.lines = new Map();
+  S.preparedFor = null;
   $('arrival-quip').textContent = '';
   S.carDirty = true;
   motion.setRoute(S.route);
@@ -1663,8 +1674,13 @@ function onNavFix(fix, now) {
   renderStrip($('nav-strip'), S.route, st.s, true);
   if (S.overlay === 'hudmode') renderHud(st, fix);
 
+  // Two things due at once, like a stop and the next turn, are said as one line.
+  S.gathering = [];
   for (const p of st.prompts) say(p);
+  flushSpeech();
   if (!st.prompts.length) sayWeather(st);
+  watchDrive(fix, st);
+  prepareAhead(st, fix);
   if (st.stopReached != null) onStopReached();
 
   if (st.arrived) { finishTrip(); return; }
@@ -1682,24 +1698,108 @@ function say(prompt) {
   if (!base) return;
   if (prompt.kind === 'arrive') {
     const quip = pick(who, 'arrive', lang);
-    $('arrival-quip').textContent = quip;
-    speakText(quip ? `${base} ${quip}` : base);
+    $('arrival-quip').textContent = plainSpeech(quip);
+    speakText(quip ? `${base} ${quip}` : base, { wait: voice.WAIT_JOKE_MS });
     return;
   }
-  let text = dress(who, prompt.kind, base, lang);
+  let text = lineFor(prompt.kind, prompt.index, base);
+  let wait = prompt.kind === 'now' ? voice.WAIT_TURN_MS : voice.WAIT_NORMAL_MS;
   // Once, at the start of a trip, and the instruction still follows at once.
   if (prompt.kind === 'intro' && !S.greeted) {
     S.greeted = true;
     const hello = pick(who, 'start', lang);
-    if (hello) text = `${hello} ${text}`;
+    if (hello) text = `${hello} [plain]${text}`;
+    wait = voice.WAIT_GREETING_MS;
   }
-  speakText(text);
+  speakText(text, { wait });
 }
 
-function speakText(text) {
+// The same words whether they were fetched early or are said on the spot.
+function lineFor(kind, index, base) {
+  const who = S.settings.voiceCharacter;
+  const key = `${who}|${kind}|${index}|${base}`;
+  S.lines ??= new Map();
+  if (!S.lines.has(key)) S.lines.set(key, dress(who, kind, base, getLang()));
+  return S.lines.get(key);
+}
+
+// Directions to come, fetched while there's time so they're on the phone when needed.
+function prepareAhead(st, fix) {
+  if (voice.humanVoice() !== 'on' || S.settings.muted || S.simScrub || (S.sim && S.sim.factor >= SIM_FAST)) return;
+  const mark = `${S.route.id}:${st.nextIndex}:${S.settings.voiceCharacter}`;
+  if (S.preparedFor === mark) return;
+  S.preparedFor = mark;
+  const lang = getLang();
+  for (const prompt of S.guidance.upcoming(fix.speed)) {
+    if (S.settings.voiceLevel === 'turns' && !TURNS_ONLY.has(prompt.kind)) continue;
+    const base = speech(prompt, S.route.maneuvers, lang);
+    if (base) voice.prepare(lineFor(prompt.kind, prompt.index, base));
+  }
+}
+
+function flushSpeech() {
+  const lines = S.gathering;
+  S.gathering = null;
+  if (!lines?.length) return;
+  speakText(lines.map((l) => l.text).join(' [plain]'), { wait: Math.min(...lines.map((l) => l.options?.wait ?? voice.WAIT_NORMAL_MS)) });
+}
+
+function speakText(text, options) {
   if (S.simScrub) return;
-  voice.speak(text);
-  $('speak-live').textContent = text;
+  if (S.gathering) {
+    S.gathering.push({ text, options });
+    return;
+  }
+  voice.speak(text, options);
+  $('speak-live').textContent = plainSpeech(text);
+  if (S.fixTime != null) S.watch?.heard(S.fixTime);
+}
+
+/* ---------- What a character makes of the drive ---------- */
+
+const SPEED_MOMENT = /^overspeed/;
+
+function watchDrive(fix, st) {
+  S.fixTime = fix.time;
+  if (!S.watch || S.mode === 'walk' || S.simScrub) return;
+  const limit = currentLimit(st);
+  const road = S.route.maneuvers[st.currentIndex];
+  const roadKmh = limit ?? (road?.time > 0 ? (road.length / road.time) * 3600 : null);
+  const moments = S.watch.update({
+    time: fix.time,
+    kmh: fix.speed == null ? null : fix.speed * 3.6,
+    limit,
+    roadKmh,
+    nearTurn: st.distanceToNext < 120,
+    nearEnd: st.remainingDistance < 300,
+    clearAhead: st.distanceToNext,
+  });
+  for (const key of moments) {
+    // A word about speed matters more than a remark about the view.
+    if (!S.moment || SPEED_MOMENT.test(key) || !SPEED_MOMENT.test(S.moment.key)) S.moment = { key, time: fix.time, limit };
+  }
+  sayMoment(st, fix);
+}
+
+function sayMoment(st, fix) {
+  const m = S.moment;
+  if (!m) return;
+  if (fix.time - m.time > MOMENT_KEEP_MS || S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) {
+    S.moment = null;
+    return;
+  }
+  // Directions come first. A remark waits until nothing is being said.
+  if (st.prompts.length || st.arrived || st.distanceToNext < 60 || voice.busy()) return;
+  S.moment = null;
+  const text = momentLine(m.key, m.limit);
+  if (text) speakText(text, { wait: voice.WAIT_JOKE_MS });
+}
+
+function momentLine(key, limit) {
+  const who = S.settings.voiceCharacter;
+  const lang = getLang();
+  if (SPEED_MOMENT.test(key)) return dress(who, key, t('overspeedSay', { limit }), lang, { vars: { limit } });
+  return dress(who, key, key === 'longDrive' ? t('restSay') : '', lang);
 }
 
 function onStopReached() {
@@ -1785,16 +1885,6 @@ function renderSpeed(fix, st) {
   }
   const over = known && limit && fix.speed * 3.6 > limit + OVER_BY_KMH;
   $('speed').classList.toggle('is-over', !!over);
-  if (!over) {
-    S.overSince = null;
-    return;
-  }
-  S.overSince ??= fix.time;
-  if (fix.time - S.overSince < OVER_HOLD_MS || Date.now() - S.lastOverSaid < OVER_REPEAT_MS) return;
-  if (S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) return;
-  S.lastOverSaid = Date.now();
-  const lang = getLang();
-  speakText(dress(S.settings.voiceCharacter, 'overspeed', t('overspeedSay', { limit }), lang, { vars: { limit } }));
 }
 
 function renderNavRange(st) {
@@ -2254,7 +2344,7 @@ function sayWeather(st) {
   S.weatherSaid = key;
   const lang = getLang();
   const text = t(`${rain.kind}Say`, { distance: sayDistance(Math.max(rain.ahead, 200), lang) });
-  speakText(dress(S.settings.voiceCharacter, 'rain', text, lang));
+  speakText(dress(S.settings.voiceCharacter, 'rain', text, lang), { wait: voice.WAIT_JOKE_MS });
 }
 
 /* ---------- Who's talking ---------- */
@@ -2272,7 +2362,9 @@ function renderCharacters() {
     name.textContent = characterName(id, lang);
     const about = document.createElement('span');
     about.textContent = characterAbout(id, lang);
-    btn.append(name, about);
+    const tag = document.createElement('small');
+    tag.textContent = characterTag(id, lang);
+    btn.append(name, about, tag);
     btn.addEventListener('click', () => chooseCharacter(id));
     li.append(btn);
     return li;
@@ -2282,12 +2374,28 @@ function renderCharacters() {
 function chooseCharacter(id) {
   setSetting('voiceCharacter', id);
   voice.setVoiceStyle(characterVoice(id));
+  voice.setVoiceCharacter(id);
   renderCharacters();
+  renderVoiceStatus();
   trySample();
 }
 
 function trySample() {
-  voice.speak(sample(S.settings.voiceCharacter, getLang(), t('voiceSample')), { evenIfMuted: true });
+  voice.unlockVoice();
+  voice.speak(sample(S.settings.voiceCharacter, getLang(), t('voiceSample')), { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS });
+}
+
+// Hear what a character would say, without having to break the speed limit to find out.
+function tryMoment(key) {
+  const who = S.settings.voiceCharacter;
+  const lang = getLang();
+  const limit = 90;
+  let line;
+  if (key === 'rain') line = dress(who, 'rain', t('rainSay', { distance: sayDistance(2000, lang) }), lang);
+  else if (key === 'arrive') line = dress(who, 'arrive', t('arriveSample'), lang);
+  else line = momentLine(key, limit);
+  voice.unlockVoice();
+  voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS });
 }
 
 function setVoiceLevel(level) {
@@ -2612,6 +2720,7 @@ function wire() {
   $('btn-settings').addEventListener('click', () => {
     openOverlay('settings');
     renderVoiceStatus();
+    voice.checkHumanVoice().then(renderVoiceStatus);
     renderInstall();
     renderSegments();
     renderVehicleSummary();
@@ -2767,6 +2876,7 @@ function wire() {
   $('lang-ms').addEventListener('click', () => changeLanguage('ms'));
   $('lang-en').addEventListener('click', () => changeLanguage('en'));
   $('voice-test').addEventListener('click', trySample);
+  for (const b of document.querySelectorAll('#voice-try button')) b.addEventListener('click', () => tryMoment(b.dataset.moment));
   for (const theme of ['auto', 'day', 'night']) {
     $(`theme-${theme}`).addEventListener('click', () => {
       setSetting('theme', theme);
@@ -2859,6 +2969,8 @@ async function main() {
   voice.setVoiceLang(S.settings.lang);
   voice.setMuted(S.settings.muted);
   voice.setVoiceStyle(characterVoice(S.settings.voiceCharacter));
+  voice.setVoiceCharacter(S.settings.voiceCharacter);
+  voice.checkHumanVoice();
   applyTheme();
   applyStaticText();
   renderSegments();

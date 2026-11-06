@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { altTrip, buildTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
 import { bearing } from '../../js/geo.js';
 import { prepareTrip } from '../../js/routing.js';
+import { speech } from '../../js/instructions.js';
 import { pointAt } from '../../js/motion.js';
 import { lngLatToTile } from '../../js/tiles.js';
 import { encodeTile } from '../helpers/mvt.js';
@@ -58,7 +59,7 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
+async function newApp(browser, { realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
   const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
@@ -80,6 +81,8 @@ async function newApp(browser, { tiles, hangAll = false, forecast, warnings, app
       log.server.push(url);
       const answer = appServer ? await appServer(new URL(url)) : null;
       if (!answer) return route.fulfill({ status: 502, json: { error: 'unavailable' }, headers: CORS });
+      if (answer.__status) return route.fulfill({ status: answer.__status, json: { error: 'refused' }, headers: CORS });
+      if (answer.__audio) return route.fulfill({ status: 200, body: Buffer.from(answer.__audio), contentType: answer.__type || 'audio/mpeg', headers: CORS });
       return route.fulfill({ json: answer, headers: CORS });
     }
     if (host === 'api.open-meteo.com') {
@@ -145,7 +148,7 @@ async function newApp(browser, { tiles, hangAll = false, forecast, warnings, app
   });
   async function currentRoutes() { return { trip: cityTrip(), alternates: [{ trip: altTrip() }] }; }
 
-  await ctx.addInitScript(({ voices, storage }) => {
+  await ctx.addInitScript(({ voices, storage, realAudio }) => {
     // A GPS the test can steer, with exact timestamps.
     const gps = { cb: null, err: null, watches: 0, starts: 0 };
     window.__gps = gps;
@@ -171,12 +174,28 @@ async function newApp(browser, { tiles, hangAll = false, forecast, warnings, app
       addEventListener() {},
     } });
 
+    // Recordings played, and whether the phone allows it.
+    window.__played = [];
+    window.__audioBlocked = false;
+    if (!realAudio) {
+      window.Audio = class {
+        constructor() { this.paused = true; this.ended = false; this.onerror = null; }
+        play() {
+          if (window.__audioBlocked) return Promise.reject(new Error('blocked'));
+          if (!String(this.src).startsWith('data:')) window.__played.push(this.src);
+          this.paused = false;
+          return Promise.resolve();
+        }
+        pause() { this.paused = true; }
+      };
+    }
+
     window.__wake = { requests: 0, released: 0 };
     Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: {
       request: async () => { window.__wake.requests++; return { release() { window.__wake.released++; }, addEventListener() {} }; },
     } });
     if (storage) for (const [k, v] of Object.entries(storage)) localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
-  }, { voices, storage: storage || null });
+  }, { voices, storage: storage || null, realAudio });
 
   const page = await ctx.newPage();
   page.on('pageerror', (e) => log.errors.push(`pageerror: ${e.message}`));
@@ -2062,7 +2081,7 @@ await check('voices: choose a character, hear it, and it lasts', async () => {
   const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 } });
   await page.click('#btn-settings');
   const rows = page.locator('#voice-chars .char-opt');
-  assert.equal(await rows.count(), 7);
+  assert.equal(await rows.count(), 9);
   assert.match(await text(page, '#voice-chars'), /Kapten/);
   assert.match(await text(page, '#voice-chars'), /Pencerita Filem/);
   assert.equal(await page.getAttribute('#voice-full', 'aria-checked'), 'true');
@@ -2471,6 +2490,402 @@ await check('malls: without the server it still offers the mall\'s own pages, al
   await page.waitForSelector('#mall', { state: 'hidden' });
   assert.equal(await vis(page, '#arrival-done'), true, 'still on the arrival screen');
   assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+
+/* ---------- Human voices ---------- */
+
+const voiceServer = ({ ready = true, reason, delay = () => 0, status } = {}) => async (url) => {
+  if (url.pathname !== '/speak') return null;
+  if (url.searchParams.has('check')) return ready ? { ready: true } : { ready: false, reason };
+  if (status) return { __status: status };
+  const wait = delay(url);
+  if (wait) await new Promise((r) => setTimeout(r, wait));
+  return { __audio: [1, 2, 3] };
+};
+const asked = (log) => log.server.filter((u) => u.includes('/speak') && !u.includes('check=')).map((u) => new URL(u).searchParams);
+const played = (page) => page.evaluate(() => window.__played);
+const withCast = (who, extra = {}) => ({ storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { voiceCharacter: who, ...extra } } });
+const settled = (page) => page.waitForTimeout(150);
+
+await check('human voice: directions play as a recording, and the phone stays quiet', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain'), appServer: voiceServer() });
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__played.length > 0);
+  assert.deepEqual(await said(page), [], 'nothing from the phone voice');
+  const first = asked(log)[0];
+  assert.equal(first.get('who'), 'captain');
+  assert.equal(first.get('lang'), 'ms');
+  assert.ok(first.get('v'));
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('human voice: delivery marks go to the voice, and never to the screen', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain'), appServer: voiceServer() });
+  await toNav(page);
+  await roll(page, trip, 0, trip.length, 15);
+  await page.waitForSelector('#arrival:not([hidden])');
+  await page.waitForFunction(() => document.getElementById('speak-live').textContent.length > 0);
+  const live = await page.evaluate(() => document.getElementById('speak-live').textContent);
+  const quip = await text(page, '#arrival-quip');
+  assert.doesNotMatch(live + quip, /\[[a-z]+\]/, `${live} ${quip}`);
+  assert.ok(asked(log).length >= 2);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('human voice: the phone voice never hears a delivery mark', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, withCast('makcik'));
+  await toNav(page);
+  await roll(page, trip, 0, trip.length, 15);
+  await page.waitForSelector('#arrival:not([hidden])');
+  await settled(page);
+  const all = await said(page);
+  assert.ok(all.length >= 3);
+  for (const { text: words } of all) assert.doesNotMatch(words, /\[[a-z]+\]/, words);
+  assert.equal(log.server.length, 0);
+  await ctx.close();
+});
+
+await check('human voice: a slow server never makes a direction late', async () => {
+  const trip = prepareTrip(cityTrip());
+  // Prepared lines and spoken ones alike take far too long to arrive.
+  const { ctx, page, log } = await newApp(browser, { ...withCast('standard'), appServer: voiceServer({ delay: () => 6000 }) });
+  await toNav(page);
+  const started = Date.now();
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 5500 });
+  assert.ok(Date.now() - started < 5400, `spoke after ${Date.now() - started} ms`);
+  const before = (await said(page)).length;
+  assert.equal(before, 1);
+  assert.deepEqual(await played(page), [], 'the phone spoke, so the recording must not talk over it');
+  await page.waitForTimeout(6500);
+  assert.deepEqual(await played(page), [], 'nor when it finally turns up');
+  assert.ok(asked(log).length >= 1);
+  await ctx.close();
+});
+
+await check('human voice: a server that fails hands over at once, and is left alone for a bit', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('standard'), appServer: voiceServer({ status: 500 }) });
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 2500 });
+  await page.waitForTimeout(300);
+  const tried = asked(log).length;
+  assert.ok(tried >= 1);
+  // Nobody waits on it again: the next direction goes straight to the phone.
+  const before = (await said(page)).length;
+  await roll(page, trip, 40, trip.length * 0.6, 15);
+  await page.waitForFunction((n) => window.__said.length > n, before);
+  assert.equal(asked(log).length, tried, 'not asked again straight away');
+  assert.deepEqual(await played(page), []);
+  await ctx.close();
+});
+
+await check('human voice: no key yet means the phone voice, plainly explained', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), appServer: voiceServer({ ready: false, reason: 'no key', status: 503 }) });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /belum disambungkan/.test(document.getElementById('voice-status').textContent));
+  await page.click('#settings-back');
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 2500 });
+  assert.equal(asked(log).length, 0, 'nothing to ask for');
+  assert.deepEqual(await played(page), []);
+  await ctx.close();
+});
+
+await check('human voice: a refused key says so, in words someone can act on', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, appServer: voiceServer({ ready: false, reason: 'key refused' }) });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /ditolak/.test(document.getElementById('voice-status').textContent));
+  await ctx.close();
+});
+
+await check('human voice: a server from before voices just means the phone voice', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('standard'), appServer: () => null });
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 2500 });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('human voice: if the phone blocks the recording, the phone voice says it', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page } = await newApp(browser, { ...withCast('standard'), appServer: voiceServer() });
+  await page.evaluate(() => { window.__audioBlocked = true; });
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 2500 });
+  await ctx.close();
+});
+
+await check('human voice: the next directions are fetched before they\'re needed, once', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('standard'), appServer: voiceServer() });
+  await page.waitForTimeout(100);
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__played.length > 0);
+  await page.waitForTimeout(200);
+  const ready = asked(log).map((q) => q.get('text'));
+  const turn = speech({ kind: 'now', index: 1, distance: 0 }, trip.maneuvers, 'ms');
+  assert.ok(ready.includes(turn), `${turn} is not in ${JSON.stringify(ready)}`);
+  assert.equal(new Set(ready).size, ready.length, 'nothing fetched twice');
+  // When that moment comes, there's nothing left to fetch.
+  const count = ready.length;
+  const before = (await played(page)).length;
+  await roll(page, trip, 40, trip.maneuvers[1].beginDist - 5, 12);
+  await page.waitForFunction((n) => window.__played.length > n, before);
+  const repeated = asked(log).map((q) => q.get('text')).filter((t) => t === turn);
+  assert.equal(repeated.length, 1, 'the turn was already on the phone');
+  assert.ok(asked(log).length >= count);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('human voice: choosing a character speaks in their voice, and shows who they sound like', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 390, height: 664 }, appServer: voiceServer() });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /Suara manusia aktif/.test(document.getElementById('voice-status').textContent));
+  const list = await text(page, '#voice-chars');
+  for (const words of [/Uncle Kopitiam/, /Cikgu Disiplin/, /loghat Melayu/, /loghat Cina/, /loghat India/, /Suara budak/]) assert.match(list, words);
+  await page.locator('#voice-chars').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${shots}/50-voices.png` });
+  await page.locator('#voice-chars .char-opt', { hasText: 'Uncle Kopitiam' }).click();
+  await page.waitForFunction(() => window.__played.length > 0);
+  const last = asked(log).at(-1);
+  assert.equal(last.get('who'), 'uncle');
+  assert.deepEqual(await said(page), []);
+  await noOverflow(page, 'voices');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('human voice: every joke can be heard from settings, without driving badly', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...withCast('cikgu'), scale: 2, viewport: { width: 390, height: 664 }, appServer: voiceServer() });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /Suara manusia aktif/.test(document.getElementById('voice-status').textContent));
+  await page.locator('#voice-try').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${shots}/51-try-jokes.png` });
+  for (const moment of ['overspeed', 'overspeed3', 'rain', 'jam', 'arrive']) {
+    const before = asked(log).length;
+    await page.click(`#voice-try [data-moment="${moment}"]`);
+    await page.waitForTimeout(150);
+    const line = asked(log).at(-1).get('text');
+    assert.ok(asked(log).length > before, moment);
+    assert.ok(line, moment);
+    if (moment.startsWith('overspeed')) assert.match(line, /90/, line);
+    if (moment === 'rain') assert.match(line, /hujan/i, line);
+  }
+  await page.locator('#voice-chars .char-opt', { hasText: /^Biasa/ }).click();
+  assert.equal(await vis(page, '#voice-try'), false, 'the plain voice has no jokes to try');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('human voice: a real audio element plays a real recording', async () => {
+  const trip = prepareTrip(cityTrip());
+  const wav = Buffer.alloc(44 + 8000);
+  wav.write('RIFF', 0); wav.writeUInt32LE(36 + 8000, 4); wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(8000, 28); wav.writeUInt16LE(1, 32); wav.writeUInt16LE(8, 34); wav.write('data', 36); wav.writeUInt32LE(8000, 40);
+  wav.fill(128, 44);
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return { ready: true };
+    // Late enough that the moment of silence from the tap has finished by itself.
+    await new Promise((r) => setTimeout(r, 400));
+    return { __audio: [...wav], __type: 'audio/wav' };
+  };
+  const { ctx, page } = await newApp(browser, { ...withCast('standard'), realAudio: true, appServer: server });
+  await page.evaluate(() => {
+    const real = HTMLMediaElement.prototype.play;
+    window.__plays = [];
+    HTMLMediaElement.prototype.play = function play() {
+      const entry = { src: this.src.slice(0, 20), result: 'waiting' };
+      window.__plays.push(entry);
+      const p = real.call(this);
+      p.then(() => { entry.result = 'ok'; }, (e) => { entry.result = e.name; });
+      return p;
+    };
+  });
+  await toNav(page);
+  await roll(page, trip, 0, 40, 12);
+  await page.waitForFunction(() => window.__plays.some((p) => p.src.startsWith('blob:') && p.result !== 'waiting'));
+  const plays = await page.evaluate(() => window.__plays);
+  // The tap's moment of silence is there, and the first direction may well cut it off.
+  const silence = plays.find((p) => p.src.startsWith('data:'));
+  assert.ok(['ok', 'AbortError'].includes(silence?.result), JSON.stringify(plays));
+  const source = await readFile(path.join(root, 'js/voice.js'), 'utf8');
+  const [, dataUrl] = source.match(/const SILENCE = '([^']+)'/);
+  assert.equal(await page.evaluate((src) => new Audio(src).play().then(() => 'ok', (e) => e.name), dataUrl), 'ok', 'and it really is playable');
+  const clip = plays.find((p) => p.src.startsWith('blob:'));
+  assert.equal(clip.result, 'ok', JSON.stringify(plays));
+  assert.deepEqual(await said(page), []);
+  await ctx.close();
+});
+
+await check('human voice: recordings stay on the phone, through a reload and an update', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain'), appServer: voiceServer() });
+  const line = () => page.evaluate(() => import('/js/voice.js').then((v) => v.speak('Belok kiri.', { evenIfMuted: true })));
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await line();
+  await page.waitForFunction(() => window.__played.length > 0);
+  await page.waitForFunction(async () => (await (await caches.open('pintu-voice-1')).keys()).length > 0);
+  const sw = await readFile(path.join(root, 'sw.js'), 'utf8');
+  assert.match(sw, /VOICE = 'pintu-voice-1'/);
+  assert.match(sw, /new Set\(\[SHELL, LIBS, TILES, VOICE\]\)/);
+  await page.reload();
+  await page.waitForFunction(() => window.__map?.ready);
+  const count = asked(log).length;
+  await line();
+  await page.waitForFunction(() => window.__played.length > 0);
+  assert.equal(asked(log).length, count, 'not fetched again');
+  await ctx.close();
+});
+
+await check('human voice: with the server gone, what\'s on the phone still plays', async () => {
+  let gone = false;
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return gone ? { ready: false, reason: 'no key' } : { ready: true };
+    return gone ? { __status: 503 } : { __audio: [1, 2, 3] };
+  };
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain'), appServer: server });
+  const line = (words) => page.evaluate((w) => import('/js/voice.js').then((v) => v.speak(w, { evenIfMuted: true })), words);
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await line('Belok kiri.');
+  await page.waitForFunction(() => window.__played.length > 0);
+  await page.waitForFunction(async () => (await (await caches.open('pintu-voice-1')).keys()).length > 0);
+  gone = true;
+  await page.reload();
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'off');
+  const count = asked(log).length;
+  await line('Belok kiri.');
+  await page.waitForFunction(() => window.__played.length > 0);
+  assert.deepEqual(await said(page), []);
+  await line('Belok kanan.');
+  await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 1000 });
+  assert.equal(asked(log).length, count, 'and nothing is asked of a server that has said no');
+  await ctx.close();
+});
+
+/* ---------- What the characters make of the drive ---------- */
+
+// A trip long enough to crawl along, with no turn for a good while.
+const longRoad = () => buildTrip(P.a, [{ to: [101.78, 3.15], type: 1, street: 'Lebuhraya Panjang', kph: 90 }]);
+
+await check('sustained speeding: the warnings get firmer, and the praise comes when you stop', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain') });
+  log.laneCounts = { edges: [{ length: 100, lane_count: 2, speed_limit: 60 }] };
+  await toNav(page);
+  await roll(page, trip, 0, 200, 12);
+  await page.waitForFunction(() => document.getElementById('speed-limit').textContent === '60');
+  await settled(page);
+  const before = (await said(page)).length;
+  // Every fix is a second. The same stretch of road, driven far too keenly.
+  await roll(page, trip, 200, 200 + 25 * 10, 25);
+  await settled(page);
+  let now = (await said(page)).slice(before).map((s) => s.text);
+  assert.equal(now.filter((t) => /60/.test(t)).length, 1, JSON.stringify(now));
+  await roll(page, trip, 450, 450 + 25 * 25, 25);
+  await settled(page);
+  now = (await said(page)).slice(before).map((s) => s.text);
+  const warnings = now.filter((t) => /60/.test(t));
+  assert.equal(warnings.length, 2, JSON.stringify(now));
+  assert.notEqual(warnings[0], warnings[1], 'not the same words');
+  const firm = (await said(page)).length;
+  await roll(page, trip, 1075, 1075 + 12 * 10, 12);
+  await settled(page);
+  const after = (await said(page)).slice(firm).map((s) => s.text);
+  assert.ok(after.length >= 1, 'a kind word for slowing down');
+  assert.ok(!after.some((t) => /60/.test(t)), JSON.stringify(after));
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('turns-only voice stays out of it: no remarks about speed or jams', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain', { voiceLevel: 'turns' }) });
+  log.laneCounts = { edges: [{ length: 100, lane_count: 2, speed_limit: 60 }] };
+  await toNav(page);
+  await roll(page, trip, 0, 200, 12);
+  await page.waitForFunction(() => document.getElementById('speed-limit').textContent === '60');
+  await settled(page);
+  const before = (await said(page)).length;
+  await roll(page, trip, 200, 900, 25);
+  await settled(page);
+  const now = (await said(page)).slice(before).map((s) => s.text);
+  assert.ok(!now.some((t) => /\b60\b/.test(t)), JSON.stringify(now));
+  await ctx.close();
+});
+
+await check('a jam: crawling for two minutes gets a remark, and getting out of it another', async () => {
+  const trip = prepareTrip(longRoad());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), routeResponse: () => ({ trip: longRoad() }) });
+  await toNav(page);
+  await roll(page, trip, 0, 300, 15);
+  await settled(page);
+  const before = (await said(page)).length;
+  await roll(page, trip, 300, 300 + 2 * 125, 2);
+  await settled(page);
+  const stuck = (await said(page)).slice(before).map((s) => s.text);
+  assert.equal(stuck.length, 1, JSON.stringify(stuck));
+  assert.match(stuck[0], /[Jj]em|kopi|kereta/i);
+  const during = (await said(page)).length;
+  await roll(page, trip, 550, 550 + 15 * 25, 15);
+  await settled(page);
+  const free = (await said(page)).slice(during).map((s) => s.text);
+  assert.ok(free.length >= 1, 'something when it clears');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('the standard voice says nothing about jams', async () => {
+  const trip = prepareTrip(longRoad());
+  const { ctx, page } = await newApp(browser, { ...withCast('standard'), routeResponse: () => ({ trip: longRoad() }) });
+  await toNav(page);
+  await roll(page, trip, 0, 300, 15);
+  await settled(page);
+  const before = (await said(page)).length;
+  await roll(page, trip, 300, 300 + 2 * 125, 2);
+  await roll(page, trip, 550, 550 + 15 * 25, 15);
+  await settled(page);
+  assert.equal((await said(page)).length, before);
+  await ctx.close();
+});
+
+await check('a remark waits for a direction to finish, and never talks over one', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('adik') });
+  log.laneCounts = { edges: [{ length: 100, lane_count: 2, speed_limit: 60 }] };
+  await page.evaluate(() => {
+    Object.defineProperty(window.speechSynthesis, 'speaking', { configurable: true, get: () => window.__talking === true });
+  });
+  await toNav(page);
+  await roll(page, trip, 0, 200, 12);
+  await page.waitForFunction(() => document.getElementById('speed-limit').textContent === '60');
+  await settled(page);
+  await page.evaluate(() => { window.__talking = true; });
+  const before = (await said(page)).length;
+  await roll(page, trip, 200, 200 + 25 * 8, 25);
+  await settled(page);
+  assert.equal((await said(page)).slice(before).filter((s) => /60/.test(s.text)).length, 0, 'held back while something is being said');
+  await page.evaluate(() => { window.__talking = false; });
+  await roll(page, trip, 400, 400 + 25 * 2, 25);
+  await settled(page);
+  assert.equal((await said(page)).slice(before).filter((s) => /60/.test(s.text)).length, 1, 'and said once it stops');
   await ctx.close();
 });
 

@@ -100,6 +100,22 @@ export class Guidance {
     });
   }
 
+  // What's likely to be said for the next few manoeuvres, so a voice that has to be
+  // fetched can be ready in time. A plan, not a promise: speed changes the wording.
+  upcoming(speed, count = 2) {
+    const { maneuvers } = this.route;
+    const { far } = promptDistances(speed, this.walking);
+    const first = this.lastState?.nextIndex ?? 0;
+    const out = [];
+    for (let i = first; i < Math.min(first + count, maneuvers.length); i++) {
+      if (maneuvers[i].beginDist - this.s >= far) out.push({ kind: 'far', index: i, distance: far });
+      const now = { kind: 'now', index: i, distance: 0 };
+      if (!maneuvers[i].isStop && maneuvers[i + 1] && maneuvers[i + 1].beginDist - maneuvers[i].beginDist < 150) now.thenIndex = i + 1;
+      out.push(now);
+    }
+    return out;
+  }
+
   // Say the current instruction again on request, or after a pause.
   repeat() {
     const st = this.lastState;

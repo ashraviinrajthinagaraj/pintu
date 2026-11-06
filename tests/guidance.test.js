@@ -320,3 +320,35 @@ test('jumping over a stop counts it as passed, and jumping back brings it back',
   }
   assert.deepEqual(reached, [stopIndex]);
 });
+
+test('knows what it\'s likely to say next, ahead of time', () => {
+  const route = prepareTrip(cityTrip());
+  const g = new Guidance(route);
+  const plan = g.upcoming(12);
+  assert.ok(plan.length >= 2);
+  assert.deepEqual(plan.filter((p) => p.kind === 'now').map((p) => p.index), [0, 1].slice(0, plan.filter((p) => p.kind === 'now').length));
+  for (const p of plan) {
+    assert.ok(speech(p, route.maneuvers, 'ms'), JSON.stringify(p));
+    assert.ok(p.index < route.maneuvers.length);
+  }
+});
+
+test('what it plans to say at a turn is what it actually says there', () => {
+  const route = prepareTrip(cityTrip());
+  const g = new Guidance(route);
+  const { said } = drive(route, { kph: 40, g });
+  for (const real of said.filter((p) => p.kind === 'now')) {
+    const fresh = new Guidance(route);
+    fresh.lastState = { nextIndex: real.index };
+    const planned = fresh.upcoming(11).find((p) => p.kind === 'now' && p.index === real.index);
+    assert.equal(speech(planned, route.maneuvers, 'ms'), real.text);
+  }
+});
+
+test('no plan to announce a turn from further away than it is', () => {
+  const route = prepareTrip(cityTrip());
+  const g = new Guidance(route);
+  g.s = route.maneuvers[1].beginDist - 100;
+  g.lastState = { nextIndex: 1 };
+  assert.ok(!g.upcoming(12).some((p) => p.kind === 'far' && p.index === 1));
+});

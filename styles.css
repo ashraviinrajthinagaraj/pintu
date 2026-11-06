@@ -966,6 +966,11 @@ a { color: inherit; }
 .char-opt[aria-checked="true"] { border-color: var(--sky); }
 .char-opt strong { display: block; font-weight: 700; }
 .char-opt span { display: block; font-size: 14px; color: var(--mute); line-height: 1.3; }
+.char-opt small { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; color: var(--sky); line-height: 1.3; }
+.voice-try { margin-top: 14px; }
+.voice-try[hidden] { display: none; }
+.try-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.try-chip { min-height: 44px; padding: 6px 14px; border: 1px solid var(--mute); border-radius: 22px; font-weight: 600; background: var(--panel-2); }
 
 /* ---------- HUD: pure black, big, and flipped to read correctly in the glass ---------- */
 .round-hud { font-size: 16px; letter-spacing: .02em; }

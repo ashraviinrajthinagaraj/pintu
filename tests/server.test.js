@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../server/worker.js';
+import { CHARACTER_IDS } from '../js/characters.js';
 
 const PINTU = 'https://ashraviinrajthinagaraj.github.io';
 const HOME = 'https://pintu.example.workers.dev';
@@ -231,4 +232,267 @@ test('nothing else is here', async () => {
   assert.equal((await ask('/anything')).status, 404);
   assert.equal((await ask('/')).status, 404);
   assert.deepEqual(asked, []);
+});
+
+/* ---------- Human voices ---------- */
+
+const ENV = { AZURE_SPEECH_KEY: 'secret-key-123' };
+const TTS = 'https://southeastasia.tts.speech.microsoft.com/cognitiveservices/v1';
+const speakUrl = (who, lang, text) => `/speak?who=${who}&lang=${lang}&text=${encodeURIComponent(text)}`;
+const say = (path, { origin = PINTU, env = ENV } = {}) => worker.fetch(new Request(`${HOME}${path}`, { headers: origin ? { origin } : {} }), env);
+
+// Pretends to be Azure, and keeps what it was asked to say.
+function azure(answer = () => new Response(new Uint8Array([1, 2, 3]), { status: 200 })) {
+  const asked = [];
+  globalThis.fetch = async (url, init = {}) => {
+    asked.push({ url: String(url), ...init });
+    return answer(asked.length, init);
+  };
+  return asked;
+}
+
+// Enough XML checking to catch a tag left open, or text breaking out of one.
+function assertBalanced(xml) {
+  const stack = [];
+  for (const m of xml.matchAll(/<(\/?)([\w:]+)([^<>]*?)(\/?)>/g)) {
+    if (m[4]) continue;
+    if (m[1]) assert.equal(stack.pop(), m[2], xml);
+    else stack.push(m[2]);
+  }
+  assert.deepEqual(stack, [], xml);
+  assert.doesNotMatch(xml.replace(/<[^<>]*>/g, '').replace(/&(amp|lt|gt|quot|apos);/g, ''), /[<>&]/, xml);
+}
+
+test('a spoken line comes back as audio, ready to keep', async () => {
+  const asked = azure();
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'audio/mpeg');
+  assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
+  assert.match(res.headers.get('cache-control'), /immutable/);
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [1, 2, 3]);
+  assert.equal(asked[0].url, TTS);
+  assert.equal(asked[0].method, 'POST');
+  assert.equal(asked[0].headers['Ocp-Apim-Subscription-Key'], 'secret-key-123');
+  assert.match(asked[0].headers['X-Microsoft-OutputFormat'], /mp3/);
+  assert.match(asked[0].body, /name="ms-MY-OsmanNeural"/);
+  assertBalanced(asked[0].body);
+});
+
+test('every character can speak both languages, with properly formed requests', async () => {
+  for (const who of CHARACTER_IDS) {
+    for (const lang of ['ms', 'en']) {
+      const asked = azure();
+      const res = await say(speakUrl(who, lang, 'Belok kiri. [tease]Eh… 90 kilometer? [whisper]Jangan.'));
+      assert.equal(res.status, 200, `${who} ${lang}`);
+      assertBalanced(asked[0].body);
+    }
+  }
+});
+
+test('the characters don\'t all share one voice, and the accents are real ones', async () => {
+  const voiceOf = async (who, lang) => {
+    const asked = azure();
+    await say(speakUrl(who, lang, 'Belok kiri.'));
+    return asked[0].body.match(/voice name="([^"]+)"/)[1];
+  };
+  assert.match(await voiceOf('captain', 'ms'), /^ms-MY-/);
+  assert.match(await voiceOf('makcik', 'ms'), /^ms-MY-/);
+  assert.match(await voiceOf('commentator', 'en'), /^en-IN-/);
+  assert.match(await voiceOf('cikgu', 'en'), /^en-IN-/);
+  assert.match(await voiceOf('uncle', 'ms'), /^zh-CN-/);
+  assert.match(await voiceOf('agent', 'ms'), /^zh-CN-/);
+  assert.match(await voiceOf('uncle', 'en'), /^en-SG-/);
+  const all = [];
+  for (const who of ['captain', 'commentator', 'cikgu', 'uncle', 'agent', 'trailer', 'adik']) all.push(await voiceOf(who, 'ms'));
+  assert.equal(new Set(all).size, all.length, all.join());
+});
+
+test('a voice from another language is told which language to speak', async () => {
+  const asked = azure();
+  await say(speakUrl('uncle', 'ms', 'Belok kiri.'));
+  assert.match(asked[0].body, /<lang xml:lang="ms-MY">/);
+  const own = azure();
+  await say(speakUrl('captain', 'ms', 'Belok kiri.'));
+  assert.doesNotMatch(own[0].body, /<lang/);
+});
+
+test('delivery marks become small changes in the voice, and pauses', async () => {
+  const asked = azure();
+  await say(speakUrl('standard', 'ms', 'Belok kiri. [deadpan]Hmm… baiklah. [excited]Yay!'));
+  const { body } = asked[0];
+  assert.doesNotMatch(body, /\[|\]/, 'marks are never read aloud');
+  assert.match(body, /Belok kiri\./);
+  assert.match(body, /<prosody rate="-7%" pitch="-3%">Hmm<\/prosody><break time="350ms"\/><prosody rate="-7%" pitch="-3%">baiklah\.<\/prosody>/);
+  assert.match(body, /<prosody rate="\+9%" pitch="\+6%">Yay!<\/prosody>/);
+  assert.equal((body.match(/<break time="280ms"\/>/g) || []).length, 2, 'a beat before each change');
+});
+
+test('after a joke, a direction goes back to a normal voice', async () => {
+  const asked = azure();
+  await say(speakUrl('standard', 'ms', '[whisper]Senyap… [plain]Belok kiri.'));
+  assert.match(asked[0].body, /<break time="280ms"\/>Belok kiri\./);
+});
+
+test('nothing in a line can break out into the request', async () => {
+  const asked = azure();
+  const res = await say(speakUrl('standard', 'en', 'A&B <voice name="evil">"x"</voice> [bogus]y'));
+  assert.equal(res.status, 200);
+  const { body } = asked[0];
+  assert.doesNotMatch(body, /name="evil"/);
+  assert.doesNotMatch(body, /bogus/, 'an unknown mark is dropped');
+  assert.match(body, /A&amp;B &lt;voice name=&quot;evil&quot;&gt;/);
+  assertBalanced(body);
+});
+
+test('numbers are spelled out for a voice from another language, in the right one', async () => {
+  const words = async (who, lang, text) => {
+    const asked = azure();
+    await say(speakUrl(who, lang, text));
+    return asked[0].body;
+  };
+  assert.match(await words('commentator', 'ms', 'Dalam 300 meter'), /Dalam tiga ratus meter/);
+  assert.match(await words('commentator', 'ms', '1.5 kilometer'), /satu perpuluhan lima kilometer/);
+  assert.match(await words('cikgu', 'ms', 'Had 90'), /Had sembilan puluh/);
+  assert.match(await words('captain', 'en', 'The limit is 110'), /one hundred ten/);
+  assert.match(await words('captain', 'en', 'In 2.5 kilometres'), /two point five kilometres/);
+  assert.match(await words('commentator', 'ms', 'Masuk E2 dan FT3'), /Masuk E2 dan FT3/, 'road names stay as they are');
+  assert.match(await words('captain', 'ms', 'Dalam 300 meter'), /Dalam 300 meter/, 'a Malay voice reads them itself');
+});
+
+test('an English voice reading Malay is helped with the Malay spelling', async () => {
+  const asked = azure();
+  await say(speakUrl('commentator', 'ms', 'Cuaca kecil dicuba Cyberjaya McDonald'));
+  assert.match(asked[0].body, /Cuacha kechil dichuba Cyberjaya McDonald/);
+  const native = azure();
+  await say(speakUrl('commentator', 'en', 'Cuaca kecil'));
+  assert.match(native[0].body, /kecil/);
+});
+
+test('only known characters, only the two languages, only short lines', async () => {
+  const asked = azure();
+  for (const path of [
+    speakUrl('nobody', 'ms', 'x'),
+    speakUrl('__proto__', 'ms', 'x'),
+    speakUrl('constructor', 'ms', 'x'),
+    speakUrl('captain', 'fr', 'x'),
+    speakUrl('captain', '__proto__', 'x'),
+    speakUrl('captain', 'ms', ''),
+    speakUrl('captain', 'ms', 'x'.repeat(421)),
+    '/speak',
+  ]) {
+    assert.equal((await say(path)).status, 400, path);
+  }
+  assert.equal(asked.length, 0);
+});
+
+test('without a key it says so, and asks nobody', async () => {
+  const asked = azure();
+  const res = await say(speakUrl('captain', 'ms', 'x'), { env: {} });
+  assert.equal(res.status, 503);
+  assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
+  assert.deepEqual(await (await say('/speak?check=1', { env: {} })).json(), { ready: false, reason: 'no key' });
+  assert.equal((await worker.fetch(new Request(`${HOME}${speakUrl('captain', 'ms', 'x')}`, { headers: { origin: PINTU } }))).status, 503, 'no settings at all');
+  assert.equal(asked.length, 0);
+});
+
+test('the check says whether the key works, using none of the allowance', async () => {
+  let asked = azure(() => new Response('[]'));
+  assert.deepEqual(await (await say('/speak?check=1')).json(), { ready: true });
+  assert.match(asked[0].url, /voices\/list$/);
+  asked = azure(() => new Response('', { status: 401 }));
+  assert.deepEqual(await (await say('/speak?check=1')).json(), { ready: false, reason: 'key refused' });
+  azure(() => new Response('', { status: 500 }));
+  assert.deepEqual(await (await say('/speak?check=1')).json(), { ready: false, reason: 'unavailable' });
+});
+
+test('the key never reaches the page, whatever happens', async () => {
+  for (const status of [200, 400, 401, 403, 429, 500]) {
+    azure(() => new Response(status === 200 ? new Uint8Array([1]) : 'nope', { status }));
+    const res = await say(speakUrl('captain', 'ms', 'x'));
+    const all = JSON.stringify([...res.headers]) + new TextDecoder().decode(await res.arrayBuffer());
+    assert.doesNotMatch(all, /secret-key-123/, String(status));
+  }
+});
+
+test('if a voice isn\'t offered here, the next one takes over', async () => {
+  const asked = azure((n) => (n <= 2 ? new Response('no such voice', { status: 400 }) : new Response(new Uint8Array([9]))));
+  const res = await say(speakUrl('commentator', 'en', 'Turn left.'));
+  assert.equal(res.status, 200);
+  assert.match(asked[0].body, /en-IN-ArjunNeural/);
+  assert.match(asked[1].body, /en-IN-ArjunNeural/, 'same voice, simpler request');
+  assert.doesNotMatch(asked[1].body, /prosody|<break/);
+  assert.match(asked[2].body, /en-IN-PrabhatNeural/);
+});
+
+test('every character has an ordinary voice to fall back on, if the special ones aren\'t offered', async () => {
+  for (const who of CHARACTER_IDS) {
+    for (const lang of ['ms', 'en']) {
+      const asked = azure((n, init) => (/name="(ms-MY|en-SG)-/.test(init.body) ? new Response(new Uint8Array([1])) : new Response('no', { status: 400 })));
+      const res = await say(speakUrl(who, lang, 'Belok kiri.'));
+      assert.equal(res.status, 200, `${who} ${lang}`);
+      assert.ok(asked.length <= 6, `${who} ${lang}: ${asked.length}`);
+    }
+  }
+});
+
+test('if no voice can say it, that\'s an honest failure', async () => {
+  const asked = azure(() => new Response('no', { status: 400 }));
+  const res = await say(speakUrl('commentator', 'en', 'Turn left.'));
+  assert.equal(res.status, 502);
+  assert.ok(asked.length <= 6, String(asked.length));
+});
+
+test('Azure refusing is passed on clearly, so the phone can step back', async () => {
+  azure(() => new Response('slow down', { status: 429 }));
+  assert.equal((await say(speakUrl('captain', 'ms', 'x'))).status, 429);
+  azure(() => new Response('no', { status: 401 }));
+  assert.equal((await say(speakUrl('captain', 'ms', 'x'))).status, 503);
+  azure(() => new Response('no', { status: 403 }));
+  assert.equal((await say(speakUrl('captain', 'ms', 'x'))).status, 503);
+  azure(() => new Response('oops', { status: 500 }));
+  const res = await say(speakUrl('captain', 'ms', 'x'));
+  assert.equal(res.status, 502);
+  assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
+});
+
+test('a human voice only ever speaks for Pintu\'s own page', async () => {
+  const asked = azure();
+  for (const origin of ['https://evil.example', null]) {
+    assert.equal((await say(speakUrl('captain', 'ms', 'x'), { origin })).status, 403);
+  }
+  assert.equal(asked.length, 0);
+});
+
+test('a line already recorded isn\'t paid for twice', async () => {
+  const store = new Map();
+  globalThis.caches = {
+    default: {
+      match: async (req) => store.get(req.url)?.clone(),
+      put: async (req, res) => { store.set(req.url, res); },
+    },
+  };
+  try {
+    const asked = azure();
+    const first = await say(speakUrl('captain', 'ms', 'Belok kiri.'));
+    assert.deepEqual([...new Uint8Array(await first.arrayBuffer())], [1, 2, 3]);
+    const again = await say(speakUrl('captain', 'ms', 'Belok kiri.'));
+    assert.equal(again.headers.get('access-control-allow-origin'), PINTU);
+    assert.deepEqual([...new Uint8Array(await again.arrayBuffer())], [1, 2, 3]);
+    assert.equal(asked.length, 1);
+    await say(speakUrl('makcik', 'ms', 'Belok kiri.'));
+    assert.equal(asked.length, 2, 'another character is another recording');
+  } finally {
+    delete globalThis.caches;
+  }
+});
+
+test('a broken shelf never costs the line', async () => {
+  globalThis.caches = { default: { match: async () => { throw new Error('no cache here'); }, put: async () => { throw new Error('no'); } } };
+  try {
+    azure();
+    assert.equal((await say(speakUrl('captain', 'ms', 'x'))).status, 200);
+  } finally {
+    delete globalThis.caches;
+  }
 });

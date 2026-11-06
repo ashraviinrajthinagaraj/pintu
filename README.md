@@ -132,6 +132,21 @@ It's live at `https://pintu.ashraviinrajthinagaraj.workers.dev`, set as `server`
 change it: open the Worker in the Cloudflare dashboard, tap Edit code, replace it with
 `server/worker.js`, and deploy.
 
+### Human voices
+
+Characters speak through [Azure Speech](https://azure.microsoft.com/products/ai-services/ai-speech),
+called by the server's `/speak`. Its free tier allows 500,000 characters a month. The key is a secret
+on the Worker, called `AZURE_SPEECH_KEY`, and never reaches the page. Create a Speech resource on the
+Free F0 tier in Southeast Asia. For another region, also set `AZURE_SPEECH_REGION`.
+
+Without a key, or with no signal, Pintu uses the phone's own voice. A direction never waits long for a
+recording (`WAIT_TURN_MS` in `js/voice.js`), and the next ones are fetched early and kept on the phone.
+
+Each character's voices are the list in `SPEAKERS` in `server/worker.js`. Lines in `js/cast/` carry
+delivery marks like `[tease]`, which become small changes in pace and pitch, with `…` for a pause.
+Change `SPEECH_VERSION` in both `server/worker.js` and `js/voice.js` if a voice changes, so old
+recordings aren't reused.
+
 ## The lane view
 
 When the road has lanes mapped, Pintu draws them on the map in 3D: road surface, dividers,
