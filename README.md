@@ -129,9 +129,9 @@ passes on MET warnings if the browser can't get them directly, and reads a mall'
 answers this site, and only ever contacts the sites named in the file.
 
 It's live at `https://pintu.ashraviinrajthinagaraj.workers.dev`, set as `server` in `js/config.js`. To
-change it, push to `main`: the Worker is connected to this repository (Settings, then Builds), and
-`wrangler.toml` tells Cloudflare what to deploy. Its `name` must match the Worker's name. Secrets set in
-the dashboard stay as they are.
+change it, push to `main`: `.github/workflows/server.yml` deploys it using a repository secret called
+`CLOUDFLARE_API_TOKEN` and the settings in `wrangler.toml`, whose `name` must match the Worker's name.
+Secrets set in the Cloudflare dashboard stay as they are.
 
 ### Human voices
 
