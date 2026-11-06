@@ -61,13 +61,12 @@ function solatMonth(times) {
 async function newApp(browser, { tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
   const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], errors: [], external: new Set() };
-  // As if the small server had been set up.
-  if (appServer) {
-    await ctx.route('**/js/config.js', async (route) => {
-      const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
-      route.fulfill({ contentType: 'text/javascript', body: original.replace('server: null', "server: 'https://pintu.test'") });
-    });
-  }
+  // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
+  await ctx.route('**/js/config.js', async (route) => {
+    const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
+    const server = appServer ? "'https://pintu.test'" : 'null';
+    route.fulfill({ contentType: 'text/javascript', body: original.replace(/server: [^,]+,/, `server: ${server},`) });
+  });
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
     const host = new URL(url).hostname;

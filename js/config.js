@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.5.0',
+  version: '0.5.1',
 
   maplibre: {
     version: '5.24.0',
@@ -30,7 +30,7 @@ export const CONFIG = {
 
   // Stops along the route come from OpenStreetMap through these, tried in order.
   // Pintu's small server, for jobs a web page can't do by itself. See server/worker.js.
-  server: null,
+  server: 'https://pintu.ashraviinrajthinagaraj.workers.dev',
   weather: {
     forecastUrl: 'https://api.open-meteo.com/v1/forecast',
     warningsUrl: 'https://api.data.gov.my/weather/warning',

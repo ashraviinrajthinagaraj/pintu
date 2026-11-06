@@ -128,8 +128,9 @@ shop list for a lot number.
 passes on MET warnings if the browser can't get them directly, and reads a mall's shop list. It only
 answers this site, and only ever contacts the sites named in the file.
 
-To set it up: create a Worker from the Hello World template in the Cloudflare dashboard, replace its
-code with `server/worker.js`, deploy, and put its address in `server` in `js/config.js`.
+It's live at `https://pintu.ashraviinrajthinagaraj.workers.dev`, set as `server` in `js/config.js`. To
+change it: open the Worker in the Cloudflare dashboard, tap Edit code, replace it with
+`server/worker.js`, and deploy.
 
 ## The lane view
 
