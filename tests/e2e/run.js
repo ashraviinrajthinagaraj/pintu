@@ -81,7 +81,7 @@ async function newApp(browser, { realAudio = false, tiles, hangAll = false, fore
       log.server.push(url);
       const answer = appServer ? await appServer(new URL(url)) : null;
       if (!answer) return route.fulfill({ status: 502, json: { error: 'unavailable' }, headers: CORS });
-      if (answer.__status) return route.fulfill({ status: answer.__status, json: { error: 'refused' }, headers: CORS });
+      if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
       if (answer.__audio) return route.fulfill({ status: 200, body: Buffer.from(answer.__audio), contentType: answer.__type || 'audio/mpeg', headers: CORS });
       return route.fulfill({ json: answer, headers: CORS });
     }
@@ -184,6 +184,15 @@ async function newApp(browser, { realAudio = false, tiles, hangAll = false, fore
           if (window.__audioBlocked) return Promise.reject(new Error('blocked'));
           if (!String(this.src).startsWith('data:')) window.__played.push(this.src);
           this.paused = false;
+          this.ended = false;
+          // As long as the test says a recording lasts, and then it ends.
+          const src = this.src;
+          setTimeout(() => {
+            if (this.src !== src || this.paused) return;
+            this.paused = true;
+            this.ended = true;
+            this.onended?.();
+          }, window.__clipMs ?? 10);
           return Promise.resolve();
         }
         pause() { this.paused = true; }
@@ -2682,7 +2691,7 @@ await check('human voice: every joke can be heard from settings, without driving
     const before = asked(log).length;
     await page.click(`#voice-try [data-moment="${moment}"]`);
     await page.waitForTimeout(150);
-    const line = asked(log).at(-1).get('text');
+    const line = asked(log).slice(before).map((q) => q.get('text')).join(' ');
     assert.ok(asked(log).length > before, moment);
     assert.ok(line, moment);
     if (moment.startsWith('overspeed')) assert.match(line, /90/, line);
@@ -2777,6 +2786,109 @@ await check('human voice: with the server gone, what\'s on the phone still plays
   await line('Belok kanan.');
   await page.waitForFunction(() => window.__said.length > 0, null, { timeout: 1000 });
   assert.equal(asked(log).length, count, 'and nothing is asked of a server that has said no');
+  await ctx.close();
+});
+
+await check('human voice: a direction and its joke are separate recordings, played in order', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), appServer: voiceServer() });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  const line = (words) => page.evaluate((w) => import('/js/voice.js').then((v) => v.speak(w, { evenIfMuted: true })), words);
+  await line('Belok kiri. [tease]Kopi tak lari.');
+  assert.deepEqual(asked(log).map((q) => q.get('text')), ['Belok kiri.', '[tease]Kopi tak lari.']);
+  assert.equal((await played(page)).length, 2);
+  // Another direction, the same joke: only the direction is new.
+  await line('Belok kanan. [tease]Kopi tak lari.');
+  assert.deepEqual(asked(log).map((q) => q.get('text')).slice(2), ['Belok kanan.']);
+  assert.equal((await played(page)).length, 4);
+  assert.deepEqual(await said(page), []);
+  await ctx.close();
+});
+
+await check('human voice: a joke that\'s late is dropped, and never comes in the phone\'s voice', async () => {
+  const server = voiceServer({ delay: (url) => (url.searchParams.get('text').startsWith('[') ? 5000 : 0) });
+  const { ctx, page } = await newApp(browser, { ...withCast('uncle'), appServer: server });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('Belok kiri. [tease]Kopi tak lari.', { evenIfMuted: true })));
+  assert.equal((await played(page)).length, 1, 'the direction');
+  await settled(page);
+  assert.deepEqual(await said(page), []);
+  await ctx.close();
+});
+
+await check('human voice: if the first part can\'t come, the phone says the whole line', async () => {
+  const { ctx, page } = await newApp(browser, { ...withCast('uncle'), appServer: voiceServer({ status: 500 }) });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('[warm]Jom. [plain]Belok kiri. [tease]Kopi tak lari.', { evenIfMuted: true })));
+  await settled(page);
+  assert.deepEqual((await said(page)).map((s) => s.text), ['Jom. Belok kiri. Kopi tak lari.']);
+  assert.deepEqual(await played(page), []);
+  await ctx.close();
+});
+
+await check('human voice: a direction after a greeting that\'s missing is still said', async () => {
+  const server = voiceServer({ delay: (url) => (url.searchParams.get('text').startsWith('[warm]') ? 3000 : 0) });
+  const { ctx, page } = await newApp(browser, { ...withCast('uncle'), appServer: server });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('[warm]Jom. [plain]Belok kiri.', { evenIfMuted: true, wait: 200 })));
+  await settled(page);
+  assert.deepEqual((await said(page)).map((s) => s.text), ['Jom. Belok kiri.']);
+  await ctx.close();
+});
+
+await check('human voice: the next direction cuts off a line in the middle', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), appServer: voiceServer() });
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await page.evaluate(() => { window.__clipMs = 600; });
+  await page.evaluate(() => { import('/js/voice.js').then((v) => { v.speak('Belok kiri. [tease]Kopi tak lari.', { evenIfMuted: true }); }); });
+  await page.waitForFunction(() => window.__played.length === 1);
+  await page.evaluate(() => import('/js/voice.js').then((v) => { v.speak('Belok kanan.', { evenIfMuted: true }); }));
+  await page.evaluate(() => { window.__clipMs = 10; });
+  await page.waitForFunction(() => window.__played.length === 2);
+  await page.waitForTimeout(900);
+  assert.equal((await played(page)).length, 2, 'the old joke never plays');
+  assert.ok(asked(log).length >= 2);
+  await ctx.close();
+});
+
+await check('human voice: all out for today says so, and what\'s recorded still plays', async () => {
+  let out = false;
+  const server = async (url) => {
+    if (url.pathname !== '/speak') return null;
+    if (url.searchParams.has('check')) return { ready: true };
+    return out ? { __status: 429, __json: { error: 'daily' } } : { __audio: [1, 2, 3] };
+  };
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain'), appServer: server });
+  const line = (words) => page.evaluate((w) => import('/js/voice.js').then((v) => v.speak(w, { evenIfMuted: true })), words);
+  await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
+  await line('Belok kiri.');
+  out = true;
+  await line('Belok kanan.');
+  await settled(page);
+  assert.deepEqual((await said(page)).map((s) => s.text), ['Belok kanan.']);
+  const count = asked(log).length;
+  // It stops asking, and old recordings carry on.
+  await line('Terus.');
+  await settled(page);
+  assert.equal(asked(log).length, count);
+  assert.equal((await said(page)).at(-1).text, 'Terus.');
+  const before = (await played(page)).length;
+  await line('Belok kiri.');
+  assert.equal((await played(page)).length, before + 1);
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /dah habis/.test(document.getElementById('voice-status').textContent));
+  await ctx.close();
+});
+
+await check('human voice: choosing a voice says it\'s getting ready, and stops saying so', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, appServer: voiceServer({ delay: () => 700 }) });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => /Suara manusia aktif/.test(document.getElementById('voice-status').textContent));
+  await page.locator('#voice-chars .char-opt', { hasText: 'Uncle Kopitiam' }).click();
+  await page.waitForFunction(() => /Menyediakan suara/.test(document.getElementById('voice-wait').textContent));
+  assert.equal(await vis(page, '#voice-wait'), true);
+  await page.waitForFunction(() => window.__played.length > 0);
+  await page.waitForFunction(() => document.getElementById('voice-wait').textContent === '');
+  assert.equal(await vis(page, '#voice-wait'), false);
   await ctx.close();
 });
 

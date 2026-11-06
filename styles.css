@@ -967,6 +967,7 @@ a { color: inherit; }
 .char-opt strong { display: block; font-weight: 700; }
 .char-opt span { display: block; font-size: 14px; color: var(--mute); line-height: 1.3; }
 .char-opt small { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; color: var(--sky); line-height: 1.3; }
+#voice-wait:empty { display: none; }
 .voice-try { margin-top: 14px; }
 .voice-try[hidden] { display: none; }
 .try-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }

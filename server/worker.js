@@ -9,9 +9,10 @@
 // Pintu's own page, and only ever contacts the sites listed here, so it can't be
 // used to reach anything else.
 //
-// The human voices come from Azure Speech. Its key stays here as a secret called
-// AZURE_SPEECH_KEY and never goes to the page. Without it, /speak says so and the
-// page uses the phone's own voice.
+// The human voices come from Google's Gemini (no card needed) or Azure Speech. Each
+// key stays here as a secret, GEMINI_API_KEY or AZURE_SPEECH_KEY, and never goes to
+// the page. With both, Azure takes over when Gemini's daily allowance runs out. With
+// neither, /speak says so and the page uses the phone's own voice.
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -318,7 +319,7 @@ function buildSsml(text, lang, speaker, plain = false) {
 }
 
 class VoiceRefused extends Error {
-  constructor(status) { super('refused'); this.status = status; }
+  constructor(status, kind) { super('refused'); this.status = status; this.kind = kind; }
 }
 
 // Azure answers 400 for a voice it doesn't have here or a line it can't read, so
@@ -338,7 +339,7 @@ async function synthesize(text, lang, speakers, key, region) {
       });
       if (res.ok) {
         const audio = await res.arrayBuffer();
-        if (audio.byteLength) return audio;
+        if (audio.byteLength) return { audio, type: 'audio/mpeg' };
       } else if (res.status !== 400) {
         throw new VoiceRefused(res.status);
       }
@@ -347,22 +348,216 @@ async function synthesize(text, lang, speakers, key, region) {
   return null;
 }
 
+/* ---------- Google's voices ---------- */
+
+const GEMINI = 'https://generativelanguage.googleapis.com/v1beta';
+// Each has its own daily allowance, so the second carries on when the first runs out.
+const GEMINI_MODELS = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
+const DESIGN_RETRY_MS = 600000;
+
+// Who each character is. An accent can only come from a voice designed to have it, so
+// each gets one, made the first time they speak. `voice` is the ready-made voice used
+// if that can't be done, and `act` tells it who it's playing.
+const ACTORS = {
+  standard: {
+    voice: 'Sulafat', gender: 'female', act: 'clear and friendly', en: 'en-GB',
+    persona: 'A friendly Malaysian woman in her 30s with a natural Malay accent, clear and calm, like a helpful friend in the passenger seat.',
+  },
+  captain: {
+    voice: 'Charon', gender: 'male', act: 'a calm, dry airline captain', en: 'en-GB',
+    persona: 'A calm, dry-humoured Malaysian airline captain in his 50s with a natural Malay accent and a low, steady voice.',
+  },
+  makcik: {
+    voice: 'Gacrux', gender: 'female', act: 'a chatty, nosy, warm-hearted aunty', en: 'en-GB',
+    persona: 'A chatty, nosy, warm-hearted Malaysian aunty in her late 50s with a natural Malay accent and a very expressive voice.',
+  },
+  uncle: {
+    voice: 'Algenib', gender: 'male', act: 'a relaxed, amused old uncle', en: 'en-SG',
+    persona: 'A relaxed, amused Malaysian uncle in his late 60s with a natural Malaysian Chinese accent and a slightly gravelly voice.',
+  },
+  cikgu: {
+    voice: 'Kore', gender: 'female', act: 'a strict but caring teacher', en: 'en-IN',
+    persona: 'A strict but caring Malaysian schoolteacher in her 40s with a natural Malaysian Indian accent and a crisp, firm voice.',
+  },
+  commentator: {
+    voice: 'Fenrir', gender: 'male', act: 'an animated football commentator', en: 'en-IN',
+    persona: 'An animated Malaysian football commentator in his 40s with a natural Malaysian Indian accent and a voice full of energy.',
+  },
+  agent: {
+    voice: 'Despina', gender: 'female', act: 'a cool, hushed secret agent', en: 'en-SG',
+    persona: 'A cool, composed Malaysian secret agent in her 30s with a natural Malaysian Chinese accent and a low, smooth voice.',
+  },
+  trailer: {
+    voice: 'Alnilam', gender: 'male', act: 'a deep, dramatic film trailer narrator', en: 'en-US',
+    persona: 'A film trailer narrator in his 50s with a very deep voice, low pitch, slow and dramatic.',
+  },
+  adik: {
+    voice: 'Leda', gender: 'female', act: 'an excitable small child', en: 'en-GB',
+    persona: 'A cheerful, curious young Malaysian child with a small, bright voice.',
+  },
+};
+
+// The same marks as Azure's moods, in words: Gemini is directed rather than adjusted.
+const MOOD_STYLES = {
+  warm: 'warm',
+  tease: 'teasing, a bit amused',
+  deadpan: 'deadpan and dry',
+  excited: 'excited',
+  worried: 'worried',
+  whisper: 'whispering, secretive',
+  sigh: 'weary',
+  stern: 'stern',
+  shock: 'shocked',
+};
+const moodSound = (mood, words) => {
+  if (mood === 'sigh') return '<sigh> ';
+  if (mood === 'shock') return '<gasp> ';
+  // A chuckle on every teasing line would soon wear thin.
+  return mood === 'tease' && words.length % 3 === 0 ? '<chuckle> ' : '';
+};
+
+// "[tease]Eh… 90?" as the words to say and how to say them. The words go in exactly
+// as they'll be read, so anything that looks like a sound effect is taken out first.
+function geminiLine(text, lang) {
+  const parts = text.split(/\[([a-z]+)\]/);
+  const mood = parts.find((p, i) => i % 2 === 1 && MOOD_STYLES[p]);
+  const words = parts.filter((_, i) => i % 2 === 0).join(' ').replace(/[<>[\]]/g, ' ');
+  const spoken = spellNumbers(words, lang).split('…').map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' <short pause> ');
+  return { words: moodSound(mood, spoken) + spoken, style: MOOD_STYLES[mood] || '' };
+}
+
+const geminiHeaders = (key) => ({ 'x-goog-api-key': key, 'content-type': 'application/json' });
+
+const designedVoices = new Map();   // key -> voice name -> id, for as long as this copy runs
+const designFailed = new Map();
+
+async function listDesigned(key) {
+  const res = await fetch(`${GEMINI}/voices?type=prompted&page_size=100`, { headers: geminiHeaders(key) });
+  if (!res.ok) return null;
+  const { voices = [] } = await res.json();
+  const known = new Map();
+  // Newest come first. Should one ever be made twice, the oldest keeps being used.
+  for (const v of voices) if (v.id && v.display_name) known.set(v.display_name, v.id);
+  return known;
+}
+
+async function createVoice(name, who, lang, key) {
+  const actor = ACTORS[who];
+  const voice = {
+    model: GEMINI_MODELS[0],
+    type: 'prompted',
+    display_name: name,
+    gender: actor.gender,
+    language_code: lang === 'ms' ? 'ms-MY' : actor.en,
+    prompted: { input: actor.persona },
+  };
+  let res = await fetch(`${GEMINI}/voices`, { method: 'POST', headers: geminiHeaders(key), body: JSON.stringify({ store: true, voice }) });
+  if (res.status === 400) {
+    // Not every language has a regional code. The accent is in the description anyway.
+    const { language_code: _ignored, ...plain } = voice;
+    res = await fetch(`${GEMINI}/voices`, { method: 'POST', headers: geminiHeaders(key), body: JSON.stringify({ store: true, voice: plain }) });
+  }
+  if (!res.ok) return null;
+  const made = await res.json();
+  return made.id || made.voice?.id || null;
+}
+
+// This character's own voice, made if it doesn't exist yet. Null if it can't be had.
+async function designedVoice(who, lang, key) {
+  const name = `pintu-${who}-${lang}`;
+  let known = designedVoices.get(key);
+  if (!known) {
+    known = await listDesigned(key);
+    if (!known) return null;
+    designedVoices.set(key, known);
+  }
+  if (known.has(name)) return known.get(name);
+  const memo = `${key}:${name}`;
+  if ((designFailed.get(memo) || 0) > Date.now()) return null;
+  const id = await createVoice(name, who, lang, key);
+  if (id) known.set(name, id);
+  else designFailed.set(memo, Date.now() + DESIGN_RETRY_MS);
+  return id;
+}
+
+function fromBase64(data) {
+  const raw = atob(data);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function geminiAudio(res) {
+  const reply = await res.json();
+  let found = null;
+  for (const step of reply.steps || []) {
+    if (step.type !== 'model_output') continue;
+    for (const part of step.content || []) if (part.type === 'audio' && part.data) found = part;
+  }
+  return found ? { audio: fromBase64(found.data), type: found.mime_type || 'audio/wav' } : null;
+}
+
+async function geminiSpeak(text, lang, who, key) {
+  const actor = ACTORS[who];
+  const { words, style } = geminiLine(text, lang);
+  const own = await designedVoice(who, lang, key).catch(() => null);
+  const stock = [actor.act, style].filter(Boolean).join(', ');
+  const voices = own ? [[own, style], [actor.voice, stock]] : [[actor.voice, stock]];
+  let limited = null;
+  for (const model of GEMINI_MODELS) {
+    for (const [name, direction] of voices) {
+      const item = { type: 'text', text: words };
+      if (direction) item.annotations = [{ type: 'speech_metadata', style: direction }];
+      const res = await fetch(`${GEMINI}/interactions`, {
+        method: 'POST',
+        headers: geminiHeaders(key),
+        body: JSON.stringify({
+          model,
+          input: [{ type: 'user_input', content: [item] }],
+          response_format: { type: 'audio' },
+          generation_config: { speech_config: [{ voice: name }] },
+        }),
+      });
+      if (res.ok) {
+        const clip = await geminiAudio(res);
+        if (clip) return clip;
+        continue;
+      }
+      const why = await res.text();
+      if (res.status === 429) {
+        limited = /per\s*day/i.test(why) ? 'daily' : 'busy';
+        break;
+      }
+      if (res.status === 401 || res.status === 403 || /API.?key/i.test(why)) throw new VoiceRefused(403);
+      // Any other refusal is about this voice or this model, so try the next.
+    }
+  }
+  if (limited) throw new VoiceRefused(429, limited);
+  return null;
+}
+
+/* ---------- Answering /speak ---------- */
+
 // Whether the key works, without using up any of the free allowance.
-async function voiceCheck(key, region) {
-  if (!key) return { ready: false, reason: 'no key' };
-  const res = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/voices/list`, {
-    headers: { 'Ocp-Apim-Subscription-Key': key, 'user-agent': 'PintuHelper' },
-  });
+async function voiceCheck(gemini, azure, region) {
+  if (!gemini && !azure) return { ready: false, reason: 'no key' };
+  const res = gemini
+    ? await fetch(`${GEMINI}/models/${GEMINI_MODELS[0]}`, { headers: geminiHeaders(gemini) })
+    : await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/voices/list`, {
+      headers: { 'Ocp-Apim-Subscription-Key': azure, 'user-agent': 'PintuHelper' },
+    });
   await res.body?.cancel();
   if (res.ok) return { ready: true };
-  return { ready: false, reason: res.status === 401 || res.status === 403 ? 'key refused' : 'unavailable' };
+  // An unknown key gets a 400 from Google.
+  return { ready: false, reason: [400, 401, 403].includes(res.status) ? 'key refused' : 'unavailable' };
 }
 
 async function speakRoute(url, origin, env, ctx) {
-  const key = env?.AZURE_SPEECH_KEY;
+  const gemini = env?.GEMINI_API_KEY;
+  const azure = env?.AZURE_SPEECH_KEY;
   const region = /^[a-z0-9]+$/.test(env?.AZURE_SPEECH_REGION || '') ? env.AZURE_SPEECH_REGION : 'southeastasia';
   if (url.searchParams.has('check')) {
-    return reply(await voiceCheck(key, region), origin, 200, { 'cache-control': 'no-store' });
+    return reply(await voiceCheck(gemini, azure, region), origin, 200, { 'cache-control': 'no-store' });
   }
 
   const who = url.searchParams.get('who');
@@ -370,31 +565,47 @@ async function speakRoute(url, origin, env, ctx) {
   const text = (url.searchParams.get('text') || '').replace(/[\u0000-\u001f]/g, ' ').trim();
   const speakers = Object.hasOwn(SPEAKERS, who) && (lang === 'ms' || lang === 'en') ? SPEAKERS[who][lang] : null;
   if (!speakers || !text || text.length > MAX_SPEECH) return reply({ error: 'bad request' }, origin, 400);
-  if (!key) return reply({ error: 'no voice key' }, origin, 503);
+  if (!gemini && !azure) return reply({ error: 'no voice key' }, origin, 503);
 
-  const headers = {
-    'content-type': 'audio/mpeg',
+  const headers = (type) => ({
+    'content-type': type,
     'cache-control': 'public, max-age=31536000, immutable',
     'access-control-allow-origin': origin,
     vary: 'Origin',
-  };
+  });
   const shelf = globalThis.caches?.default;
   const label = new Request(`https://speech.pintu.invalid/${SPEECH_VERSION}/${who}/${lang}?t=${encodeURIComponent(text)}`);
   const kept = await shelf?.match(label).catch(() => null);
-  if (kept) return new Response(kept.body, { headers });
+  if (kept) return new Response(kept.body, { headers: headers(kept.headers.get('content-type') || 'audio/mpeg') });
 
-  let audio;
-  try {
-    audio = await synthesize(text, lang, speakers, key, region);
-  } catch (err) {
-    if (err.status === 429) return reply({ error: 'busy' }, origin, 429);
-    if (err.status === 401 || err.status === 403) return reply({ error: 'key refused' }, origin, 503);
-    throw err;
+  let clip = null;
+  let refused = null;
+  if (gemini) {
+    try {
+      clip = await geminiSpeak(text, lang, who, gemini);
+    } catch (err) {
+      if (!(err instanceof VoiceRefused)) throw err;
+      refused = err;
+    }
   }
-  if (!audio) return reply({ error: 'no voice could say that' }, origin, 502);
-  const keep = shelf?.put(label, new Response(audio.slice(0), { headers: { 'content-type': 'audio/mpeg', 'cache-control': 'public, max-age=2592000' } })).catch(() => {});
+  if (!clip && azure) {
+    try {
+      clip = await synthesize(text, lang, speakers, azure, region);
+      refused = null;
+    } catch (err) {
+      if (!(err instanceof VoiceRefused)) throw err;
+      refused = err;
+    }
+  }
+  if (refused) {
+    if (refused.status === 429) return reply({ error: refused.kind || 'busy' }, origin, 429);
+    if (refused.status === 401 || refused.status === 403) return reply({ error: 'key refused' }, origin, 503);
+    throw refused;
+  }
+  if (!clip) return reply({ error: 'no voice could say that' }, origin, 502);
+  const keep = shelf?.put(label, new Response(clip.audio.slice(0), { headers: { 'content-type': clip.type, 'cache-control': 'public, max-age=2592000' } })).catch(() => {});
   if (keep) ctx?.waitUntil?.(keep);
-  return new Response(audio, { headers });
+  return new Response(clip.audio, { headers: headers(clip.type) });
 }
 
 async function handle(request, origin, env, ctx) {

@@ -314,6 +314,7 @@ function renderVoiceStatus() {
   const key = { exact: 'voiceExact', near: 'voiceNear', none: 'voiceNone' }[status] || 'voiceMissing';
   const human = voice.humanVoice();
   const parts = human === 'on' ? [t('voiceHuman')]
+    : human === 'resting' ? [t('voiceHumanResting')]
     : human === 'refused' ? [t('voiceHumanRefused'), t(key)]
       : CONFIG.server ? [t('voiceHumanOff'), t(key)]
         : [t(key)];
@@ -2380,9 +2381,16 @@ function chooseCharacter(id) {
   trySample();
 }
 
-function trySample() {
+// The first time a character speaks, their voice is being made, which takes a while.
+function hearNow(line) {
   voice.unlockVoice();
-  voice.speak(sample(S.settings.voiceCharacter, getLang(), t('voiceSample')), { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS });
+  const hint = $('voice-wait');
+  hint.textContent = voice.humanVoice() === 'on' ? t('voicePreparing') : '';
+  voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS, onStart: () => { hint.textContent = ''; } });
+}
+
+function trySample() {
+  hearNow(sample(S.settings.voiceCharacter, getLang(), t('voiceSample')));
 }
 
 // Hear what a character would say, without having to break the speed limit to find out.
@@ -2394,8 +2402,7 @@ function tryMoment(key) {
   if (key === 'rain') line = dress(who, 'rain', t('rainSay', { distance: sayDistance(2000, lang) }), lang);
   else if (key === 'arrive') line = dress(who, 'arrive', t('arriveSample'), lang);
   else line = momentLine(key, limit);
-  voice.unlockVoice();
-  voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS });
+  hearNow(line);
 }
 
 function setVoiceLevel(level) {

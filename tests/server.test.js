@@ -496,3 +496,269 @@ test('a broken shelf never costs the line', async () => {
     delete globalThis.caches;
   }
 });
+
+/* ---------- Google's voices ---------- */
+
+const G = 'https://generativelanguage.googleapis.com/v1beta';
+let nextKey = 0;
+const freshKey = () => ({ GEMINI_API_KEY: `gemini-key-${++nextKey}` });
+const SOUND = Buffer.from([82, 73, 70, 70, 1, 2, 3, 4]).toString('base64');
+const spoken = () => new Response(JSON.stringify({
+  steps: [
+    { type: 'thought', content: [] },
+    { type: 'model_output', content: [{ type: 'text', text: 'hm' }, { type: 'audio', mime_type: 'audio/wav', data: SOUND }] },
+  ],
+}));
+
+// Pretends to be Google, and keeps what it was asked.
+function google({ speak = spoken, voices = [], create = () => new Response(JSON.stringify({ id: 'voice_new' })), list } = {}) {
+  const asked = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const entry = { url: u, method: init.method || 'GET', headers: init.headers, body: init.body ? JSON.parse(init.body) : null };
+    asked.push(entry);
+    if (u.startsWith(`${G}/voices`) && entry.method === 'GET') return list ? list() : new Response(JSON.stringify({ voices }));
+    if (u === `${G}/voices`) return create(entry);
+    if (u === `${G}/interactions`) return speak(entry, asked.filter((a) => a.url === u).length);
+    if (u.startsWith(`${G}/models/`)) return new Response('{}');
+    throw new Error(`the server tried to reach ${u}`);
+  };
+  return asked;
+}
+const interactions = (asked) => asked.filter((a) => a.url === `${G}/interactions`);
+
+test('Google: a line comes back as audio, asked for the way its documents say', async () => {
+  const env = freshKey();
+  const asked = google({ voices: [{ id: 'voice_abc', display_name: 'pintu-captain-ms' }] });
+  const res = await say(speakUrl('captain', 'ms', '[deadpan]Kopi dah habis.'), { env });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'audio/wav');
+  assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [82, 73, 70, 70, 1, 2, 3, 4]);
+  const [call] = interactions(asked);
+  assert.equal(call.method, 'POST');
+  assert.equal(call.headers['x-goog-api-key'], env.GEMINI_API_KEY);
+  assert.deepEqual(call.body, {
+    model: 'gemini-3.8-flash-tts',
+    input: [{ type: 'user_input', content: [{ type: 'text', text: 'Kopi dah habis.', annotations: [{ type: 'speech_metadata', style: 'deadpan and dry' }] }] }],
+    response_format: { type: 'audio' },
+    generation_config: { speech_config: [{ voice: 'voice_abc' }] },
+  });
+});
+
+test('Google: a plain direction is directed by nothing but its words', async () => {
+  const asked = google({ voices: [{ id: 'voice_abc', display_name: 'pintu-standard-ms' }] });
+  await say(speakUrl('standard', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(interactions(asked)[0].body.input[0].content[0].annotations, undefined);
+});
+
+test('Google: a character\'s accent comes from a voice designed once, then reused', async () => {
+  const env = freshKey();
+  const asked = google();
+  await say(speakUrl('uncle', 'ms', 'Belok kiri.'), { env });
+  const made = asked.filter((a) => a.url === `${G}/voices` && a.method === 'POST');
+  assert.equal(made.length, 1);
+  const { store, voice } = made[0].body;
+  assert.equal(store, true);
+  assert.equal(voice.type, 'prompted');
+  assert.equal(voice.display_name, 'pintu-uncle-ms');
+  assert.equal(voice.gender, 'male');
+  assert.equal(voice.language_code, 'ms-MY');
+  assert.match(voice.prompted.input, /Malaysian Chinese accent/);
+  assert.equal(voice.model, 'gemini-3.8-flash-tts');
+  assert.equal(interactions(asked)[0].body.generation_config.speech_config[0].voice, 'voice_new');
+  const before = asked.length;
+  await say(speakUrl('uncle', 'ms', 'Belok kanan.'), { env });
+  assert.equal(asked.length, before + 1, 'just the line: no listing and no making');
+});
+
+test('Google: every character has a voice to design, of the right kind', async () => {
+  const want = { captain: /Malay accent/, makcik: /Malay accent/, uncle: /Chinese accent/, agent: /Chinese accent/, cikgu: /Indian accent/, commentator: /Indian accent/ };
+  for (const who of CHARACTER_IDS) {
+    for (const lang of ['ms', 'en']) {
+      const asked = google();
+      const res = await say(speakUrl(who, lang, 'Belok kiri.'), { env: freshKey() });
+      assert.equal(res.status, 200, `${who} ${lang}`);
+      const { voice } = asked.find((a) => a.method === 'POST' && a.url === `${G}/voices`).body;
+      if (want[who]) assert.match(voice.prompted.input, want[who], who);
+      assert.ok(['male', 'female'].includes(voice.gender), who);
+      assert.ok(voice.prompted.input.length < 200, 'one or two sentences');
+    }
+  }
+});
+
+test('Google: a voice made before is found again, the oldest if there are two', async () => {
+  const env = freshKey();
+  const asked = google({ voices: [
+    { id: 'voice_newer', display_name: 'pintu-agent-en' },
+    { id: 'voice_other', display_name: 'something else' },
+    { id: 'voice_older', display_name: 'pintu-agent-en' },
+  ] });
+  await say(speakUrl('agent', 'en', 'Turn left.'), { env });
+  assert.equal(interactions(asked)[0].body.generation_config.speech_config[0].voice, 'voice_older');
+  assert.ok(!asked.some((a) => a.method === 'POST' && a.url === `${G}/voices`));
+});
+
+test('Google: if a region isn\'t accepted when designing, it tries without', async () => {
+  const asked = google({ create: (entry) => (entry.body.voice.language_code ? new Response('bad', { status: 400 }) : new Response(JSON.stringify({ id: 'voice_plain' }))) });
+  const res = await say(speakUrl('makcik', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(res.status, 200);
+  assert.equal(interactions(asked)[0].body.generation_config.speech_config[0].voice, 'voice_plain');
+});
+
+test('Google: if a voice can\'t be designed, a ready-made one plays the part, and it isn\'t tried again at once', async () => {
+  const env = freshKey();
+  const asked = google({ create: () => new Response('not on this plan', { status: 403 }) });
+  const res = await say(speakUrl('commentator', 'en', '[excited]Goal!'), { env });
+  assert.equal(res.status, 200);
+  const [call] = interactions(asked);
+  assert.equal(call.body.generation_config.speech_config[0].voice, 'Fenrir');
+  assert.match(call.body.input[0].content[0].annotations[0].style, /football commentator, excited/);
+  const makes = () => asked.filter((a) => a.method === 'POST' && a.url === `${G}/voices`).length;
+  const count = makes();
+  await say(speakUrl('commentator', 'en', 'Turn left.'), { env });
+  assert.equal(makes(), count);
+});
+
+test('Google: if voices can\'t be listed, nothing is designed blindly', async () => {
+  const asked = google({ list: () => new Response('no', { status: 500 }) });
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(res.status, 200);
+  assert.ok(!asked.some((a) => a.method === 'POST' && a.url === `${G}/voices`));
+  assert.equal(interactions(asked)[0].body.generation_config.speech_config[0].voice, 'Charon');
+});
+
+test('Google: a designed voice it won\'t use gives way to a ready-made one', async () => {
+  const asked = google({
+    voices: [{ id: 'voice_gone', display_name: 'pintu-captain-ms' }],
+    speak: (entry) => (entry.body.generation_config.speech_config[0].voice === 'voice_gone' ? new Response('no such voice', { status: 404 }) : spoken()),
+  });
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(res.status, 200);
+  assert.equal(interactions(asked).length, 2);
+});
+
+test('Google: the words go in exactly as they should be read', async () => {
+  const words = async (who, lang, text) => {
+    const asked = google({ voices: [{ id: 'v', display_name: `pintu-${who}-${lang}` }] });
+    await say(speakUrl(who, lang, text), { env: freshKey() });
+    return interactions(asked)[0].body.input[0].content[0].text;
+  };
+  assert.equal(await words('captain', 'ms', 'Dalam 300 meter, belok kiri.'), 'Dalam tiga ratus meter, belok kiri.');
+  assert.equal(await words('captain', 'en', 'The limit is 90.'), 'The limit is ninety.');
+  assert.equal(await words('captain', 'ms', 'Masuk E2 dan FT3.'), 'Masuk E2 dan FT3.');
+  assert.equal(await words('captain', 'ms', 'Cuaca… sangat tenang.'), 'Cuaca <short pause> sangat tenang.');
+  assert.equal(await words('captain', 'ms', '[sigh]Haih… jem.'), '<sigh> Haih <short pause> jem.');
+  assert.equal(await words('captain', 'ms', '[shock]Oh!'), '<gasp> Oh!');
+  assert.equal(await words('captain', 'ms', 'Jalan <laugh> [bogus]Ampang'), 'Jalan laugh Ampang', 'nothing can pretend to be a sound effect');
+});
+
+test('Google: a tease sometimes comes with a chuckle, and never a sound it wasn\'t asked for', async () => {
+  const words = async (text) => {
+    const asked = google({ voices: [{ id: 'v', display_name: 'pintu-uncle-ms' }] });
+    await say(speakUrl('uncle', 'ms', text), { env: freshKey() });
+    return interactions(asked)[0].body.input[0].content[0].text;
+  };
+  const results = [await words('[tease]Eh.'), await words('[tease]Eh, a'), await words('[tease]Eh, abc')];
+  assert.equal(results.filter((t) => t.startsWith('<chuckle>')).length, 1, results.join());
+  assert.doesNotMatch(await words('[warm]Eh.'), /</);
+});
+
+test('Google: when the first model\'s allowance runs out, the second carries on', async () => {
+  const asked = google({
+    voices: [{ id: 'v', display_name: 'pintu-captain-ms' }],
+    speak: (entry) => (entry.body.model === 'gemini-3.8-flash-tts' ? new Response('GenerateRequestsPerDayPerProjectPerModel', { status: 429 }) : spoken()),
+  });
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(res.status, 200);
+  assert.deepEqual(interactions(asked).map((c) => c.body.model), ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']);
+});
+
+test('Google: all out for today is told apart from busy for a moment', async () => {
+  const voices = [{ id: 'v', display_name: 'pintu-captain-ms' }];
+  google({ voices, speak: () => new Response('quota GenerateRequestsPerDayPerProjectPerModel exceeded', { status: 429 }) });
+  let res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(res.status, 429);
+  assert.deepEqual(await res.json(), { error: 'daily' });
+  google({ voices, speak: () => new Response('quota GenerateRequestsPerMinutePerProjectPerModel exceeded', { status: 429 }) });
+  res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() });
+  assert.equal(res.status, 429);
+  assert.deepEqual(await res.json(), { error: 'busy' });
+});
+
+test('Google: a bad key is reported as one', async () => {
+  const voices = [{ id: 'v', display_name: 'pintu-captain-ms' }];
+  google({ voices, speak: () => new Response('API key not valid. Please pass a valid API key.', { status: 400 }) });
+  assert.equal((await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() })).status, 503);
+  google({ voices, speak: () => new Response('forbidden', { status: 403 }) });
+  assert.equal((await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() })).status, 503);
+});
+
+test('Google: the check says whether the key works, without spending a line', async () => {
+  const check = async (status) => {
+    const asked = [];
+    globalThis.fetch = async (url, init) => { asked.push({ url: String(url), init }); return new Response('{}', { status }); };
+    const body = await (await say('/speak?check=1', { env: freshKey() })).json();
+    assert.equal(asked.length, 1);
+    assert.match(asked[0].url, /\/models\/gemini-3\.8-flash-tts$/);
+    return body;
+  };
+  assert.deepEqual(await check(200), { ready: true });
+  assert.deepEqual(await check(400), { ready: false, reason: 'key refused' });
+  assert.deepEqual(await check(403), { ready: false, reason: 'key refused' });
+  assert.deepEqual(await check(500), { ready: false, reason: 'unavailable' });
+});
+
+test('Google: no audio in the answer is an honest failure', async () => {
+  google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }], speak: () => new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'text', text: 'no' }] }] })) });
+  assert.equal((await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env: freshKey() })).status, 502);
+});
+
+test('Google: the key never reaches the page, whatever happens', async () => {
+  for (const status of [200, 400, 401, 403, 429, 500]) {
+    const env = freshKey();
+    google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }], speak: () => (status === 200 ? spoken() : new Response(`bad ${env.GEMINI_API_KEY}`, { status })) });
+    const res = await say(speakUrl('captain', 'ms', 'x'), { env });
+    const all = JSON.stringify([...res.headers]) + new TextDecoder().decode(await res.arrayBuffer());
+    assert.doesNotMatch(all, /gemini-key/, String(status));
+  }
+});
+
+test('with both keys, Azure takes over when Google has run out', async () => {
+  const env = { ...freshKey(), AZURE_SPEECH_KEY: 'azure-key' };
+  const reached = [];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    reached.push(u);
+    if (u.startsWith(`${G}/voices`)) return new Response(JSON.stringify({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }] }));
+    if (u === `${G}/interactions`) return new Response('PerDay', { status: 429 });
+    return new Response(new Uint8Array([7]));
+  };
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'audio/mpeg');
+  assert.equal(reached.at(-1), TTS);
+});
+
+test('with both keys, Google goes first', async () => {
+  const env = { ...freshKey(), AZURE_SPEECH_KEY: 'azure-key' };
+  const asked = google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }] });
+  const res = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env });
+  assert.equal(res.headers.get('content-type'), 'audio/wav');
+  assert.ok(!asked.some((a) => a.url === TTS));
+});
+
+test('Google: a recording kept on the shelf keeps its kind of audio', async () => {
+  const store = new Map();
+  globalThis.caches = { default: { match: async (req) => store.get(req.url)?.clone(), put: async (req, res) => { store.set(req.url, res); } } };
+  try {
+    const env = freshKey();
+    const asked = google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }] });
+    await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env });
+    const again = await say(speakUrl('captain', 'ms', 'Belok kiri.'), { env });
+    assert.equal(again.headers.get('content-type'), 'audio/wav');
+    assert.equal(interactions(asked).length, 1);
+  } finally {
+    delete globalThis.caches;
+  }
+});

@@ -134,16 +134,25 @@ change it: open the Worker in the Cloudflare dashboard, tap Edit code, replace i
 
 ### Human voices
 
-Characters speak through [Azure Speech](https://azure.microsoft.com/products/ai-services/ai-speech),
-called by the server's `/speak`. Its free tier allows 500,000 characters a month. The key is a secret
-on the Worker, called `AZURE_SPEECH_KEY`, and never reaches the page. Create a Speech resource on the
-Free F0 tier in Southeast Asia. For another region, also set `AZURE_SPEECH_REGION`.
+Characters speak through the server's `/speak`, using one of two services:
+
+- [Gemini](https://ai.google.dev/gemini-api/docs/speech-generation): the key is a Worker secret called
+  `GEMINI_API_KEY`, made at [AI Studio](https://aistudio.google.com/apikey). No card is needed. Each
+  character gets a voice designed with their accent the first time they speak. People report the free
+  tier allows about 100 lines a day per model, resetting at midnight Pacific time, and Google may use
+  what's sent to improve its products. Its terms require users to be 18 or over.
+- [Azure Speech](https://azure.microsoft.com/products/ai-services/ai-speech): the secret is
+  `AZURE_SPEECH_KEY`, from a Speech resource on the Free F0 tier in Southeast Asia (or set
+  `AZURE_SPEECH_REGION`). It allows 500,000 characters a month but needs a card to sign up.
+
+With both, Gemini goes first and Azure takes over when its allowance runs out.
 
 Without a key, or with no signal, Pintu uses the phone's own voice. A direction never waits long for a
 recording (`WAIT_TURN_MS` in `js/voice.js`), and the next ones are fetched early and kept on the phone.
 
-Each character's voices are the list in `SPEAKERS` in `server/worker.js`. Lines in `js/cast/` carry
-delivery marks like `[tease]`, which become small changes in pace and pitch, with `…` for a pause.
+Each character's voices are `ACTORS` (Gemini) and `SPEAKERS` (Azure) in `server/worker.js`. Lines in
+`js/cast/` carry delivery marks like `[tease]`, with `…` for a pause. A line is split into separate
+recordings wherever its delivery changes, so a joke is only ever recorded once.
 Change `SPEECH_VERSION` in both `server/worker.js` and `js/voice.js` if a voice changes, so old
 recordings aren't reused.
 
