@@ -92,11 +92,13 @@ export const UI = {
   home: line('<path d="M3.5 11 12 4l8.5 7M6 9.5V20h12V9.5"/><path d="M10 20v-5.5h4V20"/>'),
   work: line('<rect x="3.5" y="7.5" width="17" height="12.5" rx="2"/><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M3.5 13h17"/>'),
   parking: line('<rect x="4" y="3.5" width="16" height="17" rx="3"/><path d="M9.5 17V7.5h3.2a2.9 2.9 0 0 1 0 5.8H9.5"/>'),
+  star: line('<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9Z"/>'),
+  bed: line('<path d="M3 19V6M3 15h18v4M21 15v-3a3 3 0 0 0-3-3h-7v6"/><circle cx="7" cy="11.5" r="2"/>'),
   clock: line('<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.5l3.5 2"/>'),
   pin: line('<path d="M12 21.5s7.5-6.7 7.5-12a7.5 7.5 0 1 0-15 0c0 5.3 7.5 12 7.5 12Z"/><circle cx="12" cy="9.5" r="2.6"/>'),
 };
 
-export const CATEGORY_ICONS = { parking: UI.parking, fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };
+export const CATEGORY_ICONS = { sights: UI.star, hotel: UI.bed, parking: UI.parking, fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };
 
 export const puckSvg = `<svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="pk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#A9D2FF"/><stop offset="1" stop-color="#2B7BF0"/></linearGradient></defs><circle class="puck-halo" cx="32" cy="32" r="30" fill="#4A9BFF" fill-opacity=".2"/><path d="M32 8 50 52 32 42 14 52Z" fill="url(#pk)" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"/></svg>`;
 

@@ -1166,3 +1166,53 @@ a { color: inherit; }
   font: inherit;
   font-weight: 600;
 }
+
+/* ---------- Nearby ---------- */
+.explore-row {
+  flex: 0 0 calc(100% + 14px + var(--safe-r));
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin-right: calc(-14px - var(--safe-r));
+  padding: 2px 14px 4px 0;
+}
+.explore-row::-webkit-scrollbar { display: none; }
+.explore-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 6px 14px 6px 10px;
+  border-radius: 22px;
+  background: rgba(14, 20, 22, .88);
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+  border: 1px solid rgba(255, 255, 255, .14);
+}
+.explore-chip svg { width: 20px; height: 20px; color: var(--sky); }
+
+/* ---------- The car, and places tapped on the map ---------- */
+.car-pill { width: 100%; }
+.map-pin.is-car { background: var(--blue); color: #fff; border-color: #fff; }
+.sheet-action { margin-top: 12px; }
+.car-detail { white-space: normal !important; }
+.car-links { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.car-links [hidden] { display: none; }
+.text-input {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+}
+.arrival-car { width: 100%; max-width: 340px; margin: 0 0 18px; }
+.arrival-car label { display: block; font-size: 16px; margin-bottom: 6px; }
+.arrival-car .text-input { background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .35); color: #fff; }
+.arrival-car .text-input::placeholder { color: rgba(255, 255, 255, .7); }
+.arrival-car[hidden] { display: none; }

@@ -71,6 +71,10 @@
       this.draw();
     }
     getBearing() { return this.cam.bearing; }
+    getCenter() { return new LngLat(this.cam.center[0], this.cam.center[1]); }
+    project(ll) { const c = Array.isArray(ll) ? ll : [ll.lng, ll.lat]; const [x, y] = toXY(c, this.cam, innerWidth, innerHeight); return { x, y }; }
+    // What a test says is under the finger.
+    queryRenderedFeatures(box) { calls.push(['queryRenderedFeatures', box]); return window.__mapFeatures || []; }
     unproject([x, y]) {
       const scale = (256 * 2 ** this.cam.zoom) / 360;
       const pad = this.cam.padding || {};
@@ -118,6 +122,7 @@
   class Marker {
     constructor(o = {}) { this.el = o.element; this.opts = o; this.rot = 0; }
     setLngLat(ll) { this.ll = ll; this.place(); return this; }
+    getLngLat() { return Array.isArray(this.ll) ? new LngLat(this.ll[0], this.ll[1]) : this.ll; }
     setRotation(r) { this.rot = r; this.place(); return this; }
     getElement() { return this.el; }
     addTo(map) { this.map = map; map.markers.push(this); this.el.style.position = 'absolute'; map.container.append(this.el); this.place(); return this; }

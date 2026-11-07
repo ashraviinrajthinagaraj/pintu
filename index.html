@@ -29,6 +29,13 @@
   <strong id="hud-clock" class="hud-clock"></strong>
   <button id="hud-prayer" class="pill pill-yellow" type="button" hidden></button>
   <button id="hud-range" class="pill" type="button" hidden></button>
+  <div id="explore-row" class="explore-row" role="group">
+    <button class="explore-chip" data-cat="sights" type="button"></button>
+    <button class="explore-chip" data-cat="food" type="button"></button>
+    <button class="explore-chip" data-cat="fuel" type="button"></button>
+    <button class="explore-chip" data-cat="ev" type="button"></button>
+    <button class="explore-chip" data-cat="hotel" type="button"></button>
+  </div>
 </div>
 <main id="idle" class="dock">
   <div id="resume" class="resume" hidden>
@@ -45,6 +52,7 @@
       <button id="btn-locate" class="round" type="button"></button>
     </div>
   </div>
+  <button id="car-pill" class="saved-btn car-pill" type="button" hidden><span id="car-pill-icon" class="saved-icon"></span><span class="saved-text"><strong id="car-pill-title"></strong><span id="car-pill-detail"></span></span></button>
   <div id="saved-row" class="saved-row">
     <button id="saved-home" class="saved-btn" type="button"><span id="saved-home-icon" class="saved-icon"></span><span class="saved-text"><strong id="saved-home-name"></strong><span id="saved-home-detail"></span></span></button>
     <button id="saved-work" class="saved-btn" type="button"><span id="saved-work-icon" class="saved-icon"></span><span class="saved-text"><strong id="saved-work-name"></strong><span id="saved-work-detail"></span></span></button>
@@ -260,6 +268,46 @@
   <button id="stops-other" class="link-btn center" type="button"></button>
 </section>
 
+<!-- Places nearby -->
+<section id="explore" class="sheet sheet-stops" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="explore-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="explore-title"></h2><p id="explore-where"></p></div>
+  </div>
+  <div id="explore-cats" class="cats" role="radiogroup"></div>
+  <ul id="explore-list" class="place-list stops-list"></ul>
+  <div id="explore-status" class="route-status" role="status"></div>
+</section>
+
+<!-- A place tapped on the map -->
+<section id="placecard" class="sheet sheet-auto" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="placecard-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="placecard-name"></h2><p id="placecard-detail"></p></div>
+  </div>
+  <button id="placecard-go" class="plate plate-btn sheet-action" type="button"></button>
+</section>
+
+<!-- Where the car is -->
+<section id="car" class="sheet sheet-auto" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="car-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="car-title"></h2><p id="car-detail" class="car-detail"></p></div>
+  </div>
+  <div id="car-note-wrap">
+    <label id="car-note-label" class="field-label" for="car-note"></label>
+    <input id="car-note" class="text-input" type="text" maxlength="60" autocomplete="off" enterkeyhint="done">
+  </div>
+  <button id="car-go" class="plate plate-btn sheet-action" type="button"></button>
+  <div class="car-links">
+    <button id="car-here" class="link-btn" type="button"></button>
+    <button id="car-found" class="link-btn" type="button"></button>
+  </div>
+</section>
+
 <!-- Choose where a simulated drive jumps to -->
 <section id="steps" class="sheet sheet-stops" hidden>
   <div class="sheet-grip" aria-hidden="true"></div>
@@ -343,6 +391,10 @@
   <p id="arrival-place"></p>
   <p id="arrival-quip" class="arrival-quip"></p>
   <p id="arrival-stats" class="arrival-stats"></p>
+  <div id="arrival-car" class="arrival-car" hidden>
+    <label id="arrival-car-text" for="arrival-car-note"></label>
+    <input id="arrival-car-note" class="text-input" type="text" maxlength="60" autocomplete="off" enterkeyhint="done">
+  </div>
   <button id="arrival-walk" class="arrival-more" type="button" hidden></button>
   <button id="arrival-mall" class="arrival-more" type="button" hidden></button>
   <button id="arrival-done" class="plate plate-btn" type="button"></button>

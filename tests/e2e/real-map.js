@@ -444,6 +444,25 @@ await check('real library and Pintu read the same tile the same way', async () =
   assert.deepEqual(errors, []);
 });
 
+await check('real library: tapping a place on the map opens its card', async () => {
+  const { ctx, page, errors } = await open(browser, { styleFor: realStyle, tiles: true, tileLog: [] });
+  await page.evaluate(([lng, lat]) => window.__map.jumpTo({ center: [lng, lat], zoom: 16 }), [POIS[0].lng, POIS[0].lat]);
+  await page.waitForFunction(() => window.__map.querySourceFeatures('openmaptiles', { sourceLayer: 'poi' }).length > 0, null, { timeout: 15000 });
+  // Real styles draw places as icons and words. Dots stand in here, as fonts can't be fetched.
+  await page.evaluate(() => {
+    window.__map.addLayer({ id: 'poi-dots', type: 'circle', source: 'openmaptiles', 'source-layer': 'poi', paint: { 'circle-radius': 9, 'circle-color': '#C0392B' } });
+  });
+  await page.waitForFunction(() => window.__map.queryRenderedFeatures({ layers: ['poi-dots'] }).length > 0, null, { timeout: 15000 });
+  const at = await page.evaluate(([lng, lat]) => window.__map.project([lng, lat]), [POIS[0].lng, POIS[0].lat]);
+  await page.mouse.click(at.x + 3, at.y + 2);
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.equal(await page.locator('#placecard-name').innerText(), 'Petronas Dari Peta');
+  assert.match(await page.locator('#placecard-detail').innerText(), /Stesen minyak/);
+  await page.screenshot({ path: `${shots}/r-place-card.png` });
+  await ctx.close();
+  assert.deepEqual(errors, []);
+});
+
 await check('real library: stops are found using the same tile address as the map', async () => {
   const tileLog = [];
   const { ctx, page, errors } = await open(browser, { styleFor: realStyle, tiles: true, tileLog });

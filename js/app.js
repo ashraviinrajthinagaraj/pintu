@@ -20,6 +20,8 @@ import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { findParking } from './parking.js';
 import { leaveBy } from './leaveby.js';
 import { JUNCTION_RANGE, junctionFor, junctionSvg } from './junction.js';
+import { kindLabel } from './kinds.js';
+import { NEARBY_ORDER, findNearby } from './nearby.js';
 import { parseLocationText, readResolved, resolveShortLink } from './links.js';
 import { fetchShops, mallFor, searchShops } from './malls.js';
 import { reversePlace, searchPlaces } from './search.js';
@@ -48,6 +50,8 @@ const SIM_SPEEDS = [1, 4, 10, 30];
 const SIM_FAST = 10;           // from here it's too quick to talk over, or to read lanes
 const SIM_LEAD_M = 150;        // jumping to a turn lands this far before it
 const SIM_END_GAP_M = 60;      // a jump doesn't end the trip by itself
+const CAR_KEEP_MS = 7 * 24 * 3600000;  // a car left longer than this is someone else's problem
+const CAR_SAME_M = 300;                 // starting a drive this close to it means you're in it
 const SAVED_FRESH_MS = 5 * 60000;  // a journey time this old is worth asking again
 const SAVED_MOVED_M = 500;
 const CAMERA_REFETCH_MS = 5 * 60000;
@@ -225,6 +229,23 @@ function applyStaticText() {
   $('voice-turns').textContent = t('voiceTurns');
   $('voice-char-label').textContent = t('setVoiceChar');
   $('voice-char-note').textContent = t('voiceCharNote');
+  $('car-pill-icon').innerHTML = UI.car;
+  $('car-note-label').textContent = t('carNoteLabel');
+  $('car-note').placeholder = t('carNotePlaceholder');
+  $('arrival-car-note').placeholder = t('carNotePlaceholder');
+  $('car-found').textContent = t('carFound');
+  $('car-here').textContent = t('carHere');
+  label($('car-back'), t('back'), UI.close);
+  label($('placecard-back'), t('back'), UI.close);
+  label($('explore-back'), t('back'), UI.close);
+  $('placecard-go').textContent = t('goHere');
+  $('explore-title').textContent = t('exploreTitle');
+  $('explore-row').setAttribute('aria-label', t('exploreAria'));
+  for (const b of document.querySelectorAll('.explore-chip')) {
+    b.innerHTML = CATEGORY_ICONS[b.dataset.cat];
+    b.append(t(`near_${b.dataset.cat}`));
+  }
+  renderCarPill();
   $('set-camera-title').textContent = t('setCamera');
   $('camera-text').textContent = t('cameraText');
   $('camera-on-label').textContent = t('cameraOn');
@@ -414,6 +435,9 @@ function applyTheme() {
 
 /* ---------- Views ---------- */
 
+// Sheets that open over the main screen, in place of its buttons.
+const IDLE_SHEETS = new Set(['explore', 'placecard', 'car']);
+
 function show(view) {
   S.view = view;
   render();
@@ -421,7 +445,11 @@ function show(view) {
 
 function render() {
   const { view, overlay } = S;
-  $('idle').hidden = view !== 'idle';
+  $('idle').hidden = view !== 'idle' || IDLE_SHEETS.has(overlay);
+  $('explore').hidden = overlay !== 'explore';
+  $('placecard').hidden = overlay !== 'placecard';
+  $('car').hidden = overlay !== 'car';
+  mapView?.setCarPin(view === 'idle' ? savedCar() : null);
   $('hud').hidden = view !== 'idle';
   $('scrim').hidden = !(view === 'idle' || view === 'nav');
   $('search').hidden = !((view === 'search' && overlay !== 'pickmap') || overlay === 'stopsearch' || overlay === 'endsearch');
@@ -466,6 +494,8 @@ addEventListener('popstate', (e) => {
   if (was === 'endsearch' || was === 'stopsearch') S.searchFor = null;
   if (was === 'hudmode') leaveFullscreen();
   if (was === 'mall') S.mallCtrl?.abort();
+  if (was === 'explore' && S.overlay !== 'explore') closeExplore();
+  if (was === 'placecard' && S.overlay !== 'placecard' && S.view === 'idle') mapView?.setDestination(null);
   if (st.view === 'idle' && (S.view === 'preview' || S.view === 'search')) leaveDestination();
   // History can point at a trip that has already ended.
   const stale = (st.view === 'nav' && S.view !== 'nav') || (st.view === 'arrival' && S.view !== 'arrival') || (st.view === 'preview' && !S.dest);
@@ -484,19 +514,20 @@ const bottomObserver = 'ResizeObserver' in window ? new ResizeObserver(() => upd
 function observeBottom() {
   if (bottomObserver) {
     bottomObserver.disconnect();
-    for (const id of ['preview', 'nav-bar', 'where', 'saved-row', 'stops', 'steps', 'weather']) bottomObserver.observe($(id));
+    for (const id of ['preview', 'nav-bar', 'where', 'saved-row', 'car-pill', 'stops', 'steps', 'weather', 'explore', 'placecard', 'car']) bottomObserver.observe($(id));
   }
   updateBottomInset();
 }
 
 function bottomElement() {
   if (S.overlay === 'stops') return $('stops');
+  if (IDLE_SHEETS.has(S.overlay)) return $(S.overlay);
   if (S.overlay === 'steps') return $('steps');
   if (S.overlay === 'weather') return $('weather');
   if (S.overlay === 'pickmap' || S.overlay === 'hudmode') return null;
   if (S.view === 'preview') return $('preview');
   if (S.view === 'nav') return $('nav-bar');
-  if (S.view === 'idle') return $('saved-row');
+  if (S.view === 'idle') return savedCar() ? $('car-pill') : $('saved-row');
   return null;
 }
 
@@ -561,7 +592,7 @@ function receiveFix(fix) {
     mapView?.centerOn(fix.lng, fix.lat);
   }
   if (S.view === 'preview' && S.start) renderActions();
-  if (S.view === 'idle') refreshSavedEtas();
+  if (S.view === 'idle') { refreshSavedEtas(); renderCarPill(); }
   flushFixWaiters(fix);
 }
 
@@ -1463,6 +1494,229 @@ function clearParking() {
   loadRoutes();
 }
 
+/* ---------- Where's my car ---------- */
+
+function savedCar() {
+  const car = load('car', null);
+  return car && Date.now() - car.at < CAR_KEEP_MS ? car : null;
+}
+
+function saveCar(spot, name = '') {
+  save('car', { lng: spot.lng, lat: spot.lat, at: Date.now(), name, note: '' });
+  renderCarPill();
+}
+
+function setCarNote(note) {
+  const car = savedCar();
+  if (car) save('car', { ...car, note: note.trim().slice(0, 60) });
+  renderCarPill();
+}
+
+function forgetCar() {
+  remove('car');
+  mapView?.setCarPin(null);
+  renderCarPill();
+}
+
+function carClock(car) {
+  const lang = getLang();
+  const at = new Date(car.at);
+  const clock = fmtClock(at, lang);
+  if (at.toDateString() === new Date().toDateString()) return clock;
+  return `${clock}, ${at.toLocaleDateString(lang === 'ms' ? 'ms-MY' : 'en-GB', { day: 'numeric', month: 'short' })}`;
+}
+
+const carDistance = (car) => (S.fix ? haversine([S.fix.lng, S.fix.lat], [car.lng, car.lat]) : null);
+
+function renderCarPill() {
+  const car = savedCar();
+  $('car-pill').hidden = !car;
+  if (!car) return;
+  const far = carDistance(car);
+  const parts = [];
+  if (far != null && far >= 30) parts.push(fmtDistance(far));
+  parts.push(car.note || t('carParkedAt', { clock: carClock(car) }));
+  $('car-pill-title').textContent = t('yourCar');
+  $('car-pill-detail').textContent = parts.join(' · ');
+  $('car-pill').setAttribute('aria-label', `${t('yourCar')}. ${parts.join(', ')}`);
+}
+
+function renderCarSheet() {
+  const car = savedCar();
+  $('car-title').textContent = car ? t('yourCar') : t('carSaveTitle');
+  if (car) {
+    const far = carDistance(car);
+    $('car-detail').textContent = [
+      car.name ? t('carNear', { place: car.name }) : '',
+      t('carParkedAt', { clock: carClock(car) }),
+      far != null && far >= 30 ? t('carAway', { distance: fmtDistance(far) }) : '',
+    ].filter(Boolean).join('. ');
+  } else {
+    $('car-detail').textContent = t('carSaveText');
+  }
+  $('car-note-wrap').hidden = !car;
+  $('car-note').value = car?.note || '';
+  $('car-go').textContent = car ? t('carWalk') : t('carSaveHere');
+  $('car-here').hidden = !car || !S.fix;
+  $('car-found').hidden = !car;
+}
+
+function openCar() {
+  renderCarSheet();
+  openOverlay('car');
+}
+
+function saveCarHere() {
+  if (!S.fix) {
+    toast(t(S.gpsDenied ? 'gpsDenied' : 'gpsNone'), 6000);
+    return;
+  }
+  const note = savedCar()?.note || '';
+  saveCar(S.fix);
+  if (note) setCarNote(note);
+  mapView?.setCarPin(savedCar());
+  renderCarSheet();
+  toast(t('carSaved'));
+}
+
+function walkToCar() {
+  const car = savedCar();
+  if (!car) return;
+  S.afterBack = () => {
+    S.returnMode = S.mode === 'walk' ? (S.returnMode || load('mode', 'car')) : S.mode;
+    S.mode = 'walk';
+    S.carDirty = true;
+    goTo({ name: t('yourCar'), detail: car.note || '', lng: car.lng, lat: car.lat, country: '', isCar: true }, { remember: false });
+  };
+  history.back();
+}
+
+/* ---------- Places on the map, and nearby ---------- */
+
+// Straight to the route preview for a place.
+function goTo(place, { remember = true } = {}) {
+  gps.start();
+  voice.unlockVoice();
+  if (remember) addRecent(place);
+  S.stops = [];
+  S.start = null;
+  pushHistory('preview');
+  openPreview(place);
+}
+
+function onPlaceTap(place) {
+  if (S.view !== 'idle' || (S.overlay && S.overlay !== 'placecard')) return;
+  const lang = getLang();
+  S.tapped = { name: place.name, detail: kindLabel(place.kind, lang), lng: place.lng, lat: place.lat, country: '' };
+  $('placecard-name').textContent = place.name;
+  const far = S.fix ? haversine([S.fix.lng, S.fix.lat], [place.lng, place.lat]) : null;
+  $('placecard-detail').textContent = [S.tapped.detail, far != null ? t('placeAway', { distance: fmtDistance(far) }) : ''].filter(Boolean).join(' · ');
+  mapView?.setDestination(place);
+  if (S.overlay !== 'placecard') openOverlay('placecard');
+}
+
+function goTapped() {
+  const place = S.tapped;
+  if (!place) return;
+  S.afterBack = () => goTo(place);
+  history.back();
+}
+
+function openExplore(category) {
+  gps.start();
+  S.exploreCat = category;
+  if (S.overlay !== 'explore') openOverlay('explore');
+  renderExploreCats();
+  loadNearby();
+}
+
+function renderExploreCats() {
+  $('explore-cats').replaceChildren(...NEARBY_ORDER.map((c) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cat';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(c === S.exploreCat));
+    b.innerHTML = CATEGORY_ICONS[c];
+    b.append(t(`cat_${c}`));
+    b.setAttribute('aria-label', t(`near_${c}`));
+    b.addEventListener('click', () => {
+      if (c === S.exploreCat) return;
+      S.exploreCat = c;
+      renderExploreCats();
+      loadNearby();
+    });
+    return b;
+  }));
+}
+
+async function loadNearby() {
+  S.nearbyCtrl?.abort();
+  const ctrl = new AbortController();
+  S.nearbyCtrl = ctrl;
+  const category = S.exploreCat;
+  const home = CONFIG.home.center;
+  const center = S.fix ? { lng: S.fix.lng, lat: S.fix.lat } : mapView?.center() || { lng: home[0], lat: home[1] };
+  $('explore-where').textContent = t(S.fix ? 'nearYou' : 'nearMap');
+  const status = $('explore-status');
+  status.classList.remove('is-error');
+  status.textContent = t('nearbySearching');
+  $('explore-list').replaceChildren();
+  mapView?.setPins([], pickNearby);
+  try {
+    const found = await findNearby(center, category, { signal: ctrl.signal, tileUrl: mapView?.tileUrl() });
+    if (ctrl.signal.aborted) return;
+    S.nearby = found.map((p) => ({ ...p, name: p.name || t(`unnamed_${category}`), category, label: p.name || t(`unnamed_${category}`) }));
+    renderNearby(center);
+    status.textContent = S.nearby.length ? '' : t('nearbyNone');
+  } catch {
+    if (ctrl.signal.aborted) return;
+    status.classList.add('is-error');
+    const msg = document.createElement('p');
+    msg.textContent = t('nearbyFailed');
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'link-btn';
+    retry.textContent = t('retry');
+    retry.addEventListener('click', loadNearby);
+    status.replaceChildren(msg, retry);
+  }
+}
+
+function renderNearby(center) {
+  const lang = getLang();
+  $('explore-list').replaceChildren(...S.nearby.map((p) => {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'place';
+    const strong = document.createElement('strong');
+    strong.textContent = p.name;
+    const span = document.createElement('span');
+    span.textContent = [fmtDistance(p.distance), kindLabel(p.kind, lang)].filter(Boolean).join(' · ');
+    btn.append(strong, span);
+    btn.addEventListener('click', () => pickNearby(p));
+    li.append(btn);
+    return li;
+  }));
+  mapView?.setPins(S.nearby, pickNearby);
+  if (S.nearby.length) {
+    const pad = { top: 120, bottom: $('explore').offsetHeight + 30, left: 40, right: 40 };
+    mapView?.fit([[[center.lng, center.lat], ...S.nearby.slice(0, 12).map((p) => [p.lng, p.lat])]], pad);
+  }
+}
+
+function pickNearby(p) {
+  const place = { name: p.name, detail: kindLabel(p.kind, getLang()), lng: p.lng, lat: p.lat, country: '' };
+  S.afterBack = () => goTo(place);
+  history.back();
+}
+
+function closeExplore() {
+  S.nearbyCtrl?.abort();
+  mapView?.setPins([], pickNearby);
+}
+
 /* ---------- Home and work ---------- */
 
 const SAVED_KINDS = ['home', 'work'];
@@ -1925,6 +2179,8 @@ function startGuidance({ simulate }) {
     S.simPlan = null;
     renderSimPanel();
     saveTrip();
+    const car = savedCar();
+    if (car && S.mode !== 'walk' && (!S.fix || haversine([S.fix.lng, S.fix.lat], [car.lng, car.lat]) < CAR_SAME_M)) forgetCar();
     if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
   }
 }
@@ -2412,6 +2668,16 @@ function finishTrip() {
   S.parkAt = null;
   $('arrival-place').textContent = place ? place.name : '';
   S.arrivedAt = place;
+  // A drive that ended here left the car here.
+  const drove = !onFoot && !simulated;
+  if (drove) {
+    const spot = S.fix || place;
+    if (spot) saveCar(spot, place?.name || '');
+    $('arrival-car-text').textContent = t('carRemembered');
+    $('arrival-car-note').value = '';
+  }
+  $('arrival-car').hidden = !drove;
+  if (onFoot && !simulated && place?.isCar) forgetCar();
   // Where the road ends isn't always where the door is.
   $('arrival-walk').hidden = onFoot || simulated || !place;
   S.mall = mallFor(place);
@@ -3110,6 +3376,17 @@ function wire() {
   $('preview').addEventListener('animationend', updateBottomInset);
   $('where').addEventListener('click', openSearch);
   $('saved-home').addEventListener('click', () => goSaved('home'));
+  $('car-pill').addEventListener('click', openCar);
+  $('car-back').addEventListener('click', () => history.back());
+  $('car-go').addEventListener('click', () => (savedCar() ? walkToCar() : saveCarHere()));
+  $('car-here').addEventListener('click', saveCarHere);
+  $('car-found').addEventListener('click', () => { forgetCar(); history.back(); });
+  $('car-note').addEventListener('change', (e) => setCarNote(e.target.value));
+  $('arrival-car-note').addEventListener('change', (e) => setCarNote(e.target.value));
+  $('placecard-back').addEventListener('click', () => history.back());
+  $('placecard-go').addEventListener('click', goTapped);
+  $('explore-back').addEventListener('click', () => history.back());
+  for (const b of document.querySelectorAll('.explore-chip')) b.addEventListener('click', () => openExplore(b.dataset.cat));
   $('saved-work').addEventListener('click', () => goSaved('work'));
   $('camera-on').addEventListener('change', (e) => {
     setSetting('speedCameras', e.target.checked);
@@ -3357,6 +3634,8 @@ async function startMap() {
       onLongPress,
       onUserMove,
       onAltTap: (i) => selectRoute(i),
+      onPlaceTap,
+      onPuckTap: () => { if (S.view === 'idle' && !S.overlay) openCar(); },
     });
     await mapView.init();
     mapView.setCarOn(S.settings.view3d);

@@ -1,7 +1,7 @@
 import { CONFIG } from './config.js';
 import { carLayer } from './car-gl.js';
 import { boundsOf } from './geo.js';
-import { CATEGORY_ICONS, destPinSvg, puckSvg } from './icons.js';
+import { CATEGORY_ICONS, UI, destPinSvg, puckSvg } from './icons.js';
 
 const load = (tag, attrs) => new Promise((resolve, reject) => {
   const el = document.createElement(tag);
@@ -36,14 +36,20 @@ const line = (coords, properties = {}) => ({ type: 'Feature', properties, geomet
 const collection = (features) => ({ type: 'FeatureCollection', features });
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+const placeName = (p = {}) => p.name || p['name:latin'] || p.name_en || p['name:en'] || '';
+
 export class MapView {
-  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap }) {
+  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onPlaceTap, onPuckTap }) {
     this.el = el;
     this.theme = theme;
     this.view3d = view3d;
     this.onLongPress = onLongPress;
     this.onUserMove = onUserMove;
     this.onAltTap = onAltTap;
+    this.onPlaceTap = onPlaceTap;
+    this.onPuckTap = onPuckTap;
+    this.carPin = null;
+    this.carKey = '';
     this.map = null;
     this.data = { active: EMPTY, alts: EMPTY, lanes: EMPTY };
     this.carPose = null;
@@ -79,6 +85,53 @@ export class MapView {
       const f = e.features && e.features[0];
       if (f) this.onAltTap?.(f.properties.index);
     });
+    this.map.on('click', (e) => this._placeTap(e));
+  }
+
+  // A tap on a named place on the map, as in other map apps. A little leeway around
+  // the finger, because labels are small.
+  _placeTap(e) {
+    if (!e.point) return;
+    const { x, y } = e.point;
+    // Your own position, whether it's the dot or the 3D car drawn in its place.
+    const you = this.carPose ? [this.carPose.lng, this.carPose.lat] : this.puck?.getLngLat?.();
+    if (you && this.onPuckTap && this.map.project) {
+      const p = this.map.project(you);
+      if (Math.hypot(p.x - x, p.y - y) < 34) { this.onPuckTap(); return; }
+    }
+    if (!this.onPlaceTap || !this.map.queryRenderedFeatures) return;
+    let hits = [];
+    try { hits = this.map.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]]) || []; } catch { return; }
+    if (hits.some((h) => h.layer?.id === 'pintu-alt-hit')) return;
+    const f = hits.find((h) => (h.sourceLayer === 'poi' || h.sourceLayer === 'aerodrome_label') && placeName(h.properties));
+    if (!f) return;
+    const point = f.geometry?.type === 'Point' ? f.geometry.coordinates : [e.lngLat.lng, e.lngLat.lat];
+    const props = f.properties || {};
+    this.onPlaceTap({
+      name: placeName(props),
+      kind: [props.subclass, props.class, f.sourceLayer === 'aerodrome_label' ? 'aerodrome' : ''].filter(Boolean),
+      lng: point[0],
+      lat: point[1],
+    });
+  }
+
+  center() {
+    const c = this.map?.getCenter?.();
+    return c ? { lng: c.lng, lat: c.lat } : null;
+  }
+
+  // Where the car was left, while it's worth showing.
+  setCarPin(place) {
+    if (!this.map) return;
+    const key = place ? `${place.lng},${place.lat}` : '';
+    if (key === this.carKey) return;
+    this.carKey = key;
+    if (this.carPin) { this.carPin.remove(); this.carPin = null; }
+    if (!place) return;
+    const el = document.createElement('div');
+    el.className = 'map-pin is-car';
+    el.innerHTML = UI.car;
+    this.carPin = new this.lib.Marker({ element: el }).setLngLat([place.lng, place.lat]).addTo(this.map);
   }
 
   setTheme(theme) {
@@ -275,6 +328,7 @@ export class MapView {
       const el = document.createElement('div');
       el.className = 'puck';
       el.innerHTML = puckSvg;
+      el.addEventListener('click', (e) => { e.stopPropagation(); this.onPuckTap?.(); });
       this.puck = new this.lib.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' })
         .setLngLat([lng, lat])
         .addTo(this.map);

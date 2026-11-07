@@ -116,6 +116,20 @@ Before a highway exit, ramp or fork (manoeuvre types 17 to 24), a picture shows 
 its exit number and signs, and how close it is: from 1.5 km on highways and 500 m elsewhere
 (`js/junction.js`).
 
+## Where's my car
+
+When a real drive ends, Pintu remembers where (with an optional note, like a level or pillar),
+shows it on the main screen and the map, and offers a walking route back. Tapping your own position
+saves it by hand. Starting a drive within 300 m of it, or walking to it, forgets it. Kept for a week.
+
+## Places on the map, and nearby
+
+Tapping a named place on the map opens a card with what it is and how far, and a way to go there
+(`_placeTap` in `js/map.js`, words from `js/kinds.js`). The chips at the top find places to visit,
+food, petrol, EV charging and hotels near you, or near the middle of the map without a position:
+from the map's tiles within 2.5 km, and from Overpass further out when there are fewer than eight
+(`js/nearby.js`).
+
 ## Rain and floods
 
 - **Rain:** the Open-Meteo forecast at each point along the route, at the time you'd get there.

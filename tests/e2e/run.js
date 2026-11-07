@@ -226,6 +226,8 @@ async function noOverflow(page, name) {
     const W = innerWidth;
     for (const el of document.querySelectorAll('body *')) {
       if (el.closest('#map')) continue;
+      // Chips in a row that scrolls sideways are meant to run off the edge.
+      if (el.parentElement?.closest('.explore-row')) continue;
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden') continue;
       const r = el.getBoundingClientRect();
@@ -3329,6 +3331,216 @@ await check('junction view: none for ordinary turns', async () => {
     await roll(page, trip, a, b, 15);
     assert.equal(await vis(page, '#junction'), false);
   }
+  await ctx.close();
+});
+
+/* ---------- Where's my car ---------- */
+
+await check('car: remembered where a drive ends, with a note, and found again on foot', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  await toNav(page);
+  await roll(page, trip, 0, trip.length, 15);
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.equal(await vis(page, '#arrival-car'), true);
+  assert.match(await text(page, '#arrival-car'), /Pintu ingat di mana kereta anda/);
+  await page.fill('#arrival-car-note', 'Aras B2, zon C');
+  await page.locator('#arrival-car-note').press('Enter');
+  await page.locator('#arrival-car-note').blur();
+  await page.click('#arrival-done');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.match(await text(page, '#car-pill'), /Kereta anda\s*Aras B2, zon C/);
+  assert.equal(await page.locator('.map-pin.is-car').count(), 1, 'on the map');
+
+  // Later, somewhere else: how far, and the way back on foot.
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.waitForFunction(() => /km|m ·/.test(document.getElementById('car-pill-detail').textContent));
+  await page.screenshot({ path: `${shots}/60-car-pill.png` });
+  await page.click('#car-pill');
+  await page.waitForSelector('#car:not([hidden])');
+  assert.match(await text(page, '#car-detail'), /Dekat Suria KLCC\. Diletak pukul \d.*dari anda/);
+  assert.equal(await page.inputValue('#car-note'), 'Aras B2, zon C');
+  await page.screenshot({ path: `${shots}/61-car-sheet.png` });
+  await noOverflow(page, 'car sheet');
+  await page.click('#car-go');
+  await page.waitForSelector('#preview:not([hidden])');
+  assert.equal(await text(page, '#dest-name'), 'Kereta anda');
+  assert.equal(await page.getAttribute('#mode-walk', 'aria-checked'), 'true');
+  await page.waitForSelector('.route-opt');
+  assert.equal(log.fossgis.at(-1).costing, 'pedestrian');
+
+  // Found it.
+  await page.click('#preview-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  await page.click('#car-pill');
+  await page.click('#car-found');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.equal(await vis(page, '#car-pill'), false);
+  assert.equal(await page.locator('.map-pin.is-car').count(), 0);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('car: a simulated drive or a walk leaves no car behind', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  await toNav(page, { simulate: true });
+  await page.click('#sim-speed-30').catch(() => {});
+  await page.waitForSelector('#preview:not([hidden]), #arrival:not([hidden])', { timeout: 60000 });
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.car')), null);
+  await ctx.close();
+  void trip;
+});
+
+await check('car: tap your own dot to save where you parked', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  await page.click('#btn-locate');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.b);
+  // In 3D the dot is drawn as the car, so the tap lands on the map where you are.
+  await page.waitForTimeout(300);
+  await page.evaluate(([lng, lat]) => {
+    const p = window.__map.project([lng, lat]);
+    window.__mapFeatures = [];
+    window.__map._fire('click', { point: { x: p.x + 5, y: p.y - 5 }, lngLat: { lng, lat } });
+  }, P.b);
+  await page.waitForSelector('#car:not([hidden])');
+  assert.equal(await text(page, '#car-title'), 'Letak kereta di sini?');
+  assert.equal(await vis(page, '#car-found'), false);
+  await page.click('#car-go');
+  assert.equal(await text(page, '#car-title'), 'Kereta anda');
+  await page.fill('#car-note', 'Tiang 14');
+  await page.locator('#car-note').blur();
+  await page.click('#car-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.match(await text(page, '#car-pill'), /Tiang 14/);
+  await ctx.close();
+});
+
+await check('car: driving off from it means you have it', async () => {
+  const storage = { 'pintu.safetySeen': 'true', 'pintu.car': { lng: P.a[0], lat: P.a[1], at: Date.now(), name: 'X', note: '' } };
+  const { ctx, page } = await newApp(browser, { storage });
+  assert.equal(await vis(page, '#car-pill'), true);
+  await toNav(page);
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.car')), null);
+  await ctx.close();
+});
+
+/* ---------- Tapping places on the map ---------- */
+
+const MUZIUM = [P.c[0] + 0.001, P.c[1]];
+const tapAt = (page, features) => page.evaluate((f) => {
+  window.__mapFeatures = f;
+  window.__map._fire('click', { point: { x: 200, y: 300 }, lngLat: { lng: 101.7, lat: 3.15 } });
+}, features);
+
+await check('map: tap a place to see what it is, and go there', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  await page.click('#btn-locate');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await tapAt(page, []);
+  assert.equal(await vis(page, '#placecard'), false, 'nothing there, nothing happens');
+  await tapAt(page, [{ sourceLayer: 'poi', layer: { id: 'poi_r1' }, properties: { name: 'Muzium Negara', class: 'museum', subclass: 'museum' }, geometry: { type: 'Point', coordinates: MUZIUM } }]);
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.equal(await text(page, '#placecard-name'), 'Muzium Negara');
+  assert.match(await text(page, '#placecard-detail'), /^Muzium · \d.* dari anda$/);
+  assert.equal(await vis(page, '#idle'), false, 'the card, not the main buttons');
+  await page.screenshot({ path: `${shots}/62-place-card.png` });
+  await noOverflow(page, 'place card');
+  await page.click('#placecard-go');
+  await page.waitForSelector('.route-opt');
+  assert.equal(await text(page, '#dest-name'), 'Muzium Negara');
+  assert.ok(Math.abs(log.fossgis.at(-1).locations.at(-1).lon - MUZIUM[0]) < 1e-9);
+  await page.click('#preview-back');
+  await page.click('#where');
+  assert.match(await text(page, '#recents'), /Muzium Negara/, 'remembered with the recent places');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('map: a place tap is ignored mid-trip, and a card can be closed', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  const muzium = [{ sourceLayer: 'poi', properties: { name: 'Muzium Negara', class: 'museum' }, geometry: { type: 'Point', coordinates: MUZIUM } }];
+  await tapAt(page, muzium);
+  await page.waitForSelector('#placecard:not([hidden])');
+  await page.click('#placecard-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.equal(await page.locator('.dest-pin').count(), 0, 'its pin goes with it');
+  await toNav(page);
+  await tapAt(page, muzium);
+  await page.waitForTimeout(150);
+  assert.equal(await vis(page, '#placecard'), false);
+  await ctx.close();
+});
+
+await check('map: a tap near a route choice picks the route, not a place', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  await tapAt(page, [{ layer: { id: 'pintu-alt-hit' }, properties: {} }, { sourceLayer: 'poi', properties: { name: 'X' }, geometry: { type: 'Point', coordinates: MUZIUM } }]);
+  await page.waitForTimeout(100);
+  assert.equal(await vis(page, '#placecard'), false);
+  await ctx.close();
+});
+
+/* ---------- Nearby ---------- */
+
+const nearbyTiles = [
+  { id: 81, lng: P.a[0] + 0.002, lat: P.a[1], props: { name: 'Nasi Kandar Pelita', class: 'restaurant', subclass: 'restaurant' } },
+  { id: 82, lng: P.a[0] + 0.0008, lat: P.a[1], props: { name: 'Kopitiam Lama', class: 'cafe', subclass: 'cafe' } },
+  { id: 83, lng: P.a[0] + 0.004, lat: P.a[1], props: { name: 'Hotel Seri', class: 'lodging', subclass: 'hotel' } },
+  ...Array.from({ length: 8 }, (_, i) => ({ id: 90 + i, lng: P.a[0] - 0.001 * (i + 1), lat: P.a[1] + 0.001, props: { name: `Restoran ${i}`, class: 'restaurant', subclass: 'restaurant' } })),
+];
+
+await check('nearby: food near you, closest first, on the map too, one tap to go', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, tiles: nearbyTiles, scale: 2 });
+  assert.match(await text(page, '#explore-row'), /Tempat menarik\s*Makan\s*Minyak\s*Cas EV\s*Hotel/);
+  await noOverflow(page, 'chips');
+  await page.screenshot({ path: `${shots}/63-chips.png` });
+  await page.click('#btn-locate');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.locator('.explore-chip', { hasText: 'Makan' }).click();
+  await page.waitForSelector('#explore:not([hidden])');
+  await page.waitForSelector('#explore-list .place');
+  const names = await page.locator('#explore-list .place strong').allInnerTexts();
+  assert.equal(names[0], 'Kopitiam Lama');
+  assert.ok(names.includes('Nasi Kandar Pelita'));
+  assert.ok(!names.includes('Hotel Seri'));
+  assert.match(await text(page, '#explore-list .place >> nth=0'), /\d+ m · Kafe/);
+  assert.equal(await text(page, '#explore-where'), 'Berdekatan dengan anda');
+  assert.equal(await page.locator('.map-pin').count(), names.length);
+  await page.screenshot({ path: `${shots}/64-nearby.png` });
+  await noOverflow(page, 'nearby');
+  assert.ok(!log.overpass.length, 'the tiles had plenty');
+
+  await page.locator('#explore-cats .cat', { hasText: 'Hotel' }).click();
+  await page.waitForFunction(() => document.querySelector('#explore-list .place strong')?.textContent === 'Hotel Seri');
+  await page.locator('#explore-list .place', { hasText: 'Hotel Seri' }).click();
+  await page.waitForSelector('.route-opt');
+  assert.equal(await text(page, '#dest-name'), 'Hotel Seri');
+  assert.equal(await page.locator('.map-pin:not(.is-stop):not(.is-car)').count(), 0, 'the nearby pins are gone');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('nearby: few in the map tiles, so OpenStreetMap is asked further out', async () => {
+  const sights = { elements: [{ type: 'way', id: 5, center: { lat: P.c[1], lon: P.c[0] }, tags: { tourism: 'museum', name: 'Muzium Negara' } }] };
+  const { ctx, page, log } = await newApp(browser, { ...quiet, tiles: [], overpass: sights });
+  await page.evaluate(([lng, lat]) => window.__map.jumpTo({ center: [lng, lat], zoom: 14 }), P.a);
+  await page.locator('.explore-chip', { hasText: 'Tempat menarik' }).click();
+  await page.waitForSelector('#explore-list .place');
+  assert.match(await text(page, '#explore-list'), /Muzium Negara/);
+  assert.equal(await text(page, '#explore-where'), 'Berdekatan dengan tengah peta', 'no location yet, so around the map');
+  assert.match(decodeURIComponent(log.overpass[0]), /tourism/);
+  await page.click('#explore-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.equal(await page.locator('.map-pin').count(), 0);
+  await ctx.close();
+});
+
+await check('nearby: nothing answering says so, with a way to try again', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, hangAll: true });
+  log.overpassFail = true;
+  await page.locator('.explore-chip', { hasText: 'Minyak' }).click();
+  await page.waitForSelector('#explore-status.is-error', { timeout: 30000 });
+  assert.match(await text(page, '#explore-status'), /Tak dapat mencari sekarang/);
   await ctx.close();
 });
 
