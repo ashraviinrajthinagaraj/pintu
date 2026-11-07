@@ -14,7 +14,8 @@ function run(m, r, { seconds, v, startS = 0, t0 = 1e6, onFrame }) {
     m.onRoute(startS + v * sec, v, now);
     for (let f = 0; f < 60; f++) {
       now += 1000 / 60;
-      onFrame?.(m.frame(now), now);
+      const pose = m.frame(now);
+      onFrame?.(pose, now);
     }
   }
   return now;
@@ -159,4 +160,87 @@ test('a deliberate jump lands at once, facing along the new road', () => {
   // And backwards just the same, with no gliding through everything between.
   m.jump(100, end + 32);
   assert.ok(Math.abs(m.frame(end + 48).s - 100) < 1);
+});
+
+test('a fix that disagrees a little changes speed gently, with no surge', () => {
+  const r = route();
+  const m = new Motion();
+  m.setRoute(r);
+  const v = 14;
+  let now = run(m, r, { seconds: 10, v });
+  let last = m.frame(now).s, lastStep = null, worst = 0;
+  // GPS now says you're four metres further on than expected.
+  m.onRoute(v * 10 + 4, v, now);
+  for (let f = 0; f < 120; f++) {
+    now += 1000 / 60;
+    const s = m.frame(now).s;
+    const step = s - last;
+    if (lastStep != null) worst = Math.max(worst, Math.abs(step - lastStep));
+    lastStep = step;
+    last = s;
+  }
+  // The old way changed pace by about 0.2 m in a single frame here.
+  assert.ok(worst < 0.05, `pace changed by ${worst} m in one frame`);
+  const expected = v * 10 + 4 + v * 2;
+  assert.ok(Math.abs(last - expected) < 1, `caught up to within ${Math.abs(last - expected)} m`);
+});
+
+test('losing GPS at speed: the arrow waits ahead, and never drives back', () => {
+  const r = route();
+  const m = new Motion();
+  m.setRoute(r);
+  let now = run(m, r, { seconds: 6, v: 25 });
+  let prev = m.frame(now).s, lowest = Infinity;
+  for (let f = 0; f < 60 * 8; f++) {
+    now += 1000 / 60;
+    const s = m.frame(now).s;
+    lowest = Math.min(lowest, s - prev);
+    prev = s;
+  }
+  assert.ok(lowest > -1e-9, `went back ${-lowest} m in a frame`);
+});
+
+test('off the route, losing GPS does not pull the arrow back either', () => {
+  const m = new Motion();
+  let now = 1e6;
+  for (let sec = 0; sec < 5; sec++) {
+    m.offRoute(101.7 + (sec * 20) / 111000, 3.15, 90, 20, now);
+    for (let f = 0; f < 60; f++) { now += 1000 / 60; m.frame(now); }
+  }
+  let prev = m.frame(now).lng, lowest = Infinity;
+  for (let f = 0; f < 60 * 6; f++) {
+    now += 1000 / 60;
+    const lng = m.frame(now).lng;
+    lowest = Math.min(lowest, lng - prev);
+    prev = lng;
+  }
+  assert.ok(lowest > -1e-10, `went back ${-lowest} degrees`);
+});
+
+test('a late fix is placed when it was taken, so the arrow is where you are now', () => {
+  const r = route();
+  const m = new Motion();
+  m.setRoute(r);
+  const v = 20;
+  let now = 1e6;
+  // Each fix arrives 800 ms after it was taken.
+  for (let sec = 0; sec < 10; sec++) {
+    m.onRoute(v * sec, v, now - 800);
+    for (let f = 0; f < 60; f++) { now += 1000 / 60; m.frame(now); }
+  }
+  const truth = v * 9 + v * 1.8;
+  assert.ok(Math.abs(m.s - truth) < 2, `${Math.abs(m.s - truth)} m from where you are`);
+});
+
+test('a sudden stop, like pausing a simulated drive, stops the arrow at once', () => {
+  const r = route();
+  const m = new Motion();
+  m.setRoute(r);
+  let now = run(m, r, { seconds: 5, v: 56 });
+  const here = m.frame(now).s;
+  m.onRoute(here, 0, now);
+  now += 1000 / 60;
+  const next = m.frame(now).s;
+  for (let f = 0; f < 60; f++) { now += 1000 / 60; m.frame(now); }
+  assert.ok(Math.abs(next - here) < 1e-9 && Math.abs(m.s - here) < 1e-9, `rolled on ${m.s - here} m`);
 });

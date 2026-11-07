@@ -42,3 +42,17 @@ test('the line ahead starts where you are', () => {
   assert.ok(Math.abs(rest[0][0] - 101.705) < 1e-9);
   assert.equal(sliceFrom(c, cum, cum[2] + 5).length, 1);
 });
+
+test('a stretch of the route between two distances', async () => {
+  const { sliceBetween, cumulative } = await import('../js/geo.js');
+  const coords = [[101.7, 3.15], [101.71, 3.15], [101.72, 3.15], [101.73, 3.15]];
+  const cum = cumulative(coords);
+  const mid = sliceBetween(coords, cum, cum[1] / 2, cum[2] + (cum[3] - cum[2]) / 2);
+  assert.equal(mid.length, 4);
+  assert.ok(Math.abs(mid[0][0] - 101.705) < 1e-9 && Math.abs(mid[3][0] - 101.725) < 1e-9);
+  assert.deepEqual(mid.slice(1, 3), coords.slice(1, 3));
+  // Ending on a corner doesn't repeat it, and nothing at all is one point.
+  assert.deepEqual(sliceBetween(coords, cum, 0, cum[2]), coords.slice(0, 3));
+  assert.equal(sliceBetween(coords, cum, cum[1], cum[1]).length, 1);
+  assert.equal(sliceBetween(coords, cum, -5, cum[3] + 99).length, 4);
+});

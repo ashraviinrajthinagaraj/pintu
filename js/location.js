@@ -1,5 +1,11 @@
 import { bearing, haversine } from './geo.js';
 
+// A fix arrives a little after it was taken. Knowing how much lets the arrow
+// show where you are now rather than where you were. A phone whose clock
+// disagrees with the GPS by more than this is simply not corrected.
+export const MAX_LAG_MS = 1000;
+const TRUST_LAG_MS = 2500;
+
 // The phone's GPS. Fills in speed and heading when the phone doesn't report them.
 export class Gps {
   constructor(onFix, onError) {
@@ -49,6 +55,8 @@ export class Gps {
     }
     if (fix.heading != null && (fix.speed ?? 0) > 1) this.heading = fix.heading;
     if (fix.heading == null || (fix.speed ?? 0) <= 1) fix.heading = this.heading;
+    const late = Date.now() - fix.time;
+    fix.lag = late > 0 && late < TRUST_LAG_MS ? Math.min(late, MAX_LAG_MS) : 0;
     this.prev = fix;
     this.onFix(fix);
   }

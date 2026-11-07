@@ -1,6 +1,6 @@
 import { CONFIG } from './config.js';
 import { carLayer } from './car-gl.js';
-import { boundsOf } from './geo.js';
+import { boundsOf, sliceBetween, sliceFrom } from './geo.js';
 import { CATEGORY_ICONS, UI, destPinSvg, puckSvg } from './icons.js';
 
 const load = (tag, attrs) => new Promise((resolve, reject) => {
@@ -36,6 +36,18 @@ const line = (coords, properties = {}) => ({ type: 'Feature', properties, geomet
 const collection = (features) => ({ type: 'FeatureCollection', features });
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// Phones with very sharp screens would otherwise draw the map at three times
+// the pixels or more, which slows every frame for detail nobody can see while
+// driving. Twice is still crisp.
+export const MAX_PIXEL_RATIO = 2;
+export const mapPixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+
+// As you drive, the line behind you is taken away several times a second. Only
+// the next few kilometres are sent again each time; the rest of the trip, which
+// can be hundreds of kilometres, is sent only now and then.
+export const NEAR_M = 4000;
+export const NEAR_REFRESH_M = 1500;
+
 const placeName = (p = {}) => p.name || p['name:latin'] || p.name_en || p['name:en'] || '';
 
 export class MapView {
@@ -51,7 +63,9 @@ export class MapView {
     this.carPin = null;
     this.carKey = '';
     this.map = null;
-    this.data = { active: EMPTY, alts: EMPTY, lanes: EMPTY };
+    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY };
+    this.trim = null;       // where the often-sent part of the line ends
+    this.puckHeading = null;
     this.carPose = null;
     this.carReady = false;
     this.carOn = false;
@@ -74,6 +88,7 @@ export class MapView {
       attributionControl: { compact: true },
       fadeDuration: 120,
       maxPitch: 70,
+      pixelRatio: mapPixelRatio(),
     });
     this.map.on('style.load', () => this._addLayers());
     this.map.on('dragstart', () => this.onUserMove?.());
@@ -181,17 +196,25 @@ export class MapView {
 
     if (!m.getSource('pintu-alts')) m.addSource('pintu-alts', { type: 'geojson', data: this.data.alts });
     if (!m.getSource('pintu-active')) m.addSource('pintu-active', { type: 'geojson', data: this.data.active });
+    if (!m.getSource('pintu-far')) m.addSource('pintu-far', { type: 'geojson', data: this.data.far });
     const layout = { 'line-cap': 'round', 'line-join': 'round' };
     // Wider up close, so the line stays easy to see when the map is tilted.
     const width = (a, b) => ['interpolate', ['linear'], ['zoom'], 8, a, 16, b, 18, b * 1.7];
-    const add = (id, source, paint) => {
-      if (!m.getLayer(id)) m.addLayer({ id, type: 'line', source, layout, paint }, beforeId);
+    const add = (id, source, paint, look = layout) => {
+      if (!m.getLayer(id)) m.addLayer({ id, type: 'line', source, layout: look, paint }, beforeId);
     };
     add('pintu-alt-casing', 'pintu-alts', { 'line-color': c.altCasing, 'line-width': width(6, 13) });
     add('pintu-alt', 'pintu-alts', { 'line-color': c.alt, 'line-width': width(3.5, 9) });
     add('pintu-alt-hit', 'pintu-alts', { 'line-color': '#000', 'line-opacity': 0, 'line-width': 28 });
-    add('pintu-glow', 'pintu-active', { 'line-color': c.glow, 'line-opacity': 0.4, 'line-blur': 7, 'line-width': width(12, 28) });
+    // The line comes in two parts that meet end to end. The see-through glow has
+    // square ends, so it isn't doubled where they meet.
+    const glow = { 'line-color': c.glow, 'line-opacity': 0.4, 'line-blur': 7, 'line-width': width(12, 28) };
+    const glowLook = { 'line-cap': 'butt', 'line-join': 'round' };
+    add('pintu-far-glow', 'pintu-far', glow, glowLook);
+    add('pintu-glow', 'pintu-active', glow, glowLook);
+    add('pintu-far-casing', 'pintu-far', { 'line-color': c.casing, 'line-width': width(8, 16) });
     add('pintu-casing', 'pintu-active', { 'line-color': c.casing, 'line-width': width(8, 16) });
+    add('pintu-far-route', 'pintu-far', { 'line-color': c.route, 'line-width': width(5, 11) });
     add('pintu-route', 'pintu-active', { 'line-color': c.route, 'line-width': width(5, 11) });
     this._addLaneLayers(beforeId, c);
 
@@ -278,6 +301,8 @@ export class MapView {
 
   showRoutes(routes, selected) {
     this._stopReveal();
+    this.trim = null;
+    this.data.far = EMPTY;
     this.data.active = collection(routes[selected] ? [line(routes[selected].coords)] : []);
     this.data.alts = collection(routes.map((r, index) => (index === selected ? null : line(r.coords, { index }))).filter(Boolean));
     this._push();
@@ -305,13 +330,26 @@ export class MapView {
     this.revealRaf = null;
   }
 
-  setRemaining(coords) {
-    this.data.active = collection(coords.length > 1 ? [line(coords)] : []);
+  // The route still ahead of distance s along it.
+  setRemaining(route, s) {
+    const t = this.trim;
+    const stale = !t || t.route !== route || s < t.end - NEAR_M - 1 || (s > t.end - NEAR_REFRESH_M && t.end < route.length);
+    if (stale) {
+      const end = Math.min(route.length, s + NEAR_M);
+      this.trim = { route, end };
+      const rest = end < route.length ? sliceFrom(route.coords, route.cum, end) : [];
+      this.data.far = collection(rest.length > 1 ? [line(rest)] : []);
+      this.map?.getSource('pintu-far')?.setData(this.data.far);
+    }
+    const near = sliceBetween(route.coords, route.cum, s, this.trim.end);
+    this.data.active = collection(near.length > 1 ? [line(near)] : []);
     this.map?.getSource('pintu-active')?.setData(this.data.active);
   }
 
   clearRoutes() {
     this._stopReveal();
+    this.trim = null;
+    this.data.far = EMPTY;
     this.data.active = EMPTY;
     this.data.alts = EMPTY;
     this._push();
@@ -319,6 +357,7 @@ export class MapView {
 
   _push() {
     this.map?.getSource('pintu-active')?.setData(this.data.active);
+    this.map?.getSource('pintu-far')?.setData(this.data.far);
     this.map?.getSource('pintu-alts')?.setData(this.data.alts);
   }
 
@@ -334,8 +373,12 @@ export class MapView {
         .addTo(this.map);
       this._syncPuck();
     }
+    // Each change redraws the marker, so the direction only when it changed.
+    if (heading != null && heading !== this.puckHeading) {
+      this.puckHeading = heading;
+      this.puck.setRotation(heading);
+    }
     this.puck.setLngLat([lng, lat]);
-    if (heading != null) this.puck.setRotation(heading);
   }
 
   setDestination(place) {

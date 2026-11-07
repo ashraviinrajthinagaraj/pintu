@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { altTrip, buildTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
-import { bearing } from '../../js/geo.js';
+import { bearing, haversine } from '../../js/geo.js';
 import { prepareTrip } from '../../js/routing.js';
 import { speech } from '../../js/instructions.js';
 import { pointAt } from '../../js/motion.js';
@@ -505,6 +505,53 @@ await check('toll expressway turns the sign green with its road number', async (
   assert.match(await text(page, '#sign-toward'), /Menuju Seremban/);
   await noOverflow(page, 'highway');
   await page.screenshot({ path: `${shots}/6-nav-highway.png` });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('on a long trip only the next few kilometres of line are redrawn often', async () => {
+  const long = buildTrip(P.a, [
+    { to: [101.95, 3.15], type: 1, street: 'E8', kph: 100 },
+    { to: [102.2, 3.0], type: 9, street: 'E8', kph: 100 },
+  ]);
+  const { ctx, page, log } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: long }) });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await page.click('#where');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForSelector('.route-opt');
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  const lineOf = (id) => page.evaluate((id) => window.__map.getSource(id).data.features[0]?.geometry.coordinates ?? [], id);
+  const length = (c) => c.slice(1).reduce((sum, p, i) => sum + haversine(c[i], p), 0);
+  const total = prepareTrip(long).length;
+
+  const t = await driveTo(page, long, { from: 0, to: 3000, kph: 100 });
+  await page.waitForTimeout(600);
+  let near = await lineOf('pintu-active'), far = await lineOf('pintu-far');
+  assert.ok(length(near) > 3000 && length(near) < 4300, `near part ${length(near)} m`);
+  assert.ok(Math.abs(length(near) + length(far) + 3000 - total) < 200, 'the two parts make up the rest of the trip');
+  // They meet exactly, so the line has no gap or bump.
+  assert.deepEqual(near[near.length - 1], far[0]);
+
+  // Driving on another kilometre redraws the near part only.
+  await page.evaluate(() => {
+    window.__sent = { 'pintu-active': 0, 'pintu-far': 0 };
+    for (const id of Object.keys(window.__sent)) {
+      const src = window.__map.getSource(id), set = src.setData;
+      src.setData = (d) => { window.__sent[id]++; set(d); };
+    }
+  });
+  for (let s = 3100; s <= 4000; s += 100) {
+    await driveTo(page, long, { from: s, to: s, kph: 100, t0: t + (s - 3000) * 36 });
+    await page.waitForTimeout(300);
+  }
+  const sent = await page.evaluate(() => window.__sent);
+  assert.ok(sent['pintu-active'] >= 5, `near sent ${sent['pintu-active']} times`);
+  assert.equal(sent['pintu-far'], 0, 'far part left alone');
+  near = await lineOf('pintu-active');
+  assert.ok(length(near) > 2700 && length(near) < 3200, `the line behind you is gone: ${length(near)} m left`);
   assert.deepEqual(log.errors, []);
   await ctx.close();
 });

@@ -1,6 +1,6 @@
 import { CONFIG } from './config.js';
 import { fmtClock, fmtDistance, fmtDuration, sayDistance } from './format.js';
-import { clamp, haversine, sliceFrom } from './geo.js';
+import { clamp, haversine } from './geo.js';
 import { Guidance } from './guidance.js';
 import { getLang, setLang, t } from './i18n.js';
 import { CATEGORY_ICONS, UI, doorSvg, laneIcon, turnIcon } from './icons.js';
@@ -581,11 +581,12 @@ function onGpsError(err) {
 function receiveFix(fix) {
   S.gpsDenied = false;
   S.fix = fix;
-  const now = performance.now();
+  // When the fix was taken, which is a little before it got here.
+  const takenAt = performance.now() - (fix.lag || 0);
   if (S.view === 'nav' && S.guidance) {
-    onNavFix(fix, now);
+    onNavFix(fix, takenAt);
   } else {
-    motion.offRoute(fix.lng, fix.lat, fix.heading, fix.motionSpeed ?? fix.speed ?? 0, now);
+    motion.offRoute(fix.lng, fix.lat, fix.heading, fix.motionSpeed ?? fix.speed ?? 0, takenAt);
   }
   if (S.wantCenter) {
     S.wantCenter = false;
@@ -695,7 +696,7 @@ function navFrame(pose, now, dt, moved, inLanes) {
       S.lastTrimS = pose.s;
       // The lane view has its own line on the road; the ordinary one starts past it.
       const trimFrom = inLanes && S.scene ? Math.max(pose.s, S.scene.trimS) : pose.s;
-      mapView.setRemaining(sliceFrom(S.route.coords, S.route.cum, trimFrom));
+      mapView.setRemaining(S.route, trimFrom);
       setStripProgress($('nav-strip'), pose.s / S.route.length);
       if (S.sim) $('sim-seek').setAttribute('aria-valuenow', String(Math.round((pose.s / S.route.length) * 100)));
     }
@@ -2185,13 +2186,13 @@ function startGuidance({ simulate }) {
   }
 }
 
-function onNavFix(fix, now) {
+function onNavFix(fix, takenAt) {
   const st = S.guidance.update(fix);
   S.lastState = st;
 
   const speed = fix.motionSpeed ?? fix.speed ?? 0;
-  if (st.onRoute) motion.onRoute(st.s, speed, now);
-  else motion.offRoute(fix.lng, fix.lat, fix.heading, speed, now);
+  if (st.onRoute) motion.onRoute(st.s, speed, takenAt);
+  else motion.offRoute(fix.lng, fix.lat, fix.heading, speed, takenAt);
 
   if (S.lastDrivenS != null && st.s > S.lastDrivenS) {
     const km = (st.s - S.lastDrivenS) / 1000;
@@ -3173,7 +3174,7 @@ function simSeek(target) {
   // Lane counts may not have been fetched for the stretch you've landed on.
   if (!S.simScrub) S.laneFetch.until = 0;
   S.sim.seek(s);
-  mapView?.setRemaining(sliceFrom(route.coords, route.cum, s));
+  mapView?.setRemaining(route, s);
   setStripProgress($('nav-strip'), s / route.length);
   $('sim-seek').setAttribute('aria-valuenow', String(Math.round((s / route.length) * 100)));
 }

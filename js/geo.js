@@ -96,6 +96,35 @@ export function sliceFrom(coords, cum, s) {
   return [start, ...coords.slice(i + 1)];
 }
 
+// The part of a line between distances a and b along it.
+export function sliceBetween(coords, cum, a, b) {
+  const n = coords.length;
+  if (n < 2) return coords.slice();
+  const total = cum[n - 1];
+  const from = Math.min(Math.max(a, 0), total);
+  const to = Math.min(Math.max(b, from), total);
+  const at = (s) => {
+    let lo = 0, hi = n - 2;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cum[mid] <= s) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  };
+  const point = (i, s) => {
+    const span = cum[i + 1] - cum[i];
+    const t = span > 0 ? Math.min(1, Math.max(0, (s - cum[i]) / span)) : 0;
+    return [coords[i][0] + (coords[i + 1][0] - coords[i][0]) * t, coords[i][1] + (coords[i + 1][1] - coords[i][1]) * t];
+  };
+  const i = at(from), j = at(to);
+  const out = [point(i, from)];
+  for (let k = i + 1; k <= j; k++) out.push(coords[k]);
+  const last = point(j, to);
+  const prev = out[out.length - 1];
+  if (last[0] !== prev[0] || last[1] !== prev[1]) out.push(last);
+  return out;
+}
+
 export function boundsOf(coords) {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
   for (const [x, y] of coords) {

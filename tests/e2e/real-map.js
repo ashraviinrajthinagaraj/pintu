@@ -444,6 +444,38 @@ await check('real library and Pintu read the same tile the same way', async () =
   assert.deepEqual(errors, []);
 });
 
+// How smoothly a long highway trip runs: frame times and long pauses, at a phone's
+// pixel density. Only on request (BENCH=1), as it's slow and prints numbers.
+if (process.env.BENCH) await check('real library: smoothness on a long trip', async () => {
+  const { buildTrip } = await import('../helpers/fixtures.js');
+  const longTrip = () => buildTrip(P.a, [
+    { to: [101.95, 3.15], type: 1, street: 'E8', kph: 100 },
+    { to: [102.2, 3.0], type: 9, street: 'E8', kph: 100 },
+    { to: [102.5, 2.8], type: 10, street: 'E8', kph: 100 },
+    { to: [102.8, 2.6], type: 9, street: 'E8', kph: 100 },
+  ]);
+  const trip = longTrip();
+  const { ctx, page } = await open(browser, { styleFor: async (n) => demoCity(n === 'dark' ? 'night' : 'day'), scale: 3, routeResponse: () => ({ trip: longTrip() }) });
+  await toPreview(page);
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  await drive(page, trip, { to: 300, kph: 100, liveMs: 30 });
+  await settle(page, 1500);
+  await page.evaluate(() => {
+    window.__bench = { frames: [], long: [] };
+    new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__bench.long.push(Math.round(e.duration)); }).observe({ type: 'longtask' });
+    let last = performance.now();
+    const loop = (t) => { window.__bench.frames.push(t - last); last = t; if (!window.__bench.stop) requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  });
+  await drive(page, trip, { from: 300, to: 300 + 28 * 10, kph: 100, liveMs: 1000 });
+  const b = await page.evaluate(() => { window.__bench.stop = true; return window.__bench; });
+  const f = [...b.frames].sort((x, y) => x - y);
+  const q = (p) => Math.round(f[Math.floor(p * (f.length - 1))]);
+  console.log(JSON.stringify({ points: prepareTrip(trip).coords.length, frames: f.length, median: q(0.5), p90: q(0.9), p99: q(0.99), longTasks: b.long.length, longMs: b.long.reduce((a, x) => a + x, 0) }));
+  await ctx.close();
+});
+
 await check('real library: tapping a place on the map opens its card', async () => {
   const { ctx, page, errors } = await open(browser, { styleFor: realStyle, tiles: true, tileLog: [] });
   await page.evaluate(([lng, lat]) => window.__map.jumpTo({ center: [lng, lat], zoom: 16 }), [POIS[0].lng, POIS[0].lat]);
