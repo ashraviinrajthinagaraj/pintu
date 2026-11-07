@@ -3058,6 +3058,280 @@ await check('human voices switched off: the phone\'s voice only, nothing asked, 
   await ctx.close();
 });
 
+/* ---------- Speed cameras ---------- */
+
+const cameraAt = along2(P.a, P.b, 0.8);
+function along2(a, b, f) { return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]; }
+const CAMERAS = { elements: [{ type: 'node', id: 9, lat: cameraAt[1], lon: cameraAt[0], tags: { highway: 'speed_camera', maxspeed: '60' } }] };
+
+await check('speed cameras: a warning before one, on screen and aloud, once', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, overpass: CAMERAS, scale: 2 });
+  await toNav(page);
+  await page.waitForFunction(() => true);
+  for (let i = 0; i < 50 && !log.overpass.some((b) => decodeURIComponent(b).includes('speed_camera')); i++) await page.waitForTimeout(50);
+  assert.ok(log.overpass.some((b) => decodeURIComponent(b).includes('speed_camera')), 'asked for cameras');
+  await page.waitForTimeout(150);
+  await roll(page, trip, 0, 400, 12);
+  assert.equal(await vis(page, '#camera-alert'), false, 'not yet');
+  await roll(page, trip, 400, 700, 12);
+  await page.waitForSelector('#camera-alert:not([hidden])');
+  assert.match(await text(page, '#camera-alert'), /m\s*60/);
+  await page.screenshot({ path: `${shots}/57-camera.png` });
+  await roll(page, trip, 700, 860, 12);
+  await page.waitForTimeout(100);
+  const words = (await said(page)).map((x) => x.text).filter((x) => /Kamera laju/.test(x));
+  assert.equal(words.length, 1, JSON.stringify(words));
+  assert.match(words[0], /Kamera laju dalam \d+ meter\. Had 60\./);
+  await roll(page, trip, 860, 1000, 12);
+  assert.equal(await vis(page, '#camera-alert'), false, 'gone once passed');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('speed cameras: switched off, nothing asked and nothing said', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { speedCameras: false } }, overpass: CAMERAS });
+  await page.click('#btn-settings');
+  assert.equal(await page.isChecked('#camera-on'), false);
+  await page.click('#settings-back');
+  await toNav(page);
+  await roll(page, trip, 0, 1000, 12);
+  assert.ok(!log.overpass.some((b) => decodeURIComponent(b).includes('speed_camera')));
+  assert.equal(await vis(page, '#camera-alert'), false);
+  assert.ok(!(await said(page)).some((x) => /Kamera/.test(x.text)));
+  await ctx.close();
+});
+
+await check('speed cameras: none answered means no warnings, and no fuss', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet });
+  log.overpassFail = true;
+  await toNav(page);
+  await roll(page, trip, 0, 1000, 12);
+  assert.equal(await vis(page, '#camera-alert'), false);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+/* ---------- Tolls ---------- */
+
+const tollTrip = () => buildTrip(P.a, [
+  { to: P.b, type: 1, street: 'Jalan A' },
+  { to: P.c, type: 18, street: 'E2', toll: true, highway: true },
+  { to: P.d, type: 10, street: 'Jalan B' },
+], { has_toll: true });
+
+await check('tolls: each route says how far it runs on toll roads', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: tollTrip(), alternates: [{ trip: cityTrip() }] }) });
+  await toPreview(page);
+  assert.match(await text(page, '.route-opt >> nth=0'), /Tol, 1\.1 km/);
+  assert.doesNotMatch(await text(page, '.route-opt >> nth=1'), /Tol/);
+  await page.click('#mode-moto');
+  await page.waitForSelector('.route-opt');
+  assert.doesNotMatch(await text(page, '#route-list'), /Tol/, 'motorcycles don\'t pay tolls');
+  await ctx.close();
+});
+
+/* ---------- Home and work ---------- */
+
+await check('home and work: set from search, shown with the journey time, one tap to plan', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  assert.match(await text(page, '#saved-home'), /Rumah\s*Tetapkan/);
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#saved-home');
+  assert.equal(await page.getAttribute('#search-input', 'placeholder'), 'Cari alamat rumah anda');
+  assert.equal(await vis(page, '#search-quick'), true, 'here, or on the map');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForSelector('#idle:not([hidden])');
+  await page.waitForFunction(() => /sampai/.test(document.getElementById('saved-home-detail').textContent));
+  assert.match(await text(page, '#saved-home-detail'), /min, sampai \d/);
+  const asked = log.fossgis.length;
+  assert.ok(asked >= 1);
+  // The same place, a moment later: no need to ask again.
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.waitForTimeout(150);
+  assert.equal(log.fossgis.length, asked);
+
+  // Work is right here.
+  await page.click('#saved-work');
+  await page.click('#quick-here');
+  await page.waitForFunction(() => /Anda di sini/.test(document.getElementById('saved-work-detail').textContent));
+  await page.screenshot({ path: `${shots}/53-home-work.png` });
+  await noOverflow(page, 'home and work');
+
+  await page.click('#saved-home');
+  await page.waitForSelector('.route-opt');
+  assert.equal(await text(page, '#dest-name'), 'Suria KLCC');
+  await page.click('#preview-back');
+  await page.waitForSelector('#idle:not([hidden])');
+
+  // Changed and removed in settings.
+  await page.click('#btn-settings');
+  assert.match(await text(page, '#saved-list'), /Rumah\s*Suria KLCC/);
+  await page.locator('#saved-list li', { hasText: 'Rumah' }).getByRole('button', { name: /Buang/ }).click();
+  assert.match(await text(page, '#saved-list'), /Rumah\s*Belum ditetapkan/);
+  await page.locator('#saved-list li', { hasText: 'Kerja' }).getByRole('button', { name: /Tukar/ }).click();
+  await page.waitForSelector('#search:not([hidden])');
+  assert.equal(await vis(page, '#settings'), false);
+  assert.equal(await page.getAttribute('#search-input', 'placeholder'), 'Cari tempat kerja anda');
+  await page.click('#search-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.match(await text(page, '#saved-home'), /Tetapkan/);
+  await page.reload();
+  assert.match(await text(page, '#saved-work'), /Kerja/);
+  assert.doesNotMatch(await text(page, '#saved-work'), /Tetapkan/, 'kept after a reload');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('home and work: set by pointing at the map', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#saved-work');
+  await page.click('#quick-map');
+  await page.waitForSelector('.pick-bar');
+  assert.match(await text(page, '#pick-hint'), /kerja anda/);
+  assert.equal(await vis(page, '#search'), false, 'the map, not the search, is in view');
+  await page.click('#pick-use');
+  await page.waitForSelector('#idle:not([hidden])');
+  await page.waitForFunction(() => !/Tetapkan/.test(document.getElementById('saved-work').textContent));
+  await ctx.close();
+});
+
+/* ---------- Parking ---------- */
+
+const parkingTiles = [
+  { id: 71, lng: P.d[0] + 0.0012, lat: P.d[1], props: { name: 'Parkir Menara', class: 'parking', subclass: 'parking' } },
+  { id: 72, lng: P.d[0], lat: P.d[1] + 0.0025, props: { name: 'Parkir Jauh', class: 'parking', subclass: 'parking' } },
+  { id: 73, lng: P.d[0] + 0.0003, lat: P.d[1], props: { name: 'Rak Basikal', class: 'parking', subclass: 'bicycle_parking' } },
+];
+
+await check('parking: car parks near the destination, and the drive can end at one', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, tiles: parkingTiles, scale: 2 });
+  await toPreview(page);
+  await page.waitForFunction(() => /berdekatan/.test(document.getElementById('plan-parking-detail').textContent));
+  assert.match(await text(page, '#plan-parking-detail'), /2 berdekatan, paling dekat 1\d\d m/);
+  await page.click('#plan-parking');
+  assert.equal(await page.locator('#parking-list li').count(), 2);
+  assert.match(await text(page, '#parking-list'), /Parkir Menara\s*1\d\d m dari destinasi/);
+  await page.locator('#preview').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await page.screenshot({ path: `${shots}/54-parking.png` });
+  const before = log.fossgis.length;
+  await page.locator('#parking-list button', { hasText: 'Parkir Menara' }).click();
+  await page.waitForFunction((n) => document.querySelectorAll('.route-opt').length && n >= 0, before);
+  await page.waitForFunction(() => /Letak kereta di Parkir Menara/.test(document.getElementById('plan-parking-title').textContent));
+  const ask = log.fossgis.at(-1);
+  assert.ok(log.fossgis.length > before);
+  assert.ok(Math.abs(ask.locations.at(-1).lon - (P.d[0] + 0.0012)) < 1e-5, JSON.stringify(ask.locations));
+  assert.match(await text(page, '#plan-parking-detail'), /jalan kaki 1\d\d m/);
+  await page.click('#plan-parking-clear');
+  await page.waitForFunction(() => !/Letak kereta di/.test(document.getElementById('plan-parking-title').textContent));
+  assert.ok(Math.abs(log.fossgis.at(-1).locations.at(-1).lon - P.d[0]) < 1e-6);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('parking: none nearby, or walking, means no parking row', async () => {
+  const none = await newApp(browser, { ...quiet, tiles: [] });
+  await toPreview(none.page);
+  await none.page.waitForTimeout(400);
+  assert.equal(await vis(none.page, '#plan-parking-wrap'), false);
+  await none.ctx.close();
+  const walking = await newApp(browser, { ...quiet, tiles: parkingTiles });
+  await toPreview(walking.page);
+  await walking.page.click('#mode-walk');
+  await walking.page.waitForTimeout(300);
+  assert.equal(await vis(walking.page, '#plan-parking-wrap'), false);
+  await walking.ctx.close();
+});
+
+/* ---------- Leaving on time ---------- */
+
+await check('leave by: pick when to arrive, and see when to leave', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, scale: 2 });
+  await toPreview(page);
+  assert.match(await text(page, '#plan-arrive'), /Mahu sampai bila\?/);
+  const at = (mins) => page.evaluate((m) => {
+    const d = new Date(Date.now() + m * 60000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }, mins);
+  await page.fill('#plan-arrive-time', await at(120));
+  assert.match(await text(page, '#plan-arrive-title'), /^Bertolak sebelum \d/);
+  assert.match(await text(page, '#plan-arrive-detail'), /Tanpa trafik sebenar/);
+  await page.locator('#preview').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${shots}/55-leave-by.png` });
+  await page.fill('#plan-arrive-time', await at(1));
+  assert.match(await text(page, '#plan-arrive-title'), /^Dah lewat \d+ min/);
+  assert.match(await text(page, '#plan-arrive-detail'), /sampai kira-kira \d/);
+  await page.fill('#plan-arrive-time', '');
+  assert.match(await text(page, '#plan-arrive-title'), /Mahu sampai/);
+  await noOverflow(page, 'leave by');
+  await ctx.close();
+});
+
+/* ---------- Junction pictures ---------- */
+
+const exitTrip = () => buildTrip(P.a, [
+  { to: P.b, type: 1, street: 'E1', highway: true, kph: 90 },
+  { to: P.c, type: 20, street: 'E35', highway: true, sign: { exit_number_elements: [{ text: '235' }], exit_branch_elements: [{ text: 'E35' }], exit_toward_elements: [{ text: 'Seremban' }] } },
+  { to: P.d, type: 10, street: 'Jalan B' },
+]);
+
+await check('junction view: a picture of the exit before you reach it, with its sign', async () => {
+  const trip = prepareTrip(exitTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, routeResponse: () => ({ trip: exitTrip() }) });
+  await toNav(page);
+  await roll(page, trip, 0, 300, 20);
+  await page.waitForSelector('#junction:not([hidden])');
+  assert.match(await page.getAttribute('#junction', 'class'), /take-right/);
+  assert.equal(await text(page, '#junction-exit'), 'Susur 235');
+  assert.equal(await text(page, '#junction-to'), 'E35 · Seremban');
+  const fill = () => page.evaluate(() => parseFloat(document.getElementById('junction-fill').style.width));
+  const early = await fill();
+  await roll(page, trip, 300, 900, 20);
+  assert.ok((await fill()) > early, 'fills as it gets close');
+  await page.screenshot({ path: `${shots}/56-junction.png` });
+  await noOverflow(page, 'junction');
+  await roll(page, trip, 900, trip.maneuvers[1].beginDist + 30, 20);
+  assert.equal(await vis(page, '#junction'), false, 'gone after the exit');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('small phone: home and work, a junction and a camera all fit', async () => {
+  const trip = prepareTrip(exitTrip());
+  const storage = { 'pintu.safetySeen': 'true', 'pintu.saved': { home: { name: 'Rumah Panjang Sekali Di Taman Melawati', detail: '', lng: P.d[0], lat: P.d[1] }, work: { name: 'Menara', detail: '', lng: P.c[0], lat: P.c[1] } } };
+  const { ctx, page } = await newApp(browser, { storage, viewport: { width: 320, height: 568 }, scale: 2, routeResponse: () => ({ trip: exitTrip() }), overpass: { elements: [{ type: 'node', id: 3, lat: along2(P.a, P.b, 0.5)[1], lon: along2(P.a, P.b, 0.5)[0], tags: { maxspeed: '110' } }] } });
+  await page.click('#btn-locate');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.waitForFunction(() => /sampai/.test(document.getElementById('saved-home-detail').textContent));
+  await noOverflow(page, 'small idle');
+  await page.screenshot({ path: `${shots}/58-small-idle.png` });
+  await toNav(page);
+  await page.waitForTimeout(300);
+  await roll(page, trip, 0, 400, 20);
+  await page.waitForSelector('#junction:not([hidden])');
+  await page.waitForSelector('#camera-alert:not([hidden])');
+  await noOverflow(page, 'small junction');
+  await page.screenshot({ path: `${shots}/59-small-junction.png` });
+  await ctx.close();
+});
+
+await check('junction view: none for ordinary turns', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  await toNav(page);
+  for (const [a, b] of [[0, 600], [600, 1300], [1300, 2000]]) {
+    await roll(page, trip, a, b, 15);
+    assert.equal(await vis(page, '#junction'), false);
+  }
+  await ctx.close();
+});
+
 /* ---------- What the characters make of the drive ---------- */
 
 // A trip long enough to crawl along, with no turn for a good while.

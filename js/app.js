@@ -16,6 +16,10 @@ import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVo
 import { plainSpeech } from './delivery.js';
 import { DriveWatch, OVER_BY_KMH } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
+import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
+import { findParking } from './parking.js';
+import { leaveBy } from './leaveby.js';
+import { JUNCTION_RANGE, junctionFor, junctionSvg } from './junction.js';
 import { parseLocationText, readResolved, resolveShortLink } from './links.js';
 import { fetchShops, mallFor, searchShops } from './malls.js';
 import { reversePlace, searchPlaces } from './search.js';
@@ -44,6 +48,9 @@ const SIM_SPEEDS = [1, 4, 10, 30];
 const SIM_FAST = 10;           // from here it's too quick to talk over, or to read lanes
 const SIM_LEAD_M = 150;        // jumping to a turn lands this far before it
 const SIM_END_GAP_M = 60;      // a jump doesn't end the trip by itself
+const SAVED_FRESH_MS = 5 * 60000;  // a journey time this old is worth asking again
+const SAVED_MOVED_M = 500;
+const CAMERA_REFETCH_MS = 5 * 60000;
 const MOMENT_KEEP_MS = 30000;   // a remark that can't be made by then isn't worth making
 const TURNS_ONLY = new Set(['now', 'arrive', 'stop', 'repeat']);
 const WEATHER_REFRESH_MS = 20 * 60000;
@@ -66,7 +73,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, speedCameras: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -218,6 +225,18 @@ function applyStaticText() {
   $('voice-turns').textContent = t('voiceTurns');
   $('voice-char-label').textContent = t('setVoiceChar');
   $('voice-char-note').textContent = t('voiceCharNote');
+  $('set-camera-title').textContent = t('setCamera');
+  $('camera-text').textContent = t('cameraText');
+  $('camera-on-label').textContent = t('cameraOn');
+  $('camera-icon').innerHTML = UI.camera;
+  $('set-saved-title').textContent = t('setSavedTitle');
+  $('set-saved-text').textContent = t('setSavedText');
+  $('saved-home-icon').innerHTML = UI.home;
+  $('saved-work-icon').innerHTML = UI.work;
+  $('plan-arrive-icon').innerHTML = UI.clock;
+  $('plan-parking-icon').innerHTML = UI.parking;
+  label($('plan-parking-clear'), t('parkingRemove'), UI.close);
+  renderSaved();
   $('set-limit-title').textContent = t('setLimit');
   $('limit-text').textContent = t('limitText');
   $('limit-on-label').textContent = t('limitOn');
@@ -341,6 +360,7 @@ function renderSegments() {
   set('voice-full', S.settings.voiceLevel === 'full');
   set('voice-turns', S.settings.voiceLevel === 'turns');
   $('limit-on').checked = S.settings.speedLimit;
+  $('camera-on').checked = S.settings.speedCameras;
   $('weather-on').checked = S.settings.weather;
   set('lang-ms', S.settings.lang === 'ms');
   set('lang-en', S.settings.lang === 'en');
@@ -355,6 +375,8 @@ function renderSegments() {
 
 function renderClock() {
   $('hud-clock').textContent = fmtClock(new Date(), getLang());
+  if (S.view === 'idle') renderSaved();
+  if (S.view === 'preview' && S.routes[S.selected]) renderPlanArrive(S.routes[S.selected]);
 }
 
 function renderVehicleSummary() {
@@ -402,7 +424,7 @@ function render() {
   $('idle').hidden = view !== 'idle';
   $('hud').hidden = view !== 'idle';
   $('scrim').hidden = !(view === 'idle' || view === 'nav');
-  $('search').hidden = !(view === 'search' || overlay === 'stopsearch' || overlay === 'endsearch');
+  $('search').hidden = !((view === 'search' && overlay !== 'pickmap') || overlay === 'stopsearch' || overlay === 'endsearch');
   // The stops panel takes the same space, so there's no need to draw both.
   $('preview').hidden = view !== 'preview' || overlay === 'pickmap' || overlay === 'stops';
   $('map-pick').hidden = overlay !== 'pickmap';
@@ -450,6 +472,11 @@ addEventListener('popstate', (e) => {
   show(stale ? 'idle' : st.view);
   // Choosing on the map moved it. Put the route back in view.
   if (was === 'pickmap' && S.overlay !== 'pickmap' && S.view === 'preview') fitRoutes();
+  if (S.afterBack) {
+    const next = S.afterBack;
+    S.afterBack = null;
+    next();
+  }
 });
 
 // Whatever covers the bottom of the map decides where the map's own controls sit.
@@ -457,7 +484,7 @@ const bottomObserver = 'ResizeObserver' in window ? new ResizeObserver(() => upd
 function observeBottom() {
   if (bottomObserver) {
     bottomObserver.disconnect();
-    for (const id of ['preview', 'nav-bar', 'where', 'stops', 'steps', 'weather']) bottomObserver.observe($(id));
+    for (const id of ['preview', 'nav-bar', 'where', 'saved-row', 'stops', 'steps', 'weather']) bottomObserver.observe($(id));
   }
   updateBottomInset();
 }
@@ -469,7 +496,7 @@ function bottomElement() {
   if (S.overlay === 'pickmap' || S.overlay === 'hudmode') return null;
   if (S.view === 'preview') return $('preview');
   if (S.view === 'nav') return $('nav-bar');
-  if (S.view === 'idle') return $('where');
+  if (S.view === 'idle') return $('saved-row');
   return null;
 }
 
@@ -534,6 +561,7 @@ function receiveFix(fix) {
     mapView?.centerOn(fix.lng, fix.lat);
   }
   if (S.view === 'preview' && S.start) renderActions();
+  if (S.view === 'idle') refreshSavedEtas();
   flushFixWaiters(fix);
 }
 
@@ -760,7 +788,7 @@ function openEndSearch(end) {
 }
 
 function setSearchPrompt() {
-  const text = t(S.searchFor === 'start' ? 'startSearch' : 'searchPlaceholder');
+  const text = t({ start: 'startSearch', home: 'savedSearchHome', work: 'savedSearchWork' }[S.searchFor] || 'searchPlaceholder');
   $('search-input').placeholder = text;
   $('search-input').setAttribute('aria-label', text);
 }
@@ -792,15 +820,16 @@ function placeButton(place, onPick) {
 }
 
 function renderSearch(results) {
-  const pick = { stop: chooseStopFromSearch, start: chooseStartFromSearch, to: chooseToFromSearch }[S.searchFor] || chooseFromSearch;
+  const pick = { stop: chooseStopFromSearch, start: chooseStartFromSearch, to: chooseToFromSearch, home: chooseSavedFromSearch, work: chooseSavedFromSearch }[S.searchFor] || chooseFromSearch;
   $('search-results').replaceChildren(...results.map((p) => placeButton(p, pick)));
   const empty = !$('search-input').value.trim();
   const recents = load('recents', []);
   $('recents-wrap').hidden = !empty || !recents.length;
   $('recents').replaceChildren(...recents.map((p) => placeButton(p, pick)));
-  $('search-tip').hidden = !empty || S.searchFor === 'start';
-  $('search-paste').hidden = !empty || !navigator.clipboard?.readText;
-  $('search-quick').hidden = !empty || S.searchFor !== 'start';
+  const choosingSpot = S.searchFor === 'start' || savingPlace();
+  $('search-tip').hidden = !empty || choosingSpot;
+  $('search-paste').hidden = !empty || !navigator.clipboard?.readText || savingPlace();
+  $('search-quick').hidden = !empty || !choosingSpot;
 }
 
 function onSearchInput() {
@@ -921,6 +950,13 @@ function chooseFromSearch(place) {
   openPreview(place);
 }
 
+function chooseSavedFromSearch(place) {
+  $('search-input').blur();
+  const kind = S.searchFor;
+  S.afterBack = () => setSaved(kind, place);
+  history.back();
+}
+
 function chooseStopFromSearch(place) {
   $('search-input').blur();
   addRecent(place);
@@ -998,7 +1034,7 @@ function driveViaStart() {
   S.stops.unshift({ id: 'start', name: p.name, detail: p.detail || '', lat: p.lat, lng: p.lng, category: null, along: 0 });
   S.start = null;
   mapView?.setStart(null);
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
   mapView?.clearRoutes();
   renderEnds();
   loadRoutes();
@@ -1008,6 +1044,7 @@ function openMapPick() {
   // The search box is still focused, and the phone's keyboard would cover the map.
   $('search-input').blur();
   const at = S.start || S.fix || S.dest;
+  $('pick-hint').textContent = t(savingPlace() ? 'pickHintSaved' : 'pickHint', { name: t(S.searchFor === 'work' ? 'work' : 'home').toLowerCase() });
   openOverlay('pickmap');
   mapView?.level();
   if (at) mapView?.lookDownAt(at.lng, at.lat);
@@ -1018,6 +1055,12 @@ async function useMapPick() {
   const where = mapView?.placeAt(box.left + box.width / 2, box.top + box.height / 2);
   if (!where) return;
   const place = { name: `${where.lat.toFixed(5)}, ${where.lng.toFixed(5)}`, detail: '', lng: where.lng, lat: where.lat, country: '' };
+  if (savingPlace()) {
+    const kind = S.searchFor;
+    S.afterBack = () => setSaved(kind, { ...place, name: t(kind), detail: '' });
+    history.go(-2);
+    return;
+  }
   // Back past both the map and the search that led to it.
   history.go(-2);
   setStart(place);
@@ -1039,13 +1082,15 @@ function fitRoutes() {
 
 /* ---------- Route preview ---------- */
 
-function openPreview(place) {
+function openPreview(place, { keepParking = false } = {}) {
+  if (!keepParking) S.parkAt = null;
+  S.parkingOpen = false;
   S.dest = place;
   S.routes = [];
   S.selected = 0;
   mapView?.setDestination(place);
   mapView?.clearRoutes();
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
   $('dest-name').textContent = place.name;
   $('dest-detail').textContent = place.detail || '';
   $('dest-detail').hidden = !place.detail;
@@ -1053,8 +1098,13 @@ function openPreview(place) {
   show('preview');
   renderSegments();
   loadRoutes();
+  loadParking(place);
   if (place.unnamed) nameDestination(place);
 }
+
+// Where the drive itself ends: a car park, if one was chosen, or the destination.
+function routeEnd() { return S.parkAt || S.dest; }
+function stopPins() { return S.parkAt ? [...S.stops, { ...S.parkAt, category: 'parking' }] : S.stops; }
 
 // All we have is a position. The search service can usually put a name to it.
 async function nameDestination(place) {
@@ -1077,6 +1127,7 @@ function leaveDestination() {
   S.start = null;
   S.routes = [];
   S.stops = [];
+  S.parkAt = null;
   mapView?.setStart(null);
   mapView?.setDestination(null);
   mapView?.setStopPins([]);
@@ -1123,7 +1174,7 @@ async function loadRoutes() {
   renderRoutes();
   try {
     const routes = await fetchRoutes({
-      from, to: S.dest, stops: S.stops, mode: S.mode, avoidTolls: S.avoidTolls, alternates: 2, signal: ctrl.signal,
+      from, to: routeEnd(), stops: S.stops, mode: S.mode, avoidTolls: S.avoidTolls, alternates: 2, signal: ctrl.signal,
     });
     if (ctrl.signal.aborted) return;
     S.routes = routes;
@@ -1202,7 +1253,7 @@ function renderRoutes() {
     const tags = document.createElement('span');
     tags.className = 'route-tags';
     // Motorcycles don't pay tolls in Malaysia, so the tag would only mislead.
-    if (r.hasToll && S.mode !== 'motorcycle') tags.append(tag(t('tollStill')));
+    if (r.hasToll && S.mode !== 'motorcycle') tags.append(tag(r.tollKm >= 1 ? t('tollKm', { km: kmText(r.tollKm) }) : t('tollStill')));
     if (r.hasFerry) tags.append(tag(t('ferry')));
     btn.append(tags);
     btn.addEventListener('click', () => selectRoute(i));
@@ -1263,7 +1314,7 @@ function renderPlan() {
     label(removeBtn, t('removeStop', { name: stop.name }), UI.close);
     removeBtn.addEventListener('click', () => {
       S.stops.splice(i, 1);
-      mapView?.setStopPins(S.stops);
+      mapView?.setStopPins(stopPins());
       loadRoutes();
     });
     row.append(icon, main, removeBtn);
@@ -1271,6 +1322,8 @@ function renderPlan() {
   }));
 
   renderPlanFuel(route);
+  renderPlanArrive(route);
+  renderPlanParking();
   renderPlanWeather(route);
   renderPlanMall();
   renderPlanPrayer(route);
@@ -1313,6 +1366,223 @@ function renderPlanFuel(route) {
   row.classList.toggle('is-short', plan.status === 'short' || plan.status === 'tight');
   $('plan-level').value = String(v.level);
   $('plan-level-value').textContent = `${v.level}%`;
+}
+
+/* ---------- Leaving on time ---------- */
+
+function renderPlanArrive(route) {
+  const lang = getLang();
+  const time = $('plan-arrive-time').value;
+  const plan = route ? leaveBy(Date.now(), time, route.time) : null;
+  const clock = (date, tomorrow) => `${fmtClock(date, lang)}${tomorrow ? ` ${t('tomorrow')}` : ''}`;
+  if (!plan) {
+    $('plan-arrive-title').textContent = t('arriveTitle');
+    $('plan-arrive-detail').textContent = t('arriveHint');
+  } else if (plan.late) {
+    $('plan-arrive-title').textContent = t('leaveLate', { time: fmtDuration(plan.lateBy, lang) });
+    $('plan-arrive-detail').textContent = t('leaveLateDetail', { clock: fmtClock(plan.arriveIfNow, lang) });
+  } else {
+    $('plan-arrive-title').textContent = t('leaveBy', { clock: clock(plan.leave, plan.leave.getDate() !== new Date().getDate()) });
+    $('plan-arrive-detail').textContent = t('leaveByDetail', { clock: clock(plan.arrive, plan.tomorrow) });
+  }
+  $('plan-arrive').classList.toggle('is-late', !!plan?.late);
+}
+
+/* ---------- Parking at the destination ---------- */
+
+function loadParking(place) {
+  S.parkingCtrl?.abort();
+  S.parking = null;
+  if (S.mode === 'walk' || !place) return;
+  const key = `${place.lng.toFixed(5)},${place.lat.toFixed(5)},${S.mode}`;
+  const ctrl = new AbortController();
+  S.parkingCtrl = ctrl;
+  S.parking = { key, state: 'loading', list: [] };
+  findParking(place, { mode: S.mode, signal: ctrl.signal, tileUrl: mapView?.tileUrl() }).then((list) => {
+    if (S.parking?.key !== key) return;
+    S.parking = { key, state: 'ready', list };
+  }).catch(() => {
+    if (S.parking?.key === key) S.parking = { key, state: 'error', list: [] };
+  }).finally(() => {
+    if (S.view === 'preview') renderPlanParking();
+  });
+}
+
+function renderPlanParking() {
+  const wrap = $('plan-parking-wrap');
+  const found = S.parking;
+  const park = S.parkAt;
+  const show = S.mode !== 'walk' && !!S.dest && (!!park || found?.state === 'loading' || (found?.state === 'ready' && found.list.length > 0));
+  wrap.hidden = !show;
+  if (!show) return;
+  const list = $('parking-list');
+  $('plan-parking-clear').hidden = !park;
+  if (park) {
+    const walk = haversine([park.lng, park.lat], [S.dest.lng, S.dest.lat]);
+    $('plan-parking-title').textContent = t('parkingChosen', { name: park.name || t('parkingUnnamed') });
+    $('plan-parking-detail').textContent = t('parkingWalk', { distance: fmtDistance(walk) });
+  } else if (found.state === 'loading') {
+    $('plan-parking-title').textContent = t('parkingTitle');
+    $('plan-parking-detail').textContent = t('parkingFinding');
+  } else {
+    const n = found.list.length;
+    const distance = fmtDistance(found.list[0].distance);
+    $('plan-parking-title').textContent = t('parkingTitle');
+    $('plan-parking-detail').textContent = n === 1 ? t('parkingOne', { distance }) : t('parkingCount', { n, distance });
+  }
+  const open = !!S.parkingOpen && found?.state === 'ready' && found.list.length > 0;
+  $('plan-parking').setAttribute('aria-expanded', String(open));
+  list.hidden = !open;
+  if (!open) return;
+  list.replaceChildren(...found.list.map((p) => {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const name = document.createElement('strong');
+    name.textContent = p.name || t('parkingUnnamed');
+    const far = document.createElement('span');
+    far.textContent = t('parkingFrom', { distance: fmtDistance(p.distance) });
+    btn.append(name, far);
+    btn.addEventListener('click', () => chooseParking(p));
+    li.append(btn);
+    return li;
+  }));
+}
+
+function chooseParking(p) {
+  S.parkAt = { name: p.name || t('parkingUnnamed'), detail: '', lng: p.lng, lat: p.lat, country: S.dest?.country || '' };
+  S.parkingOpen = false;
+  mapView?.setStopPins(stopPins());
+  loadRoutes();
+}
+
+function clearParking() {
+  S.parkAt = null;
+  S.parkingOpen = false;
+  mapView?.setStopPins(stopPins());
+  loadRoutes();
+}
+
+/* ---------- Home and work ---------- */
+
+const SAVED_KINDS = ['home', 'work'];
+const savedPlaces = () => load('saved', {});
+const savingPlace = () => SAVED_KINDS.includes(S.searchFor);
+
+function setSaved(kind, place) {
+  const { name, detail, lng, lat, country } = place;
+  save('saved', { ...savedPlaces(), [kind]: { name, detail: detail || '', lng, lat, country: country || '' } });
+  delete S.savedEta?.[kind];
+  renderSaved();
+  toast(t('savedDone', { name: t(kind) }));
+  refreshSavedEtas();
+}
+
+function removeSaved(kind) {
+  const all = savedPlaces();
+  delete all[kind];
+  save('saved', all);
+  delete S.savedEta?.[kind];
+  renderSaved();
+}
+
+function openSavedSearch(kind) {
+  gps.start();
+  S.searchFor = kind;
+  pushHistory('search');
+  show('search');
+  resetSearch();
+}
+
+function goSaved(kind) {
+  const place = savedPlaces()[kind];
+  if (!place) { openSavedSearch(kind); return; }
+  voice.unlockVoice();
+  S.stops = [];
+  S.start = null;
+  pushHistory('preview');
+  openPreview({ ...place, name: place.name || t(kind) });
+}
+
+function renderSaved() {
+  const all = savedPlaces();
+  const lang = getLang();
+  for (const kind of SAVED_KINDS) {
+    const place = all[kind];
+    const btn = $(`saved-${kind}`);
+    btn.classList.toggle('is-unset', !place);
+    $(`saved-${kind}-name`).textContent = t(kind);
+    let detail = t('savedSet');
+    if (place) {
+      const eta = S.savedEta?.[kind];
+      if (eta?.here) detail = t('savedHere');
+      else if (eta?.time != null) detail = t('savedEta', { time: fmtDuration(eta.time, lang), clock: fmtClock(new Date(Date.now() + eta.time * 1000), lang) });
+      else detail = place.name;
+    }
+    $(`saved-${kind}-detail`).textContent = detail;
+    btn.setAttribute('aria-label', `${t(kind)}. ${detail}`);
+  }
+  $('saved-list').replaceChildren(...SAVED_KINDS.map((kind) => {
+    const place = all[kind];
+    const li = document.createElement('li');
+    const what = document.createElement('div');
+    what.className = 'saved-what';
+    const title = document.createElement('strong');
+    title.textContent = t(kind);
+    const where = document.createElement('span');
+    where.textContent = place ? place.name : t('savedNotSet');
+    what.append(title, where);
+    const change = document.createElement('button');
+    change.type = 'button';
+    change.className = 'link-btn';
+    change.textContent = place ? t('savedChange') : t('savedSet');
+    change.setAttribute('aria-label', t('savedChangeAria', { name: t(kind) }));
+    // Out of settings first, then the search.
+    change.addEventListener('click', () => { S.afterBack = () => openSavedSearch(kind); history.back(); });
+    li.append(what, change);
+    if (place) {
+      const drop = document.createElement('button');
+      drop.type = 'button';
+      drop.className = 'link-btn';
+      drop.textContent = t('savedRemove');
+      drop.setAttribute('aria-label', t('savedRemoveAria', { name: t(kind) }));
+      drop.addEventListener('click', () => removeSaved(kind));
+      li.append(drop);
+    }
+    return li;
+  }));
+}
+
+// How long to get home, or to work, from here. Asked again after a while, or a move.
+async function refreshSavedEtas() {
+  const fix = S.fix;
+  if (!fix || S.savedBusy) return;
+  const all = savedPlaces();
+  S.savedEta ??= {};
+  S.savedBusy = true;
+  try {
+    for (const kind of SAVED_KINDS) {
+      const place = all[kind];
+      if (!place) continue;
+      const here = [fix.lng, fix.lat];
+      const known = S.savedEta[kind];
+      if (known && Date.now() - known.at < SAVED_FRESH_MS && haversine(here, known.from) < SAVED_MOVED_M) continue;
+      if (haversine(here, [place.lng, place.lat]) < 300) {
+        S.savedEta[kind] = { at: Date.now(), from: here, here: true };
+        continue;
+      }
+      try {
+        const [route] = await fetchRoutes({ from: fix, to: place, stops: [], mode: driveMode(), avoidTolls: S.avoidTolls });
+        S.savedEta[kind] = { at: Date.now(), from: here, time: route.time };
+      } catch {
+        // Tried, and not again straight away. The name is shown meanwhile.
+        S.savedEta[kind] = { at: Date.now(), from: here };
+      }
+    }
+  } finally {
+    S.savedBusy = false;
+    renderSaved();
+  }
 }
 
 function renderPlanPrayer(route) {
@@ -1560,7 +1830,7 @@ function addStop(place) {
   };
   S.stops.push(stop);
   S.stops.sort((a, b) => a.along - b.along);
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
   if (S.sim) {
     S.simPlan.stops.push(stop);
     S.simPlan.changed = true;
@@ -1590,7 +1860,7 @@ function beginTrip({ simulate }) {
 
 function saveTrip() {
   if (S.sim) return;
-  save('trip', { dest: S.dest, stops: S.stops, mode: S.mode, avoidTolls: S.avoidTolls, at: Date.now() });
+  save('trip', { dest: S.dest, parkAt: S.parkAt || null, stops: S.stops, mode: S.mode, avoidTolls: S.avoidTolls, at: Date.now() });
 }
 
 function startGuidance({ simulate }) {
@@ -1617,11 +1887,18 @@ function startGuidance({ simulate }) {
   S.lastDrivenS = null;
   S.rangeSpoken = 0;
   S.lastSignKey = null;
+  S.camerasSaid = new Set();
+  S.cameraPool = [];
+  S.cameras = [];
+  S.cameraFetchedAt = 0;
+  loadCameras(S.route);
+  $('camera-alert').hidden = true;
+  $('junction').hidden = true;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
   S.poseStale = true;
   mapView?.setStart(null);
   mapView?.showRoutes([S.route], 0);
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
 
   replaceHistory('nav');
   show('nav');
@@ -1639,7 +1916,7 @@ function startGuidance({ simulate }) {
     S.realFix = S.fix;
     S.simStops = [...S.stops];
     // Ending a simulated drive comes back to this plan, ready to change or drive.
-    S.simPlan = { dest: S.dest, start: S.start, stops: [...S.stops], routes: S.routes, selected: S.selected, changed: false };
+    S.simPlan = { dest: S.dest, parkAt: S.parkAt, start: S.start, stops: [...S.stops], routes: S.routes, selected: S.selected, changed: false };
     S.sim = new SimulatedDrive(S.route, receiveFix, { factor: S.settings.simSpeed });
     renderSimPanel();
     S.sim.start();
@@ -1680,6 +1957,7 @@ function onNavFix(fix, now) {
   // Two things due at once, like a stop and the next turn, are said as one line.
   S.gathering = [];
   for (const p of st.prompts) say(p);
+  renderCamera(st, fix);
   flushSpeech();
   if (!st.prompts.length) sayWeather(st);
   watchDrive(fix, st);
@@ -1807,7 +2085,7 @@ function momentLine(key, limit) {
 
 function onStopReached() {
   const stop = S.stops.shift();
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
   saveTrip();
   if (stop && (stop.category === 'fuel' || stop.category === 'ev') && vehicle()?.range) {
     $('refill-text').textContent = t(stop.category === 'ev' ? 'refillAskEv' : 'refillAskFuel');
@@ -1842,6 +2120,32 @@ function renderSign(st) {
   if (st.then) $('then-icon').innerHTML = turnIcon(st.then);
 
   renderLanes(st);
+  renderJunction(st);
+}
+
+// A picture of the exit or fork, so you know which way to go before you're there.
+function renderJunction(st) {
+  const box = $('junction');
+  const next = st.next;
+  const j = S.mode === 'walk' ? null : junctionFor(next);
+  const range = next.highway || next.toll ? JUNCTION_RANGE.highway : JUNCTION_RANGE.road;
+  if (!j || st.distanceToNext > range) {
+    box.hidden = true;
+    box.dataset.key = '';
+    return;
+  }
+  box.hidden = false;
+  const key = `${st.nextIndex}:${S.route.id}:${getLang()}`;
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.className = `junction take-${j.take}`;
+    $('junction-pic').innerHTML = junctionSvg(j);
+    $('junction-exit').textContent = j.exitNo ? `${t('exitWord')} ${j.exitNo}` : '';
+    const where = [j.branch, j.toward].filter(Boolean).join(' · ') || describe(next, getLang()).road;
+    $('junction-to').textContent = where;
+    $('junction-board').hidden = !where && !j.exitNo;
+  }
+  $('junction-fill').style.width = `${Math.round(clamp(1 - st.distanceToNext / range, 0, 1) * 100)}%`;
 }
 
 function renderLanes(st) {
@@ -1888,6 +2192,43 @@ function renderSpeed(fix, st) {
   }
   const over = known && limit && fix.speed * 3.6 > limit + OVER_BY_KMH;
   $('speed').classList.toggle('is-over', !!over);
+}
+
+/* ---------- Speed cameras ---------- */
+
+function loadCameras(route) {
+  S.cameraCtrl?.abort();
+  if (!S.settings.speedCameras || S.mode === 'walk') return;
+  const ctrl = new AbortController();
+  S.cameraCtrl = ctrl;
+  S.cameraFetchedAt = Date.now();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  fetchCameras(route, { signal: ctrl.signal }).then((found) => {
+    S.cameraPool = found;
+    if (S.view === 'nav' && S.route) S.cameras = camerasOnRoute(S.route, found);
+  }).catch(() => { /* none known is the same as none mapped: nothing to warn about */ })
+    .finally(() => clearTimeout(timer));
+}
+
+function renderCamera(st, fix) {
+  const box = $('camera-alert');
+  const near = S.settings.speedCameras && st.onRoute && S.mode !== 'walk' ? cameraAhead(S.cameras, st.s, fix.speed ?? 0) : null;
+  box.hidden = !near;
+  if (!near) return;
+  const lang = getLang();
+  const limit = near.camera.limit ?? currentLimit(st);
+  const distance = fmtDistance(Math.max(near.ahead, 10));
+  $('camera-distance').textContent = distance;
+  box.setAttribute('aria-label', t('cameraAria', { distance }));
+  $('camera-limit').hidden = !limit;
+  $('camera-limit').textContent = limit ? String(limit) : '';
+  if (S.camerasSaid.has(near.camera.id)) return;
+  // Not over a direction that's being said, unless it's nearly too late.
+  if (!st.prompts.length && voice.busy() && near.ahead > 150) return;
+  S.camerasSaid.add(near.camera.id);
+  if (S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) return;
+  const words = { distance: sayDistance(near.ahead, lang), limit };
+  speakText(t(limit ? 'cameraSayLimit' : 'cameraSay', words), { wait: voice.WAIT_TURN_MS });
 }
 
 function renderNavRange(st) {
@@ -1963,7 +2304,7 @@ async function reroute(fix, { added = false } = {}) {
     const moving = (fix.speed ?? 0) > 3;
     const [route] = await fetchRoutes({
       from: fix,
-      to: S.dest,
+      to: routeEnd(),
       stops: S.stops,
       mode: S.mode,
       avoidTolls: S.avoidTolls,
@@ -1974,6 +2315,8 @@ async function reroute(fix, { added = false } = {}) {
     S.guidance = new Guidance(route, { walking: S.mode === 'walk' });
     motion.setRoute(route);
     startScene(route);
+    S.cameras = camerasOnRoute(route, S.cameraPool || []);
+    if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
     if (S.sim) {
       S.sim.setRoute(route);
       S.simStops = [...S.stops];
@@ -2011,6 +2354,8 @@ function keepVehicleLevel() {
 
 // The trip's over one way or another: put everything back.
 function stopGuidance() {
+  S.cameraCtrl?.abort();
+  S.cameras = [];
   keepVehicleLevel();
   leaveFullscreen();
   S.weatherSaid = null;
@@ -2064,6 +2409,7 @@ function finishTrip() {
   mapView?.flat();
   S.dest = null;
   S.start = null;
+  S.parkAt = null;
   $('arrival-place').textContent = place ? place.name : '';
   S.arrivedAt = place;
   // Where the road ends isn't always where the door is.
@@ -2087,6 +2433,7 @@ function endTrip() {
   backOnWheels();
   S.dest = null;
   S.start = null;
+  S.parkAt = null;
   S.routes = [];
   mapView?.clearRoutes();
   mapView?.setDestination(null);
@@ -2103,6 +2450,7 @@ function backToPlan() {
   const plan = S.simPlan;
   S.simPlan = null;
   S.dest = plan.dest;
+  S.parkAt = plan.parkAt;
   S.start = plan.start;
   S.stops = plan.stops;
   S.routes = plan.routes;
@@ -2111,7 +2459,7 @@ function backToPlan() {
   mapView?.level();
   mapView?.setDestination(S.dest);
   mapView?.setStart(S.start);
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
   $('dest-name').textContent = S.dest.name;
   $('dest-detail').textContent = S.dest.detail || '';
   $('dest-detail').hidden = !S.dest.detail;
@@ -2547,7 +2895,7 @@ function simSeek(target) {
   // Stops before here are behind you, and those after it are still to come.
   const passed = route.maneuvers.filter((m) => m.isStop && s >= m.beginDist - 25).length;
   S.stops = S.simStops.slice(passed);
-  mapView?.setStopPins(S.stops);
+  mapView?.setStopPins(stopPins());
   $('refill').hidden = true;
   S.following = true;
   S.poseStale = true;
@@ -2733,8 +3081,9 @@ function resumeTrip() {
   S.start = null;
   voice.unlockVoice();
   S.startWhenRouted = true;
+  S.parkAt = trip.parkAt || null;
   pushHistory('preview');
-  openPreview(trip.dest);
+  openPreview(trip.dest, { keepParking: true });
 }
 
 /* ---------- Wiring ---------- */
@@ -2760,6 +3109,19 @@ function changeLanguage(lang) {
 function wire() {
   $('preview').addEventListener('animationend', updateBottomInset);
   $('where').addEventListener('click', openSearch);
+  $('saved-home').addEventListener('click', () => goSaved('home'));
+  $('saved-work').addEventListener('click', () => goSaved('work'));
+  $('camera-on').addEventListener('change', (e) => {
+    setSetting('speedCameras', e.target.checked);
+    if (!e.target.checked) $('camera-alert').hidden = true;
+  });
+  $('plan-arrive-time').addEventListener('input', () => renderPlanArrive(S.routes[S.selected]));
+  $('plan-parking').addEventListener('click', () => {
+    if (S.parkAt || S.parking?.state !== 'ready') return;
+    S.parkingOpen = !S.parkingOpen;
+    renderPlanParking();
+  });
+  $('plan-parking-clear').addEventListener('click', clearParking);
   $('btn-settings').addEventListener('click', () => {
     openOverlay('settings');
     renderVoiceStatus();
@@ -2839,6 +3201,13 @@ function wire() {
   $('to-row').addEventListener('click', () => openEndSearch('to'));
   $('swap-ends').addEventListener('click', swapEnds);
   $('quick-here').addEventListener('click', () => {
+    if (savingPlace()) {
+      const kind = S.searchFor;
+      if (!S.fix) { toast(t(S.gpsDenied ? 'gpsDenied' : 'gpsNone'), 6000); return; }
+      S.afterBack = () => setSaved(kind, { name: t(kind), detail: '', lng: S.fix.lng, lat: S.fix.lat, country: '' });
+      history.back();
+      return;
+    }
     history.back();
     setStart(null);
   });

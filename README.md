@@ -82,6 +82,40 @@ Comes from the routing service with the lane counts, wherever OpenStreetMap has 
 doesn't, nothing is shown rather than a guess. Over by more than 5 km/h for a few seconds, the
 speed turns red and Pintu says so once.
 
+## Speed cameras
+
+AES and AwAS cameras come from OpenStreetMap (`highway=speed_camera`), asked for once along the
+whole route when a trip starts (`js/cameras.js`). A camera counts if it's mapped within 18 m of the
+route. The warning shows from 300 to 800 m ahead, depending on speed, and is said once. Only mapped
+cameras are known, so no warning never means no camera.
+
+## Tolls
+
+Each route option shows roughly how far it runs on toll roads, from the toll mark on each of
+Valhalla's manoeuvres. Prices aren't shown: there's no reliable free source for Malaysia's rates,
+which on PLUS depend on where you enter and leave.
+
+## Home and work
+
+Saved on the phone, set from the main screen or settings. With a position, each shows the journey
+time and arrival clock, asked again after 5 minutes or a 500 m move.
+
+## Parking
+
+Car parks within 500 m of the destination come from the map's own tiles (`js/parking.js`).
+Choosing one ends the drive there, and the walk to the door picks up from it.
+
+## Leaving on time
+
+Pick an arrival time in the plan and Pintu works out when to leave (`js/leaveby.js`), from the
+route's time without live traffic.
+
+## Junction views
+
+Before a highway exit, ramp or fork (manoeuvre types 17 to 24), a picture shows the branch to take,
+its exit number and signs, and how close it is: from 1.5 km on highways and 500 m elsewhere
+(`js/junction.js`).
+
 ## Rain and floods
 
 - **Rain:** the Open-Meteo forecast at each point along the route, at the time you'd get there.

@@ -229,22 +229,27 @@ function askServer(server, body, signal, fetchImpl, waits) {
 // Two different servers at once and the first good answer wins. Each only ever
 // gets one request, and one that fails isn't asked again for a while, because
 // these servers ban clients that keep asking after being told to stop.
-async function fromOverpass(route, category, fromS, { signal, fetchImpl, servers, waits }) {
-  const body = new URLSearchParams({ data: buildQuery(category, routeSample(route, fromS)) });
+export async function overpass(query, {
+  signal = new AbortController().signal,
+  fetchImpl = (...a) => fetch(...a),
+  servers = CONFIG.overpass,
+  waits = WAITS,
+} = {}) {
+  const body = new URLSearchParams({ data: query });
   const open = servers.filter((server) => Date.now() >= (resting.get(server) || 0));
   for (let i = 0; i < open.length && !signal.aborted; i += 2) {
     const ctrl = new AbortController();
     const stop = () => ctrl.abort();
     signal.addEventListener('abort', stop);
     try {
-      return parseElements(await Promise.any(open.slice(i, i + 2).map(async (server) => {
+      return await Promise.any(open.slice(i, i + 2).map(async (server) => {
         try {
           return await askServer(server, body, ctrl.signal, fetchImpl, waits);
         } catch (err) {
           if (!ctrl.signal.aborted) resting.set(server, Date.now() + REST_MS);
           throw err;
         }
-      })), category);
+      }));
     } catch {
       // Neither answered: on to the next pair, if there is one.
     } finally {
@@ -253,6 +258,11 @@ async function fromOverpass(route, category, fromS, { signal, fetchImpl, servers
     }
   }
   return null;
+}
+
+async function fromOverpass(route, category, fromS, { signal, fetchImpl, servers, waits }) {
+  const json = await overpass(buildQuery(category, routeSample(route, fromS)), { signal, fetchImpl, servers, waits });
+  return json ? parseElements(json, category) : null;
 }
 
 // The search service, asked what it knows around a few points along the way.

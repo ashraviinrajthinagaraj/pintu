@@ -45,6 +45,10 @@
       <button id="btn-locate" class="round" type="button"></button>
     </div>
   </div>
+  <div id="saved-row" class="saved-row">
+    <button id="saved-home" class="saved-btn" type="button"><span id="saved-home-icon" class="saved-icon"></span><span class="saved-text"><strong id="saved-home-name"></strong><span id="saved-home-detail"></span></span></button>
+    <button id="saved-work" class="saved-btn" type="button"><span id="saved-work-icon" class="saved-icon"></span><span class="saved-text"><strong id="saved-work-name"></strong><span id="saved-work-detail"></span></span></button>
+  </div>
   <button id="where" class="plate plate-where" type="button">
     <span class="plate-glyph" id="where-glyph"></span>
     <span id="where-text"></span>
@@ -123,6 +127,19 @@
       </div>
       <button id="plan-fuel-edit" class="link-btn" type="button"></button>
     </div>
+    <div id="plan-arrive" class="plan-row">
+      <span class="plan-icon" id="plan-arrive-icon"></span>
+      <label class="plan-main" for="plan-arrive-time"><strong id="plan-arrive-title"></strong><span id="plan-arrive-detail"></span></label>
+      <input id="plan-arrive-time" class="time-input" type="time">
+    </div>
+    <div id="plan-parking-wrap" hidden>
+      <div class="plan-row">
+        <span class="plan-icon" id="plan-parking-icon"></span>
+        <button id="plan-parking" class="plan-main plan-main-btn" type="button" aria-expanded="false"><strong id="plan-parking-title"></strong><span id="plan-parking-detail"></span></button>
+        <button id="plan-parking-clear" class="icon-btn" type="button" hidden></button>
+      </div>
+      <ul id="parking-list" class="parking-list" hidden></ul>
+    </div>
     <button id="plan-weather" class="plan-row" type="button" hidden>
       <span id="plan-weather-icon" class="plan-icon"></span>
       <span class="plan-main"><strong id="plan-weather-title"></strong><span id="plan-weather-detail"></span></span>
@@ -176,6 +193,11 @@
       </span>
     </button>
     <div id="lanes" class="lanes" aria-hidden="true" hidden></div>
+    <div id="junction" class="junction" aria-hidden="true" hidden>
+      <div class="junction-head"><div id="junction-board" class="junction-board"><span id="junction-exit" class="junction-exit"></span><span id="junction-to"></span></div></div>
+      <div id="junction-pic" class="junction-pic"></div>
+      <div class="junction-bar"><div id="junction-fill"></div></div>
+    </div>
     <div class="nav-under">
       <div id="sign-then" class="then" hidden>
         <span id="then-label"></span><span id="then-icon" class="then-icon"></span>
@@ -186,6 +208,7 @@
   <div class="nav-left">
     <div id="speed-limit" class="limit-sign" hidden></div>
     <div id="speed" class="speed" hidden><strong id="speed-value"></strong><span id="speed-unit"></span></div>
+    <div id="camera-alert" class="camera-alert" role="status" hidden><span id="camera-icon" class="camera-icon"></span><span id="camera-distance"></span><span id="camera-limit" class="camera-limit" hidden></span></div>
     <div id="nav-range" class="range-pill" hidden></div>
   </div>
   <div class="nav-float">
@@ -405,6 +428,11 @@
       <button id="set-vehicle-open" class="outline-btn" type="button"></button>
     </div>
     <div class="setting">
+      <h3 id="set-saved-title"></h3>
+      <p id="set-saved-text" class="tip"></p>
+      <ul id="saved-list" class="saved-list"></ul>
+    </div>
+    <div class="setting">
       <h3 id="set-lang-title"></h3>
       <div class="segmented" role="radiogroup">
         <button id="lang-ms" type="button" role="radio">Bahasa Melayu</button>
@@ -444,6 +472,15 @@
         <input id="limit-on" type="checkbox">
         <span class="switch-track" aria-hidden="true"></span>
         <span id="limit-on-label"></span>
+      </label>
+    </div>
+    <div class="setting">
+      <h3 id="set-camera-title"></h3>
+      <p id="camera-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="camera-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="camera-on-label"></span>
       </label>
     </div>
     <div class="setting">

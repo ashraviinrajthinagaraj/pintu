@@ -1045,3 +1045,124 @@ a { color: inherit; }
   .hudmode .limit-sign { width: 24vmin; height: 24vmin; border-width: 3vmin; font-size: 11vmin; }
 }
 @media (prefers-reduced-motion: reduce) { .hm-bar span { transition: none; } }
+
+/* ---------- Home and work ---------- */
+.saved-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.saved-row[hidden] { display: none; }
+.saved-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 8px 12px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--lift);
+  text-align: left;
+  min-width: 0;
+}
+.saved-icon { width: 34px; height: 34px; flex: none; border-radius: 10px; background: var(--panel-2); display: grid; place-items: center; color: var(--sky); }
+.saved-icon svg { width: 20px; height: 20px; }
+.saved-text { min-width: 0; display: flex; flex-direction: column; }
+.saved-text strong { font-size: 17px; font-weight: 700; line-height: 1.2; }
+.saved-text span { font-size: 14px; color: var(--mute); line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.saved-btn.is-unset .saved-text span { color: var(--sky); font-weight: 600; }
+.saved-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.saved-list li { display: flex; align-items: center; gap: 10px; min-height: 52px; border-bottom: 1px solid var(--line); }
+.saved-list .saved-what { flex: 1; min-width: 0; }
+.saved-list .saved-what strong { display: block; }
+.saved-list .saved-what span { display: block; color: var(--mute); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Speed cameras ---------- */
+.camera-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--yellow);
+  color: var(--on-yellow);
+  border-radius: 12px;
+  padding: 6px 10px 6px 8px;
+  font-family: var(--condensed);
+  font-size: 20px;
+  font-weight: 800;
+  box-shadow: var(--lift);
+}
+.camera-alert[hidden] { display: none; }
+.camera-icon { width: 24px; height: 24px; display: block; }
+.camera-icon svg { width: 24px; height: 24px; display: block; }
+.camera-limit { background: #fff; color: #15211B; border: 3px solid #D32F2F; border-radius: 50%; min-width: 30px; height: 30px; display: grid; place-items: center; font-size: 14px; }
+
+/* ---------- Junction pictures ---------- */
+.junction {
+  position: relative;
+  align-self: center;
+  width: min(100%, 360px);
+  margin-top: 6px;
+  background: #101820;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--lift);
+}
+.junction[hidden] { display: none; }
+.junction-pic svg { display: block; width: 100%; height: 118px; }
+.jv-road { fill: none; stroke: #4B5560; stroke-width: 34; }
+.jv-line { fill: none; stroke: rgba(255, 255, 255, .55); stroke-width: 2; stroke-dasharray: 9 9; }
+.jv-route { fill: none; stroke: #3C97FF; stroke-width: 13; stroke-linejoin: round; }
+.jv-head { fill: #3C97FF; }
+.junction-head { display: flex; justify-content: center; padding: 8px 8px 0; }
+.junction.take-right .junction-head { justify-content: flex-end; }
+.junction.take-left .junction-head { justify-content: flex-start; }
+.junction-board {
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--green);
+  color: #fff;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-family: var(--condensed);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.junction-board[hidden] { display: none; }
+#junction-to { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.junction-exit { background: var(--yellow); color: var(--on-yellow); border-radius: 4px; padding: 0 5px; flex: none; }
+.junction-exit:empty { display: none; }
+.junction-bar { height: 5px; background: rgba(255, 255, 255, .12); }
+#junction-fill { height: 100%; width: 0; background: #3C97FF; }
+/* Shorter phones: the picture stays clear of the buttons down the right. */
+@media (orientation: portrait) and (max-height: 760px) {
+  .junction { align-self: flex-start; width: calc(100% - 66px); }
+  .junction-pic svg { height: 84px; }
+}
+@media (orientation: landscape) and (max-height: 520px) {
+  .junction-pic svg { height: 80px; }
+}
+@media (max-width: 359px) {
+  .saved-icon { display: none; }
+  .saved-btn { padding: 8px 10px; }
+}
+
+/* ---------- Parking and leaving on time ---------- */
+.plan-main-btn { text-align: left; padding: 0; }
+.parking-list { list-style: none; margin: 0; padding: 0 0 4px 46px; }
+.parking-list[hidden] { display: none; }
+.parking-list button { display: block; width: 100%; text-align: left; min-height: 48px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.parking-list strong { display: block; font-weight: 600; }
+.parking-list span { display: block; color: var(--mute); font-size: 14px; }
+.time-input {
+  flex: none;
+  min-height: 44px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+}

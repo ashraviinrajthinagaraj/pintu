@@ -236,6 +236,8 @@ export function prepareTrip(trip) {
     time: summary.time ?? t,
     distanceKm: summary.length ?? cum[cum.length - 1] / 1000,
     hasToll: !!summary.has_toll || maneuvers.some((m) => m.toll),
+    // A manoeuvre is marked if any of it is tolled, so this is a little generous.
+    tollKm: maneuvers.reduce((km, m) => km + (m.toll ? m.length || 0 : 0), 0),
     hasHighway: !!summary.has_highway || maneuvers.some((m) => m.highway),
     hasFerry: !!summary.has_ferry || maneuvers.some((m) => m.ferry),
     via: mainRoads(maneuvers),
