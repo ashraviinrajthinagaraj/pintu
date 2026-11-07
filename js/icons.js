@@ -74,6 +74,9 @@ export const UI = {
   plus: line('<path d="M12 5v14M5 12h14"/>'),
   fuel: line('<path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3.5 21h13M8 8h4"/><path d="M15 12h1.5a2 2 0 0 1 2 2v2.5a1.5 1.5 0 0 0 3 0V9l-3-3"/>'),
   ev: line('<path d="M13 2.5 5.5 13.5H11L10 21.5 18.5 10H12.5Z" fill="currentColor" stroke-width="1.6"/>'),
+  // A booth with its striped barrier arm across the road.
+  toll: line('<path d="M3 21V7.5h6V21M1.8 21h8.4"/><path d="M4.8 10h2.4v2.6H4.8Z"/><path d="M9 11h12.2v3.2H9"/><path d="M12 11h3v3.2h-3ZM18 11h3v3.2h-3Z" fill="currentColor" stroke-width="1.2"/>'),
+  coffee: line('<path d="M4.5 10h12v4.5a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5Z"/><path d="M16.5 11.5h1.3a2.3 2.3 0 0 1 0 4.6h-1.6M3 21.5h15"/><path d="M8 3.5c-.9 1 .9 2 0 3.3M12 3.5c-.9 1 .9 2 0 3.3"/>'),
   rest: line('<path d="M4 18V9m16 9v-5a3 3 0 0 0-3-3H4M4 15h16"/><circle cx="8.5" cy="6.5" r="1.6"/>'),
   surau: line('<path d="M5 21v-8a7 7 0 0 1 14 0v8Z"/><path d="M3 21h18M12 6V2.5"/><path d="M10 21v-4a2 2 0 0 1 4 0v4"/>'),
   food: line('<path d="M7 3v7a2.5 2.5 0 0 0 2.5 2.5V21M4.5 3v6.5M9.5 3v6.5M17 21v-7h-2.5V8c0-3 1.5-5 4-5v18"/>'),

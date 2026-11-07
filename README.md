@@ -146,7 +146,17 @@ failed check says it failed.
 
 A black screen with the next turn, the distance and your speed, flipped top to bottom. Lay the phone
 flat on the dashboard and it reads correctly in the windscreen. It works best at night, on full
-brightness. Tap the screen to turn the mirror off or leave.
+brightness. Tap the screen to turn the mirror off, pick a colour (white, green, light blue or yellow)
+or leave.
+
+It also shows:
+
+- **Lanes** before a turn or exit, with the lane to be in lit and underlined.
+- **A toll plaza ahead**, within 2 km, so there's time to get the Touch 'n Go card ready. Plazas
+  come from OpenStreetMap, so only mapped ones are known, and they're only looked for on routes
+  with tolls.
+- **A break reminder** after two hours at the wheel. Driving time carries on into the next trip
+  unless there's been a stop of 15 minutes or more.
 
 ## Sharing a location
 

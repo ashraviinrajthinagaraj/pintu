@@ -443,16 +443,28 @@
         <strong id="hm-distance" class="hm-distance"></strong>
         <span id="hm-road" class="hm-road"></span>
       </div>
+      <div id="hm-lanes" class="hm-lanes" hidden></div>
     </div>
     <div class="hm-bar"><span id="hm-bar-fill"></span></div>
     <div class="hm-foot">
       <div class="hm-speed"><strong id="hm-speed"></strong><span id="hm-unit"></span></div>
       <span id="hm-limit" class="limit-sign" hidden></span>
+      <div class="hm-notes">
+        <div id="hm-toll" class="hm-note" hidden>
+          <span class="hm-note-icon" data-icon="toll"></span>
+          <span class="hm-note-text"><strong><span id="hm-toll-word"></span> <span id="hm-toll-distance"></span></strong><span id="hm-toll-card"></span></span>
+        </div>
+        <div id="hm-rest" class="hm-note" hidden>
+          <span class="hm-note-icon" data-icon="coffee"></span>
+          <span class="hm-note-text"><strong id="hm-rest-word"></strong><span id="hm-rest-more"></span></span>
+        </div>
+      </div>
       <div id="hm-eta" class="hm-eta"></div>
     </div>
   </div>
   <div id="hm-controls" class="hm-controls">
     <p id="hm-tip"></p>
+    <div id="hm-inks" class="hm-inks" role="radiogroup"></div>
     <div class="hm-buttons">
       <button id="hm-mirror" type="button"></button>
       <button id="hm-close" type="button"></button>

@@ -982,11 +982,16 @@ a { color: inherit; }
 /* ---------- HUD: pure black, big, and flipped to read correctly in the glass ---------- */
 .round-hud { font-size: 16px; letter-spacing: .02em; }
 .hudmode {
+  /* One colour for everything read in the glass, in a few softer strengths. */
+  --hm-ink: #fff;
+  --hm-ink-2: color-mix(in srgb, var(--hm-ink) 86%, #000);
+  --hm-ink-3: color-mix(in srgb, var(--hm-ink) 70%, #000);
+  --hm-dim: color-mix(in srgb, var(--hm-ink) 22%, #000);
   position: fixed;
   inset: 0;
   z-index: 60;
   background: #000;
-  color: #fff;
+  color: var(--hm-ink);
   overflow: hidden;
   touch-action: manipulation;
   -webkit-user-select: none;
@@ -1004,21 +1009,53 @@ a { color: inherit; }
 }
 .hudmode.is-mirror .hm-face { transform: scaleY(-1); }
 .hm-turn { display: flex; align-items: center; gap: 5vmin; min-width: 0; }
-.hm-arrow { flex: none; width: 34vmin; height: 34vmin; color: #fff; }
+.hudmode[data-ink="green"] { --hm-ink: #52F293; }
+.hudmode[data-ink="blue"] { --hm-ink: #72D8FF; }
+.hudmode[data-ink="amber"] { --hm-ink: #FFC94A; }
+.hm-arrow { flex: none; width: 34vmin; height: 34vmin; color: var(--hm-ink); }
 .hm-arrow svg { width: 100%; height: 100%; display: block; }
 .hm-turn-text { min-width: 0; flex: 1; }
 .hm-distance { display: block; font-size: 22vmin; font-weight: 800; line-height: .95; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.hm-road { display: block; font-size: 8vmin; font-weight: 700; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #E8F0F2; }
-.hm-bar { height: 2.4vmin; border-radius: 99px; background: #2A2F31; overflow: hidden; }
-.hm-bar span { display: block; height: 100%; width: 100%; background: #36E08A; transform-origin: left center; transform: scaleX(0); transition: transform .25s linear; }
+.hm-road { display: block; font-size: 8vmin; font-weight: 700; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--hm-ink-2); }
+.hm-bar { height: 2.4vmin; border-radius: 99px; background: var(--hm-dim); overflow: hidden; }
+.hm-bar span { display: block; height: 100%; width: 100%; background: var(--hm-ink); transform-origin: left center; transform: scaleX(0); transition: transform .25s linear; }
 .hm-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 2vmin 5vmin; }
 .hm-speed { display: flex; align-items: baseline; gap: 1.5vmin; }
 .hm-speed strong { font-size: 24vmin; font-weight: 800; line-height: .95; font-variant-numeric: tabular-nums; }
-.hm-speed span { font-size: 6vmin; font-weight: 700; color: #BFC9CC; }
+.hm-speed span { font-size: 6vmin; font-weight: 700; color: var(--hm-ink-3); }
 .hm-speed.is-over strong { color: #FF4B4B; }
 .hudmode .limit-sign { width: 19vmin; height: 19vmin; border-width: 2.6vmin; font-size: 9vmin; box-shadow: none; }
-.hm-eta { margin-left: auto; text-align: right; white-space: nowrap; font-size: 7.5vmin; font-weight: 700; line-height: 1.15; color: #E8F0F2; }
-.hm-eta span { display: block; font-size: 5.5vmin; color: #BFC9CC; font-weight: 600; }
+.hm-eta { margin-left: auto; text-align: right; white-space: nowrap; font-size: 7.5vmin; font-weight: 700; line-height: 1.15; color: var(--hm-ink-2); }
+.hm-eta span { display: block; font-size: 5.5vmin; color: var(--hm-ink-3); font-weight: 600; }
+
+/* Lanes, with no boxes behind them: anything lit shows up in the glass. */
+.hm-lanes { display: flex; gap: 1.8vmin; margin-left: auto; align-self: center; flex: 0 1 auto; min-width: 0; }
+.hm-lanes .lane {
+  position: relative;
+  flex: 0 1 11vmin;
+  min-width: 6vmin;
+  height: 15vmin;
+  padding: 0 0 2.6vmin;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--hm-dim);
+}
+.hm-lanes .lane svg { width: 100%; height: 100%; display: block; }
+.hm-lanes .lane { color: color-mix(in srgb, var(--hm-ink) 32%, #000); }
+.hm-lanes .lane.ok { color: var(--hm-ink-3); }
+.hm-lanes .lane.best { color: var(--hm-ink); }
+.hm-lanes .lane.best::after { content: ""; position: absolute; left: 14%; right: 14%; bottom: 0; height: 1.3vmin; border-radius: 99px; background: var(--hm-ink); }
+
+/* A toll plaza coming up, or time for a break. */
+.hm-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 2vmin 4.5vmin; }
+.hm-notes:not(:has(.hm-note:not([hidden]))) { display: none; }
+.hm-note { display: flex; align-items: center; gap: 2vmin; }
+.hm-note-icon { flex: none; width: 10vmin; height: 10vmin; color: var(--hm-ink); }
+.hm-note-icon svg { width: 100%; height: 100%; display: block; }
+.hm-note-text { display: flex; flex-direction: column; line-height: 1.08; white-space: nowrap; }
+.hm-note-text strong { font-size: 6.6vmin; font-weight: 800; font-variant-numeric: tabular-nums; }
+.hm-note-text > span { font-size: 4.4vmin; font-weight: 600; color: var(--hm-ink-3); }
 .hm-controls {
   position: absolute;
   left: calc(14px + var(--safe-l));
@@ -1033,12 +1070,25 @@ a { color: inherit; }
 }
 .hm-controls.is-hidden { opacity: 0; pointer-events: none; }
 .hm-controls p { font-size: 15px; line-height: 1.3; margin-bottom: 10px; color: #E8F0F2; }
+.hm-inks { display: flex; gap: 10px; margin-bottom: 12px; }
+.hm-ink { width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent; outline-offset: 2px; }
+.hm-ink[aria-checked="true"] { border-color: #fff; box-shadow: inset 0 0 0 3px #1E2426; }
+.hm-ink.ink-white { background: #fff; }
+.hm-ink.ink-green { background: #52F293; }
+.hm-ink.ink-blue { background: #72D8FF; }
+.hm-ink.ink-amber { background: #FFC94A; }
 .hm-buttons { display: flex; gap: 8px; }
 .hm-buttons button { flex: 1; min-height: 48px; padding: 6px 10px; border-radius: 11px; background: #fff; color: #000; font-weight: 700; }
 .hm-buttons button + button { background: transparent; color: #fff; border: 2px solid #fff; }
 @media (orientation: portrait) {
   .hm-turn { flex-direction: column; align-items: flex-start; }
   .hm-arrow { width: 44vmin; height: 44vmin; }
+  .hm-face.has-lanes .hm-arrow { width: 30vmin; height: 30vmin; }
+  .hm-lanes { margin-left: 0; align-self: stretch; }
+  /* Upright there's room for one short line per note, and the arrival time
+     steps aside while a toll plaza is coming up. */
+  .hm-note-text > span { display: none; }
+  .hm-face:has(#hm-toll:not([hidden])) .hm-eta { display: none; }
   .hm-distance { font-size: 26vmin; }
   .hm-road { white-space: normal; max-height: 2.3em; }
   .hm-speed strong { font-size: 30vmin; }

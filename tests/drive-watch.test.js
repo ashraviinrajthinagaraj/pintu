@@ -200,3 +200,31 @@ test('no speed reading says nothing and breaks nothing', () => {
   assert.deepEqual(watch.update({ time: 0, kmh: null, limit: 90 }), []);
   assert.deepEqual(watch.update({ time: 1000, kmh: undefined, limit: 90 }), []);
 });
+
+test('driving time carries on into the next trip, and a break is due at two hours in all', async () => {
+  const { DriveWatch, DRIVE_BREAK_MS } = await import('../js/drive-watch.js');
+  const w = new DriveWatch({ driving: DRIVE_BREAK_MS - 60000 });
+  assert.equal(w.tired, false);
+  let t = 0, said = [];
+  for (let i = 0; i < 90; i++) { t += 1000; said.push(...w.update({ time: t, kmh: 80 })); }
+  assert.equal(w.tired, true);
+  assert.deepEqual(said.filter((k) => k === 'longDrive'), ['longDrive']);
+});
+
+test('already reminded on the last trip: tired at once, and not told again straight away', async () => {
+  const { DriveWatch, DRIVE_BREAK_MS } = await import('../js/drive-watch.js');
+  const w = new DriveWatch({ driving: DRIVE_BREAK_MS + 10 * 60000 });
+  assert.equal(w.tired, true);
+  let t = 0, said = [];
+  for (let i = 0; i < 120; i++) { t += 1000; said.push(...w.update({ time: t, kmh: 80 })); }
+  assert.deepEqual(said.filter((k) => k === 'longDrive'), []);
+});
+
+test('a proper rest clears it', async () => {
+  const { DriveWatch, DRIVE_BREAK_MS, RESTED_MS } = await import('../js/drive-watch.js');
+  const w = new DriveWatch({ driving: DRIVE_BREAK_MS + 60000 });
+  let t = 0;
+  for (; t <= RESTED_MS + 5000; t += 5000) w.update({ time: t, kmh: 0 });
+  assert.equal(w.tired, false);
+  assert.equal(w.driving, 0);
+});

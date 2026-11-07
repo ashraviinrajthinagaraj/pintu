@@ -29,7 +29,8 @@ export const QUIET_CLEAR_M = 2000;   // nothing to say for a while yet
 export const QUIET_MIN_KMH = 30;
 
 export class DriveWatch {
-  constructor() {
+  // `driving` carries on from an earlier trip with no proper rest between.
+  constructor({ driving = 0 } = {}) {
     this.lastTime = null;
     // Over the limit.
     this.overSince = null;
@@ -46,10 +47,18 @@ export class DriveWatch {
     this.inJam = false;
     this.lastJam = -Infinity;
     // Long days, and quiet roads.
-    this.driving = 0;
-    this.nextBreak = DRIVE_BREAK_MS;
+    this.driving = Math.max(0, driving);
+    // Already reminded on that trip: the next reminder is the next hour after.
+    this.nextBreak = this.driving < DRIVE_BREAK_MS
+      ? DRIVE_BREAK_MS
+      : DRIVE_BREAK_MS + Math.ceil((this.driving - DRIVE_BREAK_MS + 1) / DRIVE_BREAK_AGAIN_MS) * DRIVE_BREAK_AGAIN_MS;
     this.lastHeard = null;
     this.lastQuiet = -Infinity;
+  }
+
+  // Two hours or more at the wheel without a proper rest.
+  get tired() {
+    return this.driving >= DRIVE_BREAK_MS;
   }
 
   // Whatever is said counts as talking, so a quiet remark waits for real quiet.

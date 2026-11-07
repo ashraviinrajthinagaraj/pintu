@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { altTrip, buildTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
+import { altTrip, along, buildTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
 import { bearing, haversine } from '../../js/geo.js';
 import { prepareTrip } from '../../js/routing.js';
 import { speech } from '../../js/instructions.js';
@@ -110,7 +110,8 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
     if (host === 'overpass-api.de' || host === 'overpass.private.coffee' || host === 'ovp.dresel.systems') {
       log.overpass.push(route.request().postData());
       if (log.overpassFail) return route.abort();
-      return route.fulfill({ json: overpass, headers: CORS });
+      const asked = decodeURIComponent((route.request().postData() || '').replace(/\+/g, ' '));
+      return route.fulfill({ json: typeof overpass === 'function' ? overpass(asked) : overpass, headers: CORS });
     }
     if (host === 'api.waktusolat.app') {
       log.solat.push(url);
@@ -2354,6 +2355,98 @@ await check('HUD: big, black, flipped for the windscreen, and easy to leave', as
     assert.deepEqual(log.errors, []);
     await ctx.close();
   }
+});
+
+await check('HUD: lanes, a toll plaza ahead and a break reminder, in any colour', async () => {
+  const lanes = [{ directions: 2 }, { directions: 2 }, { directions: 64, active: 64 }, { directions: 66, valid: 64 }, { directions: 64 }];
+  const tollTrip = () => buildTrip(P.a, [
+    { to: P.b, type: 1, street: 'Lebuhraya Duta', kph: 80, toll: true, highway: true },
+    { to: P.c, type: 10, street: 'Lebuhraya Duta', kph: 80, toll: true, highway: true, lanes },
+    { to: P.d, type: 15, street: 'Jalan Pinang', kph: 40 },
+  ], { has_toll: true, has_highway: true });
+  const trip = prepareTrip(tollTrip());
+  const booth = along(P.a, P.b, 0.7);
+  const plaza = { elements: [
+    { type: 'node', id: 71, lat: booth[1], lon: booth[0], tags: { barrier: 'toll_booth', name: 'Plaza Tol Ampang' } },
+    // The other direction's booths, a little to the side: the same plaza.
+    { type: 'node', id: 72, lat: booth[1] + 0.0003, lon: booth[0] + 0.0001, tags: { barrier: 'toll_booth' } },
+  ] };
+  for (const viewport of [{ width: 390, height: 664 }, { width: 844, height: 390 }, { width: 320, height: 568 }]) {
+    const name = `${viewport.width}x${viewport.height}`;
+    const { ctx, page, log } = await newApp(browser, {
+      scale: 2,
+      viewport,
+      routeResponse: () => ({ trip: tollTrip() }),
+      overpass: (q) => (q.includes('toll_booth') ? plaza : { elements: [] }),
+      // Two hours and ten minutes at the wheel already, with only a short stop.
+      storage: { 'pintu.safetySeen': 'true', 'pintu.driveTime': { ms: 130 * 60000, at: Date.now() - 5 * 60000 } },
+    });
+    await toNav(page);
+    for (let i = 0; i < 60 && !log.overpass.some((b) => decodeURIComponent(b).includes('toll_booth')); i++) await page.waitForTimeout(50);
+    assert.ok(log.overpass.some((b) => decodeURIComponent(b).includes('toll_booth')), 'asked for toll plazas');
+    await page.waitForTimeout(150);
+    await roll(page, trip, 0, 300, 22);
+    await page.click('#btn-hud');
+    await roll(page, trip, 300, 320, 22);
+    await page.waitForSelector('#hm-toll:not([hidden])');
+    const words = (sel) => page.evaluate((sel) => document.querySelector(sel).textContent.replace(/\s+/g, ' '), sel);
+    assert.match(await words('#hm-toll'), /Tol \d+ m\s*Sedia Touch/);
+    assert.equal(await vis(page, '#hm-rest'), true);
+    assert.match(await words('#hm-rest'), /Rehat\s*2 jam memandu/);
+    assert.equal(await page.locator('#hm-lanes .lane').count(), 5);
+    assert.equal(await page.locator('#hm-lanes .lane.best').count(), 1);
+
+    // A colour, kept for next time.
+    await page.click('#hm-inks .ink-green');
+    assert.equal(await page.getAttribute('#hudmode', 'data-ink'), 'green');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('hm-distance')).color), 'rgb(82, 242, 147)');
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).hudInk), 'green');
+    assert.equal(await page.getAttribute('#hm-inks .ink-green', 'aria-checked'), 'true');
+    await page.waitForTimeout(100);
+    await page.screenshot({ path: `${shots}/37-hud-extras-controls-${name}.png` });
+    await page.evaluate(() => document.getElementById('hm-controls').classList.add('is-hidden'));
+
+    await page.waitForTimeout(260);
+    await page.screenshot({ path: `${shots}/37-hud-extras-${name}.png` });
+    // Everything fits, even with the longest things in place, and nothing is
+    // squeezed out of shape to make it fit.
+    const fits = await page.evaluate(() => {
+      document.getElementById('hm-speed').textContent = '110';
+      document.getElementById('hm-distance').textContent = '12.5 km';
+      document.getElementById('hm-toll-distance').textContent = '1.9 km';
+      const bad = [...document.querySelectorAll('#hm-face *')].filter((e) => e.getBoundingClientRect().width && !e.closest('svg')).map((e) => {
+        const r = e.getBoundingClientRect();
+        return { id: e.id || e.className, ok: r.right <= innerWidth + 1 && r.left >= -1 && r.top >= -1 && r.bottom <= innerHeight + 1 };
+      }).filter((x) => !x.ok);
+      const bar = document.querySelector('.hm-bar').getBoundingClientRect().height;
+      const arrow = document.getElementById('hm-arrow').getBoundingClientRect();
+      return { bad, bar, square: Math.abs(arrow.width - arrow.height) < 1 };
+    });
+    assert.deepEqual(fits.bad, [], name);
+    assert.ok(fits.bar > 4 && fits.square, `squeezed on ${name}: ${JSON.stringify(fits)}`);
+
+    // Past the plaza it goes; the break reminder stays until there's been a rest.
+    await roll(page, trip, 320, 900, 22);
+    await page.waitForFunction(() => document.getElementById('hm-toll').hidden);
+    assert.equal(await vis(page, '#hm-rest'), true);
+    assert.deepEqual(log.errors, []);
+    await ctx.close();
+  }
+});
+
+await check('HUD: no break reminder on a fresh start, and white unless chosen', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.driveTime': { ms: 130 * 60000, at: Date.now() - 40 * 60000 } } });
+  const trip = prepareTrip(cityTrip());
+  await toNav(page);
+  await roll(page, trip, 0, 200, 12);
+  await page.click('#btn-hud');
+  await roll(page, trip, 200, 220, 12);
+  assert.equal(await vis(page, '#hm-rest'), false, 'forty minutes off is a proper rest');
+  assert.equal(await vis(page, '#hm-toll'), false);
+  assert.equal(await page.getAttribute('#hudmode', 'data-ink'), 'white');
+  assert.ok(!log.overpass.some((b) => decodeURIComponent(b).includes('toll_booth')), 'no tolls on this route, so nothing asked');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
 });
 
 await check('HUD: arriving leaves it, and it follows a simulated drive', async () => {

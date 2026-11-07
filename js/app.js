@@ -14,9 +14,10 @@ import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
 import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, timeBetween } from './routing.js';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
 import { plainSpeech } from './delivery.js';
-import { DriveWatch, OVER_BY_KMH } from './drive-watch.js';
+import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
+import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
 import { findParking } from './parking.js';
 import { leaveBy } from './leaveby.js';
 import { JUNCTION_RANGE, junctionFor, junctionSvg } from './junction.js';
@@ -62,6 +63,8 @@ const RAIN_CHIP_M = 30000;     // far enough ahead to matter
 const RAIN_SAY_M = 15000;
 const HUD_CONTROLS_MS = 6000;
 const HUD_BAR_M = 500;         // the bar fills over the last stretch before a turn
+const HUD_INKS = ['white', 'green', 'blue', 'amber'];
+const DRIVE_TIME_SAVE_MS = 30000;
 
 const S = {
   view: 'idle',
@@ -77,7 +80,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, speedCameras: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -286,6 +289,11 @@ function applyStaticText() {
   $('btn-hud').setAttribute('aria-label', t('hudOpen'));
   $('hm-unit').textContent = t('speedUnit');
   $('hm-tip').textContent = t('hudTip');
+  $('hm-toll-word').textContent = t('hudToll');
+  $('hm-toll-card').textContent = t('hudTollCard');
+  $('hm-rest-word').textContent = t('hudRest');
+  for (const el of document.querySelectorAll('#hudmode [data-icon]')) el.innerHTML = UI[el.dataset.icon];
+  renderHudInk();
   $('hm-close').textContent = t('hudClose');
   renderHudMirror();
   $('arrival-walk').textContent = t('walkToDoor');
@@ -2121,7 +2129,11 @@ function saveTrip() {
 function startGuidance({ simulate }) {
   S.guidance = new Guidance(S.route, { walking: S.mode === 'walk' });
   S.greeted = false;
-  S.watch = new DriveWatch();
+  // Driving time carries on into the next trip unless there was a proper rest.
+  const before = load('driveTime', null);
+  const carried = !simulate && before && Date.now() - before.at < RESTED_MS ? before.ms : 0;
+  S.watch = new DriveWatch({ driving: carried });
+  S.driveTimeSavedAt = 0;
   S.moment = null;
   S.lines = new Map();
   S.preparedFor = null;
@@ -2147,6 +2159,10 @@ function startGuidance({ simulate }) {
   S.cameras = [];
   S.cameraFetchedAt = 0;
   loadCameras(S.route);
+  S.tollPool = [];
+  S.tolls = [];
+  S.tollFetchedAt = 0;
+  loadTolls(S.route);
   $('camera-alert').hidden = true;
   $('junction').hidden = true;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
@@ -2312,11 +2328,18 @@ function watchDrive(fix, st) {
     nearEnd: st.remainingDistance < 300,
     clearAhead: st.distanceToNext,
   });
+  if (!S.sim && Date.now() - S.driveTimeSavedAt > DRIVE_TIME_SAVE_MS) saveDriveTime();
   for (const key of moments) {
     // A word about speed matters more than a remark about the view.
     if (!S.moment || SPEED_MOMENT.test(key) || !SPEED_MOMENT.test(S.moment.key)) S.moment = { key, time: fix.time, limit };
   }
   sayMoment(st, fix);
+}
+
+function saveDriveTime() {
+  if (!S.watch || S.sim) return;
+  S.driveTimeSavedAt = Date.now();
+  save('driveTime', { ms: S.watch.driving, at: Date.now() });
 }
 
 function sayMoment(st, fix) {
@@ -2405,13 +2428,14 @@ function renderJunction(st) {
   $('junction-fill').style.width = `${Math.round(clamp(1 - st.distanceToNext / range, 0, 1) * 100)}%`;
 }
 
-function renderLanes(st) {
-  const lanes = laneView(st.next.lanes);
-  const range = st.next.highway || st.next.toll ? LANE_RANGE_HIGHWAY : LANE_RANGE_ROAD;
-  const box = $('lanes');
-  const showLanes = lanes && st.distanceToNext <= range;
-  box.hidden = !showLanes;
-  if (!showLanes) { box.dataset.key = ''; return; }
+// The lanes to show for the next turn, once it's close enough to matter.
+function lanesNow(st) {
+  const lanes = laneView(st.next?.lanes);
+  const range = st.next?.highway || st.next?.toll ? LANE_RANGE_HIGHWAY : LANE_RANGE_ROAD;
+  return lanes && st.distanceToNext <= range ? lanes : null;
+}
+
+function fillLanes(box, lanes) {
   const key = JSON.stringify(lanes);
   if (box.dataset.key === key) return;
   box.dataset.key = key;
@@ -2421,6 +2445,15 @@ function renderLanes(st) {
     el.innerHTML = laneIcon(l.direction, l.others);
     return el;
   }));
+}
+
+function renderLanes(st) {
+  const lanes = lanesNow(st);
+  const box = $('lanes');
+  const showLanes = !!lanes;
+  box.hidden = !showLanes;
+  if (!showLanes) { box.dataset.key = ''; return; }
+  fillLanes(box, lanes);
 }
 
 function renderEta(st) {
@@ -2464,6 +2497,22 @@ function loadCameras(route) {
     S.cameraPool = found;
     if (S.view === 'nav' && S.route) S.cameras = camerasOnRoute(S.route, found);
   }).catch(() => { /* none known is the same as none mapped: nothing to warn about */ })
+    .finally(() => clearTimeout(timer));
+}
+
+/* ---------- Toll plazas, for the HUD ---------- */
+
+function loadTolls(route) {
+  S.tollCtrl?.abort();
+  if (S.mode === 'walk' || !route.hasToll) return;
+  const ctrl = new AbortController();
+  S.tollCtrl = ctrl;
+  S.tollFetchedAt = Date.now();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  fetchTolls(route, { signal: ctrl.signal }).then((found) => {
+    S.tollPool = found;
+    if (S.view === 'nav' && S.route) S.tolls = tollsOnRoute(S.route, found);
+  }).catch(() => { /* the HUD just won't mention plazas */ })
     .finally(() => clearTimeout(timer));
 }
 
@@ -2574,6 +2623,8 @@ async function reroute(fix, { added = false } = {}) {
     startScene(route);
     S.cameras = camerasOnRoute(route, S.cameraPool || []);
     if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
+    S.tolls = tollsOnRoute(route, S.tollPool || []);
+    if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
     if (S.sim) {
       S.sim.setRoute(route);
       S.simStops = [...S.stops];
@@ -2613,6 +2664,9 @@ function keepVehicleLevel() {
 function stopGuidance() {
   S.cameraCtrl?.abort();
   S.cameras = [];
+  S.tollCtrl?.abort();
+  S.tolls = [];
+  saveDriveTime();
   keepVehicleLevel();
   leaveFullscreen();
   S.weatherSaid = null;
@@ -3088,6 +3142,27 @@ function renderHudMirror() {
   $('hudmode').classList.toggle('is-mirror', S.settings.hudMirror);
 }
 
+function renderHudInk() {
+  const ink = HUD_INKS.includes(S.settings.hudInk) ? S.settings.hudInk : 'white';
+  $('hudmode').dataset.ink = ink;
+  $('hm-inks').setAttribute('aria-label', t('hudInk'));
+  $('hm-inks').replaceChildren(...HUD_INKS.map((name) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `hm-ink ink-${name}`;
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(name === ink));
+    b.setAttribute('aria-label', t(`ink_${name}`));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setSetting('hudInk', name);
+      renderHudInk();
+      showHudControls();
+    });
+    return b;
+  }));
+}
+
 function renderHud(st, fix) {
   const next = st.next;
   const key = `${st.nextIndex}:${S.route.id}:${getLang()}`;
@@ -3111,6 +3186,19 @@ function renderHud(st, fix) {
   const rest = document.createElement('span');
   rest.textContent = fmtClock(new Date(Date.now() + st.remainingTime * 1000), lang);
   $('hm-eta').append(rest);
+
+  const lanes = S.mode === 'walk' ? null : lanesNow(st);
+  $('hm-lanes').hidden = !lanes;
+  $('hm-face').classList.toggle('has-lanes', !!lanes);
+  if (lanes) fillLanes($('hm-lanes'), lanes);
+  else $('hm-lanes').dataset.key = '';
+
+  const toll = st.onRoute && S.mode !== 'walk' ? tollAhead(S.tolls, st.s) : null;
+  $('hm-toll').hidden = !toll;
+  if (toll) $('hm-toll-distance').textContent = fmtDistance(Math.max(toll.ahead, 10));
+  const tired = !!(S.watch?.tired && S.mode !== 'walk');
+  $('hm-rest').hidden = !tired;
+  if (tired) $('hm-rest-more').textContent = t('hudRestMore', { hours: Math.floor(S.watch.driving / 3600000) });
 }
 
 /* ---------- Controlling a simulated drive ---------- */
