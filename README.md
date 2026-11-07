@@ -152,8 +152,8 @@ Without a key, or with no signal, Pintu uses the phone's own voice. A direction 
 recording (`WAIT_TURN_MS` in `js/voice.js`), and the next ones are fetched early and kept on the phone.
 
 Each character's voices are `ACTORS` (Gemini) and `SPEAKERS` (Azure) in `server/worker.js`. Lines in
-`js/cast/` carry delivery marks like `[tease]`, with `…` for a pause. A line is split into separate
-recordings wherever its delivery changes, so a joke is only ever recorded once.
+`js/cast/` carry delivery marks like `[tease]`, with `…` for a pause. A whole line is one recording, so
+it flows naturally, with each part of it directed separately.
 Change `SPEECH_VERSION` in both `server/worker.js` and `js/voice.js` if a voice changes, so old
 recordings aren't reused.
 

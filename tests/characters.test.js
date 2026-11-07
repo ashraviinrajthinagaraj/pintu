@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from '../js/characters.js';
-import { MOODS, clipsOf, isDirection, plainSpeech } from '../js/delivery.js';
+import { MOODS, plainSpeech } from '../js/delivery.js';
 
 const ALWAYS = () => 0;       // every optional line, the first of each
 const NEVER = () => 0.99;     // no optional lines
@@ -240,29 +240,4 @@ test('a sample still contains the direction', () => {
   for (const id of CHARACTER_IDS) assert.match(sample(id, 'ms', 'Belok kiri.'), /Belok kiri\./);
   assert.equal(sample('standard', 'ms', 'Belok kiri.'), 'Belok kiri.');
   assert.match(sample('uncle', 'ms', 'Belok kiri.'), /\[plain\]Belok kiri\./, 'said in a normal voice, whatever came before');
-});
-
-test('a line becomes separate recordings wherever its delivery changes', () => {
-  assert.deepEqual(clipsOf('Belok kiri.'), ['Belok kiri.']);
-  assert.deepEqual(clipsOf('Belok kiri. [tease]Eh… kenapa?'), ['Belok kiri.', '[tease]Eh… kenapa?']);
-  assert.deepEqual(clipsOf('[warm]Hai. [plain]Belok kiri. [sigh]Haih.'), ['[warm]Hai.', 'Belok kiri.', '[sigh]Haih.']);
-  assert.deepEqual(clipsOf('Berhenti. [plain]Belok kiri.'), ['Berhenti.', 'Belok kiri.']);
-  assert.deepEqual(clipsOf(''), []);
-  assert.equal(isDirection('Belok kiri.'), true);
-  assert.equal(isDirection('[tease]Eh.'), false);
-});
-
-test('every word of a line survives being split into recordings', () => {
-  for (const id of FUNNY) {
-    for (const lang of ['ms', 'en']) {
-      const line = sample(id, lang, 'Belok kiri.');
-      assert.equal(plainSpeech(clipsOf(line).join(' ')), plainSpeech(line), id);
-    }
-  }
-});
-
-test('the same joke is the same recording, whichever direction came before it', () => {
-  const rand = () => 0.1;
-  const tail = pick('uncle', 'tail', 'ms', { rand });
-  assert.equal(clipsOf(`Belok kiri. ${tail}`)[1], clipsOf(`Belok kanan ke Jalan Ampang. ${tail}`)[1]);
 });

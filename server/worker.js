@@ -15,7 +15,7 @@
 // neither, /speak says so and the page uses the phone's own voice.
 
 // Shown when the server's address is opened, so it's clear which code is running.
-const SERVER_VERSION = '2026-11-07.2';
+const SERVER_VERSION = '2026-11-07.3';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -154,7 +154,7 @@ function parseShops(html) {
 /* ---------- Human voices ---------- */
 
 // Change this when a character's voice changes, so old recordings aren't reused.
-const SPEECH_VERSION = '2';
+const SPEECH_VERSION = '3';
 const MAX_SPEECH = 420;
 const AUDIO_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
 
@@ -422,14 +422,29 @@ const moodSound = (mood, words) => {
   return mood === 'tease' && words.length % 3 === 0 ? '<chuckle> ' : '';
 };
 
-// "[tease]Eh… 90?" as the words to say and how to say them. The words go in exactly
-// as they'll be read, so anything that looks like a sound effect is taken out first.
+// "Turn left. [tease]Eh… 90?" as the parts of one recording, each with how it's said.
+// Google reads a whole line with natural flow between the parts, which separate
+// recordings never had. The words go in exactly as they'll be read, so anything that
+// looks like a sound effect is taken out first.
 function geminiLine(text, lang) {
   const parts = text.split(/\[([a-z]+)\]/);
-  const mood = parts.find((p, i) => i % 2 === 1 && MOOD_STYLES[p]);
-  const words = parts.filter((_, i) => i % 2 === 0).join(' ').replace(/[<>[\]]/g, ' ');
-  const spoken = spellNumbers(words, lang).split('…').map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' <short pause> ');
-  return { words: moodSound(mood, spoken) + spoken, style: MOOD_STYLES[mood] || '' };
+  const out = [];
+  let mood = '';
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      // An unknown mark changes nothing.
+      if (parts[i] === 'plain') mood = '';
+      else if (MOOD_STYLES[parts[i]]) mood = parts[i];
+      continue;
+    }
+    const words = spellNumbers(parts[i].replace(/[<>[\]]/g, ' '), lang)
+      .split('…').map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' <short pause> ');
+    if (!words) continue;
+    const last = out.at(-1);
+    if (last && last.mood === mood) last.words += ` ${words}`;
+    else out.push({ mood, words });
+  }
+  return out.map(({ mood: m, words }) => ({ words: moodSound(m, words) + words, style: MOOD_STYLES[m] || '' }));
 }
 
 const geminiHeaders = (key) => ({ 'x-goog-api-key': key, 'content-type': 'application/json' });
@@ -522,46 +537,64 @@ function encodedAudio(answer) {
 
 async function geminiSpeak(text, lang, who, key, trace) {
   const actor = ACTORS[who];
-  const { words, style } = geminiLine(text, lang);
+  const parts = geminiLine(text, lang);
   const own = await designedVoice(who, lang, key, trace).catch((err) => {
     trace?.push({ step: 'design', why: reason(err.message, key) });
     return null;
   });
-  const stock = [actor.act, style].filter(Boolean).join(', ');
-  const voices = own ? [[own, style], [actor.voice, stock]] : [[actor.voice, stock]];
+  // A designed voice already is the character. A ready-made one is told who to play.
+  const voices = own ? [[own, '']] : [];
+  voices.push([actor.voice, actor.act]);
+  const itemsFor = (act, shape) => {
+    if (shape === 'single') {
+      const style = [act, parts.find((p) => p.style)?.style].filter(Boolean).join(', ');
+      const item = { type: 'text', text: parts.map((p) => p.words).join(' ') };
+      if (style) item.annotations = [{ type: 'speech_metadata', style }];
+      return [item];
+    }
+    return parts.map((p) => {
+      const item = { type: 'text', text: p.words };
+      const style = [act, p.style].filter(Boolean).join(', ');
+      if (style) item.annotations = [{ type: 'speech_metadata', style }];
+      return item;
+    });
+  };
   let limited = null;
   let lastWhy = '';
   for (const model of GEMINI_MODELS) {
-    for (const [name, direction] of voices) {
-      const item = { type: 'text', text: words };
-      if (direction) item.annotations = [{ type: 'speech_metadata', style: direction }];
-      const started = Date.now();
-      const res = await fetch(`${GEMINI}/interactions`, {
-        method: 'POST',
-        headers: geminiHeaders(key),
-        body: JSON.stringify({
-          model,
-          input: [{ type: 'user_input', content: [item] }],
-          response_format: { type: 'audio' },
-          generation_config: { speech_config: [{ voice: name }] },
-        }),
-      });
-      const answer = await res.text();
-      const ms = Date.now() - started;
-      if (res.ok) {
-        const clip = encodedAudio(answer);
-        trace?.push({ step: 'speak', model, voice: name, status: res.status, ms, ...(clip ? { size: clip.size, kind: clip.kind, head: clip.head } : { why: `no audio: ${reason(answer, key)}` }) });
-        if (clip) return clip;
-        lastWhy = 'Google answered with no audio';
-        continue;
+    voice: for (const [name, act] of voices) {
+      // Several parts at once, and if that's refused, the whole line as one.
+      for (const shape of parts.length > 1 ? ['parts', 'single'] : ['single']) {
+        const started = Date.now();
+        const res = await fetch(`${GEMINI}/interactions`, {
+          method: 'POST',
+          headers: geminiHeaders(key),
+          body: JSON.stringify({
+            model,
+            input: [{ type: 'user_input', content: itemsFor(act, shape) }],
+            response_format: { type: 'audio' },
+            generation_config: { speech_config: [{ voice: name }] },
+          }),
+        });
+        const answer = await res.text();
+        const ms = Date.now() - started;
+        if (res.ok) {
+          const clip = encodedAudio(answer);
+          trace?.push({ step: 'speak', model, voice: name, shape, status: res.status, ms, ...(clip ? { size: clip.size, kind: clip.kind, head: clip.head } : { why: `no audio: ${reason(answer, key)}` }) });
+          if (clip) return clip;
+          lastWhy = 'Google answered with no audio';
+          continue voice;
+        }
+        lastWhy = `Google ${res.status}: ${reason(answer, key)}`;
+        trace?.push({ step: 'speak', model, voice: name, shape, status: res.status, ms, why: reason(answer, key) });
+        if (res.status === 429) {
+          limited = /per\s*day/i.test(answer) ? 'daily' : 'busy';
+          break voice;
+        }
+        if (res.status === 401 || res.status === 403 || /API.?key/i.test(answer)) throw new VoiceRefused(403, 'key', lastWhy);
+        // Only a refusal of the request's shape is worth trying as one piece.
+        if (res.status !== 400) continue voice;
       }
-      lastWhy = `Google ${res.status}: ${reason(answer, key)}`;
-      trace?.push({ step: 'speak', model, voice: name, status: res.status, ms, why: reason(answer, key) });
-      if (res.status === 429) {
-        limited = /per\s*day/i.test(answer) ? 'daily' : 'busy';
-        break;
-      }
-      if (res.status === 401 || res.status === 403 || /API.?key/i.test(answer)) throw new VoiceRefused(403, 'key', lastWhy);
       // Any other refusal is about this voice or this model, so try the next.
     }
   }
@@ -591,7 +624,8 @@ async function voiceTest(url, gemini, azure, region, request) {
   const who = Object.hasOwn(SPEAKERS, url.searchParams.get('who')) ? url.searchParams.get('who') : 'standard';
   const report = { engine: gemini ? 'gemini' : azure ? 'azure' : null, who, lang, where: request?.cf?.colo || null, steps: [], ok: false };
   if (!report.engine) return { ...report, problem: 'no key' };
-  const line = lang === 'ms' ? 'Belok kiri.' : 'Turn left.';
+  // A direction and a joke, as most lines are.
+  const line = lang === 'ms' ? 'Belok kiri. [tease]Eh… kopi tak lari.' : 'Turn left. [tease]Eh… the coffee isn\'t going anywhere.';
   try {
     const clip = gemini
       ? await geminiSpeak(line, lang, who, gemini, report.steps)

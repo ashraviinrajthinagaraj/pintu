@@ -2790,29 +2790,26 @@ await check('human voice: with the server gone, what\'s on the phone still plays
   await ctx.close();
 });
 
-await check('human voice: a direction and its joke are separate recordings, played in order', async () => {
+await check('human voice: a direction and its joke are one recording, so they flow', async () => {
   const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), appServer: voiceServer() });
   await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
   const line = (words) => page.evaluate((w) => import('/js/voice.js').then((v) => v.speak(w, { evenIfMuted: true })), words);
-  await line('Belok kiri. [tease]Kopi tak lari.');
-  assert.deepEqual(asked(log).map((q) => q.get('text')), ['Belok kiri.', '[tease]Kopi tak lari.']);
-  assert.equal((await played(page)).length, 2);
-  // Another direction, the same joke: only the direction is new.
-  await line('Belok kanan. [tease]Kopi tak lari.');
-  assert.deepEqual(asked(log).map((q) => q.get('text')).slice(2), ['Belok kanan.']);
-  assert.equal((await played(page)).length, 4);
+  assert.equal(await line('Belok kiri. [tease]Kopi tak lari.'), 'human');
+  assert.deepEqual(asked(log).map((q) => q.get('text')), ['Belok kiri. [tease]Kopi tak lari.']);
+  assert.equal((await played(page)).length, 1);
   assert.deepEqual(await said(page), []);
   await ctx.close();
 });
 
-await check('human voice: a joke that\'s late is dropped, and never comes in the phone\'s voice', async () => {
-  const server = voiceServer({ delay: (url) => (url.searchParams.get('text').startsWith('[') ? 5000 : 0) });
-  const { ctx, page } = await newApp(browser, { ...withCast('uncle'), appServer: server });
+await check('human voice: a line that\'s late is said in full by the phone, never half', async () => {
+  const { ctx, page } = await newApp(browser, { ...withCast('uncle'), appServer: voiceServer({ delay: () => 3000 }) });
   await page.waitForFunction(async () => (await import('/js/voice.js')).humanVoice() === 'on');
-  await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('Belok kiri. [tease]Kopi tak lari.', { evenIfMuted: true })));
-  assert.equal((await played(page)).length, 1, 'the direction');
+  const heard = await page.evaluate(() => import('/js/voice.js').then((v) => v.speak('Belok kiri. [tease]Kopi tak lari.', { evenIfMuted: true, wait: 300 })));
+  assert.equal(heard, 'phone');
   await settled(page);
-  assert.deepEqual(await said(page), []);
+  assert.deepEqual((await said(page)).map((s) => s.text), ['Belok kiri. Kopi tak lari.']);
+  await page.waitForTimeout(3200);
+  assert.deepEqual(await played(page), [], 'and the recording doesn\'t talk over it when it arrives');
   await ctx.close();
 });
 

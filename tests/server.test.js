@@ -899,3 +899,54 @@ test('the voice test says what kind of sound came back', async () => {
   assert.equal(spoke.head, '52 49 46 46');
   assert.equal(spoke.size, SOUND.length);
 });
+
+test('Google: a direction and its joke are one recording, each part directed', async () => {
+  const asked = google({ voices: [{ id: 'voice_u', display_name: 'pintu-uncle-ms' }] });
+  const res = await say(speakUrl('uncle', 'ms', 'Belok kiri. [sigh]Haih… jem. [plain]Terus.'), { env: freshKey() });
+  assert.equal(res.status, 200);
+  const calls = interactions(asked);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].body.input[0].content, [
+    { type: 'text', text: 'Belok kiri.' },
+    { type: 'text', text: '<sigh> Haih <short pause> jem.', annotations: [{ type: 'speech_metadata', style: 'weary' }] },
+    { type: 'text', text: 'Terus.' },
+  ]);
+});
+
+test('Google: parts said the same way are one part', async () => {
+  const asked = google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }] });
+  await say(speakUrl('captain', 'ms', '[warm]Hai. [warm]Jom. [bogus]Pergi.'), { env: freshKey() });
+  const { content } = interactions(asked)[0].body.input[0];
+  assert.equal(content.length, 1);
+  assert.equal(content[0].text, 'Hai. Jom. Pergi.');
+});
+
+test('Google: if parts aren\'t accepted, the whole line goes as one', async () => {
+  const asked = google({
+    voices: [{ id: 'v', display_name: 'pintu-uncle-ms' }],
+    speak: (entry) => (entry.body.input[0].content.length > 1 ? new Response('Invalid content', { status: 400 }) : spoken()),
+  });
+  const res = await say(speakUrl('uncle', 'ms', 'Belok kiri. [tease]Kopi tak lari.'), { env: freshKey() });
+  assert.equal(res.status, 200);
+  const calls = interactions(asked);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.input[0].content.length, 1);
+  assert.match(calls[1].body.input[0].content[0].text, /^Belok kiri\. (<chuckle> )?Kopi tak lari\.$/);
+  assert.equal(calls[1].body.input[0].content[0].annotations[0].style, 'teasing, a bit amused');
+});
+
+test('Google: a ready-made voice is told who to play in every part', async () => {
+  const asked = google({ create: () => new Response('no', { status: 403 }) });
+  await say(speakUrl('commentator', 'ms', 'Belok kiri. [excited]Gol!'), { env: freshKey() });
+  const { content } = interactions(asked)[0].body.input[0];
+  assert.equal(content[0].annotations[0].style, 'an animated football commentator');
+  assert.equal(content[1].annotations[0].style, 'an animated football commentator, excited');
+});
+
+test('the voice test tries a direction with a joke, and says how it was sent', async () => {
+  const asked = google({ voices: [{ id: 'v', display_name: 'pintu-captain-ms' }] });
+  const report = await (await say('/speak?test=1&who=captain&lang=ms', { env: freshKey() })).json();
+  assert.equal(report.ok, true);
+  assert.equal(report.steps.at(-1).shape, 'parts');
+  assert.equal(interactions(asked)[0].body.input[0].content.length, 2);
+});

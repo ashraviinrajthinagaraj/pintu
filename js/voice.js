@@ -5,12 +5,12 @@
 // arrive. If it isn't here in time, the phone speaks straight away.
 import { CONFIG } from './config.js';
 import { decodeAudio } from './audio.js';
-import { clipsOf, isDirection, plainSpeech } from './delivery.js';
+import { plainSpeech } from './delivery.js';
 
 const synth = () => (typeof speechSynthesis !== 'undefined' ? speechSynthesis : null);
 
 export const WAIT_TURN_MS = 700;      // the moment of a turn
-export const WAIT_NORMAL_MS = 1500;   // an instruction with time to spare
+export const WAIT_NORMAL_MS = 2500;   // an instruction with time to spare
 export const WAIT_GREETING_MS = 4000; // the start of a trip, with nothing at stake yet
 export const WAIT_JOKE_MS = 5000;     // only a joke, so it can wait for the real voice
 export const WAIT_SAMPLE_MS = 20000;  // someone choosing a voice, which may be being made
@@ -18,10 +18,8 @@ export const WAIT_SAMPLE_MS = 20000;  // someone choosing a voice, which may be 
 const STEP_BACK_MS = 60000;           // after a failure, stop waiting on the server
 const BUSY_BACK_MS = 20000;           // the server is only busy for a moment
 const REST_MS = 30 * 60000;           // today's free allowance has run out
-const JOKE_LATE_MS = 1500;            // how long a joke can keep people waiting after a direction
-const BETWEEN_CLIPS_MS = 200;         // a person draws breath before the punchline
 const MAX_CLIP_MS = 30000;            // in case a phone never says a recording has ended
-const SPEECH_VERSION = '2';           // matches the server's, so old recordings retire
+const SPEECH_VERSION = '3';           // matches the server's, so old recordings retire
 const MAX_SPEECH = 420;               // the longest line the server takes
 const CLIP_CACHE = 'pintu-voice-2';
 const MAX_KEPT_CLIPS = 400;
@@ -214,8 +212,6 @@ function getClip(address) {
   return job;
 }
 
-const pause = (ms) => new Promise((r) => { setTimeout(r, ms); });
-
 // The recording if it turns up in time, and null if not.
 function inTime(job, ms) {
   let timer;
@@ -247,42 +243,25 @@ function playClip(playable) {
   });
 }
 
-async function playClips(clips, mine, wait, onStart) {
+// A whole line is one recording, so it flows the way a person says it.
+async function playLine(text, mine, wait, onStart) {
   talking++;
   try {
+    const address = clipAddress(text);
     // With the server out of reach, anything already on the phone can still be played.
-    const jobs = clips.map((clip) => {
-      const address = clipAddress(clip);
-      return (humanPossible() ? getClip(address) : keptClip(address)).catch(() => null);
-    });
-    let heard = false;
-    for (let i = 0; i < clips.length; i++) {
-      const late = heard && !isDirection(clips[i]) ? JOKE_LATE_MS : wait;
-      const playable = await inTime(jobs[i], late);
-      if (mine !== ticket) return 'cut off';
-      if (playable) {
-        if (heard) {
-          await pause(BETWEEN_CLIPS_MS);
-          if (mine !== ticket) return 'cut off';
-        }
-        onStart?.();
-        if (await playClip(playable)) {
-          heard = true;
-          if (mine !== ticket) return 'cut off';
-          continue;
-        }
-        if (mine !== ticket) return 'cut off';
-        lastProblem = 'the phone wouldn\u2019t play the recording';
-      }
-      // Nothing is lost: the phone says what's left. But after a recording, a late joke
-      // in a different voice would only spoil it, so only directions are picked up.
-      const left = clips.slice(i);
-      const words = heard ? left.filter(isDirection) : left;
+    const job = (humanPossible() ? getClip(address) : keptClip(address)).catch(() => null);
+    const playable = await inTime(job, wait);
+    if (mine !== ticket) return 'cut off';
+    if (playable) {
       onStart?.();
-      if (words.length) phoneSpeak(plainSpeech(words.join(' ')));
-      return heard && !words.length ? 'human' : 'phone';
+      if (await playClip(playable)) return mine === ticket ? 'human' : 'cut off';
+      if (mine !== ticket) return 'cut off';
+      lastProblem = 'the phone wouldn’t play the recording';
     }
-    return 'human';
+    // Nothing is lost: the phone says it instead.
+    onStart?.();
+    phoneSpeak(plainSpeech(text));
+    return 'phone';
   } finally {
     talking--;
   }
@@ -293,13 +272,12 @@ async function playClips(clips, mine, wait, onStart) {
 export function speak(text, { evenIfMuted = false, wait = WAIT_NORMAL_MS, onStart } = {}) {
   if (!text || (muted && !evenIfMuted)) return Promise.resolve('');
   stopTalking();
-  const clips = clipsOf(text);
-  if (!CONFIG.server || clips.some((clip) => clip.length > MAX_SPEECH)) {
+  if (!CONFIG.server || text.length > MAX_SPEECH) {
     onStart?.();
     phoneSpeak(plainSpeech(text));
     return Promise.resolve('phone');
   }
-  return playClips(clips, ticket, wait, onStart);
+  return playLine(text, ticket, wait, onStart);
 }
 
 // Is something being said, or about to be? A joke waits its turn; a direction doesn't.
@@ -330,14 +308,12 @@ function runQueue() {
 export function prepare(text, who = character) {
   if (!text || muted || !CONFIG.server || !humanPossible()) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-  for (const clip of clipsOf(text)) {
-    if (clip.length > MAX_SPEECH) continue;
-    const address = clipAddress(clip, who);
-    if (memory.has(address) || fetching.has(address) || queue.includes(address)) continue;
-    queue.push(address);
-    // Long-range plans go stale, so the oldest wish is the one to give up.
-    if (queue.length > MAX_WAITING) queue.shift();
-  }
+  if (text.length > MAX_SPEECH) return;
+  const address = clipAddress(text, who);
+  if (memory.has(address) || fetching.has(address) || queue.includes(address)) return;
+  queue.push(address);
+  // Long-range plans go stale, so the oldest wish is the one to give up.
+  if (queue.length > MAX_WAITING) queue.shift();
   runQueue();
 }
 

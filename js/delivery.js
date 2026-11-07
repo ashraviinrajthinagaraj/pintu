@@ -9,12 +9,3 @@ const MARK = new RegExp(`\\s*\\[(?:${MOODS.join('|')})\\]\\s*`, 'g');
 
 export const plainSpeech = (text) => (text || '').replace(MARK, ' ').trim();
 
-// A line as separate recordings, split wherever the delivery changes. A joke is then
-// only ever recorded once, and a direction can be reused without it.
-export const clipsOf = (text) => (text || '')
-  .split(/\s*(?=\[[a-z]+\])/)
-  .map((part) => part.replace(/^\[plain\]\s*/, '').trim())
-  .filter(Boolean);
-
-// A clip with no delivery mark is a plain direction, and has to be said.
-export const isDirection = (clip) => !clip.startsWith('[');

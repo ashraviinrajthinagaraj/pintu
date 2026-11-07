@@ -1733,7 +1733,7 @@ function prepareAhead(st, fix) {
   if (S.preparedFor === mark) return;
   S.preparedFor = mark;
   const lang = getLang();
-  for (const prompt of S.guidance.upcoming(fix.speed)) {
+  for (const prompt of S.guidance.upcoming(fix.speed, 3)) {
     if (S.settings.voiceLevel === 'turns' && !TURNS_ONLY.has(prompt.kind)) continue;
     const base = speech(prompt, S.route.maneuvers, lang);
     if (base) voice.prepare(lineFor(prompt.kind, prompt.index, base));
