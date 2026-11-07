@@ -89,6 +89,23 @@ whole route when a trip starts (`js/cameras.js`). A camera counts if it's mapped
 route. The warning shows from 300 to 800 m ahead, depending on speed, and is said once. Only mapped
 cameras are known, so no warning never means no camera.
 
+## Traffic
+
+Live traffic comes from [TomTom](https://developer.tomtom.com) through the server's `/traffic`
+(`js/traffic.js`). When a trip starts, and every 3 minutes while driving, the rest of the route is
+sent as up to 1,500 points; TomTom follows it with today's traffic and answers with each slow stretch
+on it and the minutes it adds. Pintu then:
+
+- shows the next one within 10 km on the driving screen and the HUD (red for a jam or a closed road,
+  orange for roadworks), counting down from inside it;
+- says it once, about 2.5 km before;
+- adds the delay still ahead to the arrival time.
+
+Holdups under a minute aren't mentioned. A simulated drive asks once, at the start. It can be switched
+off in Settings. The free allowance is about 20,000 route checks a month (an hour's drive uses about 20).
+TomTom's coverage is best on highways and main city roads; it has accidents and roadworks, but not
+driver reports like Waze.
+
 ## Tolls
 
 Each route option shows roughly how far it runs on toll roads, from the toll mark on each of
@@ -157,6 +174,9 @@ It also shows:
   with tolls.
 - **A break reminder** after two hours at the wheel. Driving time carries on into the next trip
   unless there's been a stop of 15 minutes or more.
+- **Traffic ahead**, the same as on the driving screen: what it is, how far, and the minutes it adds.
+
+Held upright, there's only room for one of these: a toll plaza first, then traffic, then the break.
 
 ## Sharing a location
 
@@ -190,6 +210,13 @@ It's live at `https://pintu.ashraviinrajthinagaraj.workers.dev`, set as `server`
 change it, push to `main`: `.github/workflows/server.yml` deploys it using a repository secret called
 `CLOUDFLARE_API_TOKEN` and the settings in `wrangler.toml`, whose `name` must match the Worker's name.
 Secrets set in the Cloudflare dashboard stay as they are.
+
+### Traffic key
+
+The TomTom key is a Worker secret called `TOMTOM_API_KEY`: sign up free at
+[my.tomtom.com](https://my.tomtom.com) (no card), and copy "My first API key" from API & SDK Keys.
+Opening `https://pintu.ashraviinrajthinagaraj.workers.dev/traffic?check=1` in a browser says whether
+it works. Without a key, Pintu simply shows no traffic.
 
 ### Human voices
 

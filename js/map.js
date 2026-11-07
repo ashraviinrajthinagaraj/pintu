@@ -85,7 +85,7 @@ export class MapView {
       style: CONFIG.mapStyles[this.theme],
       center: CONFIG.home.center,
       zoom: CONFIG.home.zoom,
-      attributionControl: { compact: true },
+      attributionControl: { compact: true, customAttribution: 'Traffic © TomTom' },
       fadeDuration: 120,
       maxPitch: 70,
       pixelRatio: mapPixelRatio(),

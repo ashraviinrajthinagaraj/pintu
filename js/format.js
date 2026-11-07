@@ -33,6 +33,15 @@ export function fmtDuration(seconds, lang) {
   return m ? `${h} ${hour} ${m} min` : `${h} ${hour}`;
 }
 
+// A length of time as it's said aloud.
+export function sayDuration(seconds, lang) {
+  const mins = Math.max(1, Math.round(seconds / 60));
+  const h = Math.floor(mins / 60), m = mins % 60;
+  if (lang === 'ms') return [h ? `${h} jam` : '', m ? `${m} minit` : ''].filter(Boolean).join(' ');
+  const part = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+  return [h ? part(h, 'hour') : '', m ? part(m, 'minute') : ''].filter(Boolean).join(' ');
+}
+
 export function fmtClock(date, lang) {
   return date.toLocaleTimeString(lang === 'ms' ? 'ms-MY' : 'en-MY', { hour: 'numeric', minute: '2-digit' });
 }

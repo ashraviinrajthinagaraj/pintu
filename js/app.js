@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { fmtClock, fmtDistance, fmtDuration, sayDistance } from './format.js';
+import { sayDuration, fmtClock, fmtDistance, fmtDuration, sayDistance } from './format.js';
 import { clamp, haversine } from './geo.js';
 import { Guidance } from './guidance.js';
 import { getLang, setLang, t } from './i18n.js';
@@ -18,6 +18,7 @@ import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
+import { JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fetchTraffic, jamAhead } from './traffic.js';
 import { findParking } from './parking.js';
 import { leaveBy } from './leaveby.js';
 import { JUNCTION_RANGE, junctionFor, junctionSvg } from './junction.js';
@@ -64,7 +65,9 @@ const RAIN_SAY_M = 15000;
 const HUD_CONTROLS_MS = 6000;
 const HUD_BAR_M = 500;         // the bar fills over the last stretch before a turn
 const HUD_INKS = ['white', 'green', 'blue', 'amber'];
+const JAM_ICONS = { JAM: 'car', OTHER: 'car', ROAD_WORK: 'cone', ROAD_CLOSURE: 'closed' };
 const DRIVE_TIME_SAVE_MS = 30000;
+const TRAFFIC_AGAIN_MS = 30000;      // after a new route, ask again this soon at the earliest
 
 const S = {
   view: 'idle',
@@ -80,7 +83,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -252,6 +255,9 @@ function applyStaticText() {
   $('set-camera-title').textContent = t('setCamera');
   $('camera-text').textContent = t('cameraText');
   $('camera-on-label').textContent = t('cameraOn');
+  $('set-traffic-title').textContent = t('setTraffic');
+  $('traffic-text').textContent = t('trafficText');
+  $('traffic-on-label').textContent = t('trafficOn');
   $('camera-icon').innerHTML = UI.camera;
   $('set-saved-title').textContent = t('setSavedTitle');
   $('set-saved-text').textContent = t('setSavedText');
@@ -390,6 +396,7 @@ function renderSegments() {
   set('voice-turns', S.settings.voiceLevel === 'turns');
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
+  $('traffic-on').checked = S.settings.traffic;
   $('weather-on').checked = S.settings.weather;
   set('lang-ms', S.settings.lang === 'ms');
   set('lang-en', S.settings.lang === 'en');
@@ -2163,6 +2170,11 @@ function startGuidance({ simulate }) {
   S.tolls = [];
   S.tollFetchedAt = 0;
   loadTolls(S.route);
+  S.traffic = null;
+  S.trafficAt = 0;
+  S.trafficStopped = false;
+  S.jamsSaid = new Set();
+  loadTraffic();
   $('camera-alert').hidden = true;
   $('junction').hidden = true;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
@@ -2231,6 +2243,8 @@ function onNavFix(fix, takenAt) {
   S.gathering = [];
   for (const p of st.prompts) say(p);
   renderCamera(st, fix);
+  if (Date.now() - (S.trafficAt || 0) > TRAFFIC_EVERY_MS && !S.sim) loadTraffic();
+  renderJam(st);
   flushSpeech();
   if (!st.prompts.length) sayWeather(st);
   watchDrive(fix, st);
@@ -2456,10 +2470,16 @@ function renderLanes(st) {
   fillLanes(box, lanes);
 }
 
+// Time still to go, with whatever the traffic ahead adds.
+function timeLeft(st) {
+  return st.remainingTime + (st.onRoute && S.settings.traffic ? delayAhead(S.traffic, st.s) : 0);
+}
+
 function renderEta(st) {
   const lang = getLang();
-  const clock = fmtClock(new Date(Date.now() + st.remainingTime * 1000), lang);
-  $('eta-clock').textContent = fmtDuration(st.remainingTime, lang);
+  const left = timeLeft(st);
+  const clock = fmtClock(new Date(Date.now() + left * 1000), lang);
+  $('eta-clock').textContent = fmtDuration(left, lang);
   $('eta-rest').textContent = t('arrivalIn', { distance: fmtDistance(st.remainingDistance), clock });
 }
 
@@ -2498,6 +2518,54 @@ function loadCameras(route) {
     if (S.view === 'nav' && S.route) S.cameras = camerasOnRoute(S.route, found);
   }).catch(() => { /* none known is the same as none mapped: nothing to warn about */ })
     .finally(() => clearTimeout(timer));
+}
+
+/* ---------- Live traffic, from TomTom ---------- */
+
+function loadTraffic() {
+  if (!S.settings.traffic || S.trafficStopped || S.mode === 'walk' || !S.route || S.trafficCtrl) return;
+  const route = S.route;
+  const from = S.lastState?.onRoute ? S.lastState.s : 0;
+  const ctrl = new AbortController();
+  S.trafficCtrl = ctrl;
+  S.trafficAt = Date.now();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  fetchTraffic(route, from, { signal: ctrl.signal }).then((traffic) => {
+    if (S.route === route) S.traffic = traffic;
+  }).catch((e) => {
+    // No key, or a key TomTom won't take: stop asking for this trip.
+    if (e?.kind === 'no key' || e?.kind === 'key refused') S.trafficStopped = true;
+  }).finally(() => {
+    clearTimeout(timer);
+    if (S.trafficCtrl === ctrl) S.trafficCtrl = null;
+  });
+}
+
+function jamWords(near, lang) {
+  return { kind: t(`jam_${near.jam.kind}`), distance: fmtDistance(Math.max(near.ahead, 10)), time: fmtDuration(near.delay, lang) };
+}
+
+function renderJam(st) {
+  const box = $('jam-alert');
+  const near = S.settings.traffic && st.onRoute && S.mode !== 'walk' ? jamAhead(S.traffic, st.s) : null;
+  box.hidden = !near;
+  if (!near) return;
+  const lang = getLang();
+  const words = jamWords(near, lang);
+  const closed = near.jam.kind === 'ROAD_CLOSURE';
+  box.dataset.kind = near.jam.kind;
+  $('jam-icon').innerHTML = UI[JAM_ICONS[near.jam.kind]];
+  $('jam-distance').textContent = near.inside ? t('jamLeft', { distance: fmtDistance(Math.max(near.left, 10)) }) : words.distance;
+  $('jam-delay').hidden = closed || near.delay < 60;
+  $('jam-delay').textContent = t('jamDelay', { time: words.time });
+  box.setAttribute('aria-label', t(near.inside ? 'jamAriaIn' : 'jamAria', { ...words, distance: near.inside ? fmtDistance(near.left) : words.distance }));
+  const id = `${Math.round(near.jam.start / 50)}`;
+  if (near.inside || near.ahead > JAM_SAY_M || S.jamsSaid.has(id)) return;
+  if (!st.prompts.length && voice.busy()) return;
+  S.jamsSaid.add(id);
+  if (S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) return;
+  const say = { kind: words.kind, distance: sayDistance(near.ahead, lang), time: sayDuration(near.delay, lang) };
+  speakText(t(closed ? 'jamSayClosed' : 'jamSay', say), { wait: voice.WAIT_TURN_MS });
 }
 
 /* ---------- Toll plazas, for the HUD ---------- */
@@ -2625,6 +2693,10 @@ async function reroute(fix, { added = false } = {}) {
     if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
     S.tolls = tollsOnRoute(route, S.tollPool || []);
     if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
+    // Traffic for the old route doesn't belong to this one.
+    S.traffic = null;
+    S.jamsSaid = new Set();
+    S.trafficAt = Math.min(S.trafficAt || 0, Date.now() - TRAFFIC_EVERY_MS + TRAFFIC_AGAIN_MS);
     if (S.sim) {
       S.sim.setRoute(route);
       S.simStops = [...S.stops];
@@ -2666,6 +2738,10 @@ function stopGuidance() {
   S.cameras = [];
   S.tollCtrl?.abort();
   S.tolls = [];
+  S.trafficCtrl?.abort();
+  S.trafficCtrl = null;
+  S.traffic = null;
+  $('jam-alert').hidden = true;
   saveDriveTime();
   keepVehicleLevel();
   leaveFullscreen();
@@ -3182,9 +3258,10 @@ function renderHud(st, fix) {
   if (limit) $('hm-limit').textContent = String(limit);
   $('hm-speed').parentElement.classList.toggle('is-over', !!(limit && kmh > limit + OVER_BY_KMH));
   const lang = getLang();
-  $('hm-eta').replaceChildren(fmtDuration(st.remainingTime, lang));
+  const left = timeLeft(st);
+  $('hm-eta').replaceChildren(fmtDuration(left, lang));
   const rest = document.createElement('span');
-  rest.textContent = fmtClock(new Date(Date.now() + st.remainingTime * 1000), lang);
+  rest.textContent = fmtClock(new Date(Date.now() + left * 1000), lang);
   $('hm-eta').append(rest);
 
   const lanes = S.mode === 'walk' ? null : lanesNow(st);
@@ -3196,8 +3273,21 @@ function renderHud(st, fix) {
   const toll = st.onRoute && S.mode !== 'walk' ? tollAhead(S.tolls, st.s) : null;
   $('hm-toll').hidden = !toll;
   if (toll) $('hm-toll-distance').textContent = fmtDistance(Math.max(toll.ahead, 10));
+  const jam = S.settings.traffic && st.onRoute && S.mode !== 'walk' ? jamAhead(S.traffic, st.s) : null;
+  $('hm-jam').hidden = !jam;
+  if (jam) {
+    $('hm-jam-icon').innerHTML = UI[JAM_ICONS[jam.jam.kind]];
+    $('hm-jam-word').textContent = t(`jam_${jam.jam.kind}`);
+    $('hm-jam-distance').textContent = jam.inside ? '' : fmtDistance(Math.max(jam.ahead, 10));
+    $('hm-jam-more').textContent = jam.jam.kind === 'ROAD_CLOSURE' ? ''
+      : jam.inside ? t('jamLeft', { distance: fmtDistance(Math.max(jam.left, 10)) }) : t('jamDelay', { time: fmtDuration(jam.delay, lang) });
+  }
+
   const tired = !!(S.watch?.tired && S.mode !== 'walk');
   $('hm-rest').hidden = !tired;
+  // Upright there's only room for one, so the most pressing goes first.
+  const first = [['hm-toll', toll], ['hm-jam', jam], ['hm-rest', tired]].find(([, on]) => on)?.[0];
+  for (const id of ['hm-toll', 'hm-jam', 'hm-rest']) $(id).classList.toggle('is-first', id === first);
   if (tired) $('hm-rest-more').textContent = t('hudRestMore', { hours: Math.floor(S.watch.driving / 3600000) });
 }
 
@@ -3480,6 +3570,15 @@ function wire() {
   $('camera-on').addEventListener('change', (e) => {
     setSetting('speedCameras', e.target.checked);
     if (!e.target.checked) $('camera-alert').hidden = true;
+  });
+  $('traffic-on').addEventListener('change', (e) => {
+    setSetting('traffic', e.target.checked);
+    if (!e.target.checked) {
+      $('jam-alert').hidden = true;
+      $('hm-jam').hidden = true;
+    } else if (S.view === 'nav') {
+      loadTraffic();
+    }
   });
   $('plan-arrive-time').addEventListener('input', () => renderPlanArrive(S.routes[S.selected]));
   $('plan-parking').addEventListener('click', () => {

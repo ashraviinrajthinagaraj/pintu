@@ -217,6 +217,7 @@
     <div id="speed-limit" class="limit-sign" hidden></div>
     <div id="speed" class="speed" hidden><strong id="speed-value"></strong><span id="speed-unit"></span></div>
     <div id="camera-alert" class="camera-alert" role="status" hidden><span id="camera-icon" class="camera-icon"></span><span id="camera-distance"></span><span id="camera-limit" class="camera-limit" hidden></span></div>
+    <div id="jam-alert" class="jam-alert" role="status" hidden><span id="jam-icon" class="jam-icon"></span><span id="jam-distance"></span><span id="jam-delay" class="jam-delay"></span></div>
     <div id="nav-range" class="range-pill" hidden></div>
   </div>
   <div class="nav-float">
@@ -450,6 +451,10 @@
       <div class="hm-speed"><strong id="hm-speed"></strong><span id="hm-unit"></span></div>
       <span id="hm-limit" class="limit-sign" hidden></span>
       <div class="hm-notes">
+        <div id="hm-jam" class="hm-note" hidden>
+          <span id="hm-jam-icon" class="hm-note-icon"></span>
+          <span class="hm-note-text"><strong><span id="hm-jam-word"></span> <span id="hm-jam-distance"></span></strong><span id="hm-jam-more"></span></span>
+        </div>
         <div id="hm-toll" class="hm-note" hidden>
           <span class="hm-note-icon" data-icon="toll"></span>
           <span class="hm-note-text"><strong><span id="hm-toll-word"></span> <span id="hm-toll-distance"></span></strong><span id="hm-toll-card"></span></span>
@@ -545,6 +550,15 @@
         <input id="camera-on" type="checkbox">
         <span class="switch-track" aria-hidden="true"></span>
         <span id="camera-on-label"></span>
+      </label>
+    </div>
+    <div class="setting">
+      <h3 id="set-traffic-title"></h3>
+      <p id="traffic-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="traffic-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="traffic-on-label"></span>
       </label>
     </div>
     <div class="setting">

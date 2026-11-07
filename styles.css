@@ -1085,10 +1085,9 @@ a { color: inherit; }
   .hm-arrow { width: 44vmin; height: 44vmin; }
   .hm-face.has-lanes .hm-arrow { width: 30vmin; height: 30vmin; }
   .hm-lanes { margin-left: 0; align-self: stretch; }
-  /* Upright there's room for one short line per note, and the arrival time
-     steps aside while a toll plaza is coming up. */
+  /* Upright there's room for one note, on one line, beside the arrival time. */
   .hm-note-text > span { display: none; }
-  .hm-face:has(#hm-toll:not([hidden])) .hm-eta { display: none; }
+  .hm-note:not(.is-first) { display: none; }
   .hm-distance { font-size: 26vmin; }
   .hm-road { white-space: normal; max-height: 2.3em; }
   .hm-speed strong { font-size: 30vmin; }
@@ -1139,6 +1138,26 @@ a { color: inherit; }
   box-shadow: var(--lift);
 }
 .camera-alert[hidden] { display: none; }
+/* Traffic ahead: red for a jam or a closed road, orange for roadworks. */
+.jam-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #C62828;
+  color: #fff;
+  border-radius: 12px;
+  padding: 6px 10px 6px 8px;
+  font-family: var(--condensed);
+  font-size: 20px;
+  font-weight: 800;
+  box-shadow: var(--lift);
+}
+.jam-alert[data-kind="ROAD_WORK"] { background: #E8590C; }
+.jam-alert[hidden] { display: none; }
+.jam-icon { width: 24px; height: 24px; display: block; }
+.jam-icon svg { width: 24px; height: 24px; display: block; }
+.jam-delay { background: rgba(0, 0, 0, .28); border-radius: 8px; padding: 1px 6px; font-size: 17px; }
+.jam-delay[hidden] { display: none; }
 .camera-icon { width: 24px; height: 24px; display: block; }
 .camera-icon svg { width: 24px; height: 24px; display: block; }
 .camera-limit { background: #fff; color: #15211B; border: 3px solid #D32F2F; border-radius: 50%; min-width: 30px; height: 30px; display: grid; place-items: center; font-size: 14px; }

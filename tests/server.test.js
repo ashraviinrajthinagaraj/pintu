@@ -950,3 +950,107 @@ test('the voice test tries a direction with a joke, and says how it was sent', a
   assert.equal(report.steps.at(-1).shape, 'parts');
   assert.equal(interactions(asked)[0].body.input[0].content.length, 2);
 });
+
+/* ---------- Traffic, from TomTom ---------- */
+
+const TT_KEY = { TOMTOM_API_KEY: 'tomtom-test-key' };
+const ROUTE = [[101.7, 3.15], [101.705, 3.15], [101.71, 3.15], [101.71, 3.16]];
+const sendRoute = (body, { env = TT_KEY, origin = PINTU, method = 'POST', path = '/traffic' } = {}) => worker.fetch(new Request(`${HOME}${path}`, {
+  method,
+  headers: { ...(origin ? { origin } : {}), 'content-type': 'text/plain' },
+  ...(method === 'POST' ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
+}), env);
+
+function tomtom(answer) {
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
+    return typeof answer === 'function' ? answer(String(url), init) : answer;
+  };
+  return calls;
+}
+const tomtomRoute = () => new Response(JSON.stringify({ routes: [{
+  summary: { lengthInMeters: 2200, travelTimeInSeconds: 900, trafficDelayInSeconds: 420 },
+  legs: [{ points: [
+    { latitude: 3.15, longitude: 101.7 }, { latitude: 3.15, longitude: 101.703 }, { latitude: 3.15, longitude: 101.706 },
+    { latitude: 3.15, longitude: 101.71 }, { latitude: 3.155, longitude: 101.71 }, { latitude: 3.16, longitude: 101.71 },
+  ] }],
+  sections: [
+    { startPointIndex: 0, endPointIndex: 5, sectionType: 'TRAVEL_MODE', travelMode: 'car' },
+    { startPointIndex: 1, endPointIndex: 3, sectionType: 'TRAFFIC', simpleCategory: 'JAM', effectiveSpeedInKmh: 11, delayInSeconds: 300.4, magnitudeOfDelay: 2 },
+    { startPointIndex: 4, endPointIndex: 5, sectionType: 'TRAFFIC', simpleCategory: 'ROAD_WORK', delayInSeconds: 120 },
+    { startPointIndex: 9, endPointIndex: 12, sectionType: 'TRAFFIC', simpleCategory: 'JAM', delayInSeconds: 60 },
+  ],
+}] }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+test('traffic: asks TomTom to follow Pintu\'s own route, and passes back only the slow stretches', async () => {
+  const calls = tomtom(tomtomRoute);
+  const res = await sendRoute({ points: ROUTE });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
+  const body = await res.json();
+  assert.equal(calls.length, 1);
+  const { url, method, body: sent } = calls[0];
+  assert.equal(method, 'POST');
+  assert.match(url, /^https:\/\/api\.tomtom\.com\/routing\/1\/calculateRoute\/3\.15000,101\.70000:3\.16000,101\.71000\/json\?/);
+  const q = new URL(url).searchParams;
+  assert.equal(q.get('key'), TT_KEY.TOMTOM_API_KEY);
+  assert.equal(q.get('sectionType'), 'traffic');
+  assert.equal(q.get('traffic'), 'true');
+  assert.deepEqual(sent.supportingPoints[1], { latitude: 3.15, longitude: 101.705 });
+  assert.equal(sent.supportingPoints.length, ROUTE.length);
+  assert.equal(body.delay, 420);
+  assert.deepEqual(body.jams, [
+    { from: [101.703, 3.15], to: [101.71, 3.15], delay: 300, speed: 11, kind: 'JAM', size: 2 },
+    { from: [101.71, 3.155], to: [101.71, 3.16], delay: 120, speed: null, kind: 'ROAD_WORK', size: null },
+  ]);
+  assert.ok(!JSON.stringify(body).includes(TT_KEY.TOMTOM_API_KEY), 'the key never reaches the page');
+});
+
+test('traffic: without a key it says so, and asks nobody', async () => {
+  const calls = tomtom(tomtomRoute);
+  const res = await sendRoute({ points: ROUTE }, { env: {} });
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), { error: 'no key' });
+  assert.equal(calls.length, 0);
+});
+
+test('traffic: only a real route, only by POST, only from Pintu', async () => {
+  const calls = tomtom(tomtomRoute);
+  for (const bad of ['not json', { points: [[101.7, 3.15]] }, { points: [[101.7, 3.15], ['x', 3]] }, { points: [[200, 3], [101, 3]] },
+    { points: Array.from({ length: 2001 }, (_, i) => [101.7 + i * 1e-4, 3.15]) }]) {
+    assert.equal((await sendRoute(bad)).status, 400, JSON.stringify(bad).slice(0, 40));
+  }
+  assert.equal((await sendRoute(null, { method: 'GET' })).status, 405);
+  assert.equal((await sendRoute({ points: ROUTE }, { origin: 'https://evil.example' })).status, 403);
+  assert.equal((await sendRoute({ points: ROUTE }, { path: '/link' })).status, 405, 'nothing else takes a POST');
+  assert.equal(calls.length, 0);
+});
+
+test('traffic: TomTom refusing the key, being busy, or not following the route', async () => {
+  tomtom(() => new Response(JSON.stringify({ detailedError: { message: 'Developer Inactive' } }), { status: 403 }));
+  let res = await sendRoute({ points: ROUTE });
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), { error: 'key refused', why: 'Developer Inactive' });
+  tomtom(() => new Response('{}', { status: 429 }));
+  assert.equal((await sendRoute({ points: ROUTE })).status, 429);
+  tomtom(() => new Response('{"detailedError":{"message":"Engine error"}}', { status: 400 }));
+  res = await sendRoute({ points: ROUTE });
+  assert.equal(res.status, 422);
+  assert.equal((await res.json()).error, 'could not follow the route');
+  tomtom(() => { throw new Error('offline'); });
+  assert.equal((await sendRoute({ points: ROUTE })).status, 502);
+});
+
+test('traffic: /traffic?check=1 in a browser says whether it works, and nothing else', async () => {
+  const look = (env) => worker.fetch(new Request(`${HOME}/traffic?check=1`), env);
+  tomtom(tomtomRoute);
+  assert.match(await (await look({})).text(), /no TomTom key yet/);
+  const calls = tomtom(tomtomRoute);
+  const ok = await (await look(TT_KEY)).text();
+  assert.match(ok, /^Traffic: working/);
+  assert.ok(!ok.includes(TT_KEY.TOMTOM_API_KEY));
+  assert.equal(calls[0].method, 'GET', 'a two-point check needs no route sent');
+  tomtom(() => new Response('{"detailedError":{"message":"Forbidden"}}', { status: 403 }));
+  assert.match(await (await look(TT_KEY)).text(), /refused the key/);
+});

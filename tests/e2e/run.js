@@ -59,13 +59,13 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
-    const server = appServer ? "'https://pintu.test'" : 'null';
+    const server = appServer || traffic ? "'https://pintu.test'" : 'null';
     const config = original.replace(/server: [^,]+,/, `server: ${server},`).replace(/humanVoices: [^,]+,/, `humanVoices: ${humanVoices},`);
     route.fulfill({ contentType: 'text/javascript', body: config });
   });
@@ -78,6 +78,14 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       return route.fulfill({ contentType: 'text/javascript', headers: CORS, body: stub });
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
+    if (host === 'pintu.test' && new URL(url).pathname === '/traffic') {
+      const sent = JSON.parse(route.request().postData() || '{}');
+      log.traffic.push(sent);
+      const answer = traffic ? await traffic(sent, log.traffic.length) : null;
+      if (!answer) return route.fulfill({ status: 503, json: { error: 'no key' }, headers: CORS });
+      if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
+      return route.fulfill({ json: answer, headers: CORS });
+    }
     if (host === 'pintu.test') {
       log.server.push(url);
       const answer = appServer ? await appServer(new URL(url)) : null;
@@ -2378,6 +2386,7 @@ await check('HUD: lanes, a toll plaza ahead and a break reminder, in any colour'
       viewport,
       routeResponse: () => ({ trip: tollTrip() }),
       overpass: (q) => (q.includes('toll_booth') ? plaza : { elements: [] }),
+      traffic: () => ({ delay: 480, jams: [{ from: along(P.b, P.c, 0.3), to: along(P.b, P.c, 0.9), delay: 480, speed: 12, kind: 'ROAD_WORK' }] }),
       // Two hours and ten minutes at the wheel already, with only a short stop.
       storage: { 'pintu.safetySeen': 'true', 'pintu.driveTime': { ms: 130 * 60000, at: Date.now() - 5 * 60000 } },
     });
@@ -2391,8 +2400,10 @@ await check('HUD: lanes, a toll plaza ahead and a break reminder, in any colour'
     await page.waitForSelector('#hm-toll:not([hidden])');
     const words = (sel) => page.evaluate((sel) => document.querySelector(sel).textContent.replace(/\s+/g, ' '), sel);
     assert.match(await words('#hm-toll'), /Tol \d+ m\s*Sedia Touch/);
-    assert.equal(await vis(page, '#hm-rest'), true);
+    assert.equal(await page.evaluate(() => document.getElementById('hm-rest').hidden), false);
     assert.match(await words('#hm-rest'), /Rehat\s*2 jam memandu/);
+    assert.match(await words('#hm-jam'), /Kerja jalan \d+(\.\d)? k?m\s*\+8 min/);
+    assert.equal(await page.locator('#hm-note-first, .hm-note.is-first').getAttribute('id'), 'hm-toll', 'the plaza is the most pressing');
     assert.equal(await page.locator('#hm-lanes .lane').count(), 5);
     assert.equal(await page.locator('#hm-lanes .lane.best').count(), 1);
 
@@ -2428,7 +2439,7 @@ await check('HUD: lanes, a toll plaza ahead and a break reminder, in any colour'
     // Past the plaza it goes; the break reminder stays until there's been a rest.
     await roll(page, trip, 320, 900, 22);
     await page.waitForFunction(() => document.getElementById('hm-toll').hidden);
-    assert.equal(await vis(page, '#hm-rest'), true);
+    assert.equal(await page.evaluate(() => document.getElementById('hm-rest').hidden), false);
     assert.deepEqual(log.errors, []);
     await ctx.close();
   }
@@ -3254,6 +3265,75 @@ await check('speed cameras: none answered means no warnings, and no fuss', async
   assert.equal(await vis(page, '#camera-alert'), false);
   assert.deepEqual(log.errors, []);
   await ctx.close();
+});
+
+/* ---------- Traffic ---------- */
+
+const minutesIn = (s) => {
+  const h = /(\d+)\s*j/.exec(s), m = /(\d+)\s*min/.exec(s);
+  return (h ? Number(h[1]) * 60 : 0) + (m ? Number(m[1]) : 0);
+};
+
+await check('traffic: a jam ahead shows, is said once, and counts in the arrival time', async () => {
+  const trip = prepareTrip(cityTrip());
+  const jam = { from: pointAt(trip, 1500), to: pointAt(trip, 2100), delay: 480, speed: 9, kind: 'JAM' };
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    scale: 2,
+    // The answer takes a moment, so the arrival time can be seen before and after.
+    traffic: async () => { await new Promise((r) => setTimeout(r, 2500)); return { delay: 480, jams: [jam] }; },
+  });
+  await toNav(page);
+  await roll(page, trip, 0, 200, 12);
+  assert.equal(log.traffic.length, 1, 'asked once at the start');
+  const sent = log.traffic[0].points;
+  assert.ok(sent.length >= 2 && sent.length <= 1500);
+  assert.ok(haversine(sent[0], trip.coords[0]) < 30 && haversine(sent[sent.length - 1], trip.coords[trip.coords.length - 1]) < 1);
+  const before = minutesIn(await text(page, '#eta-clock'));
+  assert.equal(await vis(page, '#jam-alert'), false);
+
+  await page.waitForTimeout(2700);
+  await roll(page, trip, 200, 260, 12);
+  await page.waitForSelector('#jam-alert:not([hidden])');
+  assert.match(await text(page, '#jam-alert'), /1[.,]2\s*km\s*\+8 min/);
+  const after = minutesIn(await text(page, '#eta-clock'));
+  assert.ok(Math.abs(after - before - 8) <= 1, `arrival ${before} → ${after} min`);
+  await page.screenshot({ path: `${shots}/58-jam.png` });
+
+  // Said once when it's close, then counted down from inside it.
+  await roll(page, trip, 260, 1300, 12);
+  await page.waitForTimeout(100);
+  const words = (await said(page)).map((x) => x.text).filter((x) => /Jem/.test(x));
+  assert.equal(words.length, 1, JSON.stringify(words));
+  assert.match(words[0], /^Jem [\d.]+ (meter|kilometer) di hadapan, lambat kira-kira 8 minit\.$/);
+  await roll(page, trip, 1300, 1800, 12);
+  assert.match(await text(page, '#jam-alert'), /300 m lagi\s*\+4 min/);
+  await roll(page, trip, 1800, 2200, 12);
+  assert.equal(await vis(page, '#jam-alert'), false, 'gone once through');
+  assert.equal((await said(page)).filter((x) => /Jem/.test(x.text)).length, 1);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('traffic: switched off, nothing asked and nothing shown; no key, no fuss', async () => {
+  const trip = prepareTrip(cityTrip());
+  const off = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { traffic: false } }, traffic: () => ({ delay: 0, jams: [] }) });
+  await off.page.click('#btn-settings');
+  assert.equal(await off.page.isChecked('#traffic-on'), false);
+  await off.page.click('#settings-back');
+  await toNav(off.page);
+  await roll(off.page, trip, 0, 600, 12);
+  assert.equal(off.log.traffic.length, 0);
+  assert.equal(await vis(off.page, '#jam-alert'), false);
+  await off.ctx.close();
+
+  const nokey = await newApp(browser, { ...quiet, traffic: () => null });
+  await toNav(nokey.page);
+  await roll(nokey.page, trip, 0, 600, 12);
+  assert.equal(nokey.log.traffic.length, 1);
+  assert.equal(await vis(nokey.page, '#jam-alert'), false);
+  assert.deepEqual(nokey.log.errors, []);
+  await nokey.ctx.close();
 });
 
 /* ---------- Tolls ---------- */
