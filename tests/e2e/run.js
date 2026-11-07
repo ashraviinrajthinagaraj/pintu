@@ -59,14 +59,15 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
   const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
     const server = appServer ? "'https://pintu.test'" : 'null';
-    route.fulfill({ contentType: 'text/javascript', body: original.replace(/server: [^,]+,/, `server: ${server},`) });
+    const config = original.replace(/server: [^,]+,/, `server: ${server},`).replace(/humanVoices: [^,]+,/, `humanVoices: ${humanVoices},`);
+    route.fulfill({ contentType: 'text/javascript', body: config });
   });
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();
@@ -3030,6 +3031,30 @@ await check('after a sample, nothing is said when it was the human voice', async
   await page.waitForFunction(() => window.__played.length > 0);
   await page.waitForTimeout(300);
   assert.equal(await text(page, '#voice-wait').catch(() => ''), '');
+  await ctx.close();
+});
+
+await check('human voices switched off: the phone\'s voice only, nothing asked, no accents promised', async () => {
+  const config = await readFile(path.join(root, 'js/config.js'), 'utf8');
+  assert.match(config, /humanVoices: false,/, 'off in the real app');
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), humanVoices: false, appServer: voiceServer() });
+  await page.click('#btn-settings');
+  assert.equal(await vis(page, '#voice-check'), false);
+  assert.doesNotMatch(await text(page, '#voice-chars'), /loghat|Suara budak/);
+  assert.doesNotMatch(await text(page, '#voice-status'), /manusia/);
+  await page.locator('#voice-chars .char-opt', { hasText: 'Kapten' }).click();
+  await page.waitForFunction(() => window.__said.length > 0);
+  await page.waitForTimeout(300);
+  assert.equal(await text(page, '#voice-wait').catch(() => ''), '');
+  await page.click('#settings-back');
+  await toNav(page);
+  await roll(page, trip, 0, trip.length, 15);
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.ok((await said(page)).length >= 3);
+  assert.deepEqual(await played(page), []);
+  assert.deepEqual(log.server.filter((u) => u.includes('/speak')), []);
+  assert.deepEqual(log.errors, []);
   await ctx.close();
 });
 

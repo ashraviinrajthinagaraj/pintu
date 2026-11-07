@@ -317,13 +317,13 @@ function renderVoiceStatus() {
   const parts = human === 'on' ? [t('voiceHuman')]
     : human === 'resting' ? [t('voiceHumanResting')]
     : human === 'refused' ? [t('voiceHumanRefused'), t(key)]
-      : CONFIG.server ? [t('voiceHumanOff'), t(key)]
+      : voice.humanVoicesOffered() ? [t('voiceHumanOff'), t(key)]
         : [t(key)];
   $('voice-status').textContent = parts.join(' ');
   const silent = human !== 'on' && key === 'voiceMissing';
   $('voice-test').hidden = silent;
   $('voice-try').hidden = silent || S.settings.voiceCharacter === 'standard';
-  $('voice-check').hidden = !CONFIG.server;
+  $('voice-check').hidden = !voice.humanVoicesOffered();
 }
 
 function renderInstall() {
@@ -2365,9 +2365,13 @@ function renderCharacters() {
     name.textContent = characterName(id, lang);
     const about = document.createElement('span');
     about.textContent = characterAbout(id, lang);
-    const tag = document.createElement('small');
-    tag.textContent = characterTag(id, lang);
-    btn.append(name, about, tag);
+    btn.append(name, about);
+    // Accents come only with the human voices. The phone's voice is the same for all.
+    if (voice.humanVoicesOffered()) {
+      const tag = document.createElement('small');
+      tag.textContent = characterTag(id, lang);
+      btn.append(tag);
+    }
     btn.addEventListener('click', () => chooseCharacter(id));
     li.append(btn);
     return li;
@@ -2390,7 +2394,7 @@ function hearNow(line) {
   const hint = $('voice-wait');
   hint.textContent = voice.humanVoice() === 'on' ? t('voicePreparing') : '';
   voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS, onStart: () => { hint.textContent = ''; } }).then((heard) => {
-    if (heard !== 'phone' || !CONFIG.server) return;
+    if (heard !== 'phone' || !voice.humanVoicesOffered()) return;
     const why = voice.voiceProblem() || (voice.humanVoice() === 'on' ? t('voiceTooSlow') : t('voiceNotConnected'));
     hint.textContent = t('voiceHeardPhone', { why });
     renderVoiceStatus();

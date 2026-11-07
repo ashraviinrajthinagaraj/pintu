@@ -120,11 +120,15 @@ function stopTalking() {
   }
 }
 
-const humanPossible = () => !!CONFIG.server && humanState !== 'off' && humanState !== 'refused' && Date.now() >= Math.max(stepBackUntil, restingUntil);
+// The server to ask for human voices, if they're switched on at all.
+const voiceServer = () => (CONFIG.humanVoices ? CONFIG.server : null);
+export const humanVoicesOffered = () => !!voiceServer();
+
+const humanPossible = () => !!voiceServer() && humanState !== 'off' && humanState !== 'refused' && Date.now() >= Math.max(stepBackUntil, restingUntil);
 
 function clipAddress(text, who = character, language = lang) {
   const q = new URLSearchParams({ v: SPEECH_VERSION, who, lang: language, text });
-  return `${CONFIG.server}/speak?${q}`;
+  return `${voiceServer()}/speak?${q}`;
 }
 
 function remember(address, blob) {
@@ -272,7 +276,7 @@ async function playLine(text, mine, wait, onStart) {
 export function speak(text, { evenIfMuted = false, wait = WAIT_NORMAL_MS, onStart } = {}) {
   if (!text || (muted && !evenIfMuted)) return Promise.resolve('');
   stopTalking();
-  if (!CONFIG.server || text.length > MAX_SPEECH) {
+  if (!voiceServer() || text.length > MAX_SPEECH) {
     onStart?.();
     phoneSpeak(plainSpeech(text));
     return Promise.resolve('phone');
@@ -306,7 +310,7 @@ function runQueue() {
 
 // So a direction is already on the phone when its moment comes.
 export function prepare(text, who = character) {
-  if (!text || muted || !CONFIG.server || !humanPossible()) return;
+  if (!text || muted || !voiceServer() || !humanPossible()) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   if (text.length > MAX_SPEECH) return;
   const address = clipAddress(text, who);
@@ -320,14 +324,14 @@ export function prepare(text, who = character) {
 /* ---------- Whether the human voice is available ---------- */
 
 export function humanVoice() {
-  if (!CONFIG.server) return 'off';
+  if (!voiceServer()) return 'off';
   return Date.now() < restingUntil ? 'resting' : humanState;
 }
 
 export async function checkHumanVoice() {
-  if (!CONFIG.server) return 'off';
+  if (!voiceServer()) return 'off';
   try {
-    const res = await fetch(`${CONFIG.server}/speak?check=1`);
+    const res = await fetch(`${voiceServer()}/speak?check=1`);
     if (!res.ok) {
       // A server from before human voices has no /speak yet.
       humanState = res.status === 404 ? 'off' : 'unknown';
@@ -353,10 +357,10 @@ export async function checkHumanVoice() {
 // Tries one real line through the server, for when voices aren't working and someone
 // needs to see why. It uses one line of the day's allowance.
 export async function testHumanVoice(who = character, language = lang) {
-  if (!CONFIG.server) return { kind: 'unreachable' };
+  if (!voiceServer()) return { kind: 'unreachable' };
   let res;
   try {
-    res = await fetch(`${CONFIG.server}/speak?${new URLSearchParams({ test: '1', who, lang: language })}`);
+    res = await fetch(`${voiceServer()}/speak?${new URLSearchParams({ test: '1', who, lang: language })}`);
   } catch {
     return { kind: 'unreachable' };
   }

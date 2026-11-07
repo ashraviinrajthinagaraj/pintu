@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.6.4',
+  version: '0.6.5',
 
   maplibre: {
     version: '5.24.0',
@@ -31,6 +31,9 @@ export const CONFIG = {
   // Stops along the route come from OpenStreetMap through these, tried in order.
   // Pintu's small server, for jobs a web page can't do by itself. See server/worker.js.
   server: 'https://pintu.ashraviinrajthinagaraj.workers.dev',
+  // Human-sounding voices through the server's /speak. Off: Google's free allowance ran
+  // out within a drive, so every voice is the phone's own. See README.
+  humanVoices: false,
   weather: {
     forecastUrl: 'https://api.open-meteo.com/v1/forecast',
     warningsUrl: 'https://api.data.gov.my/weather/warning',

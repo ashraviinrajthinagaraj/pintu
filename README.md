@@ -135,6 +135,9 @@ Secrets set in the Cloudflare dashboard stay as they are.
 
 ### Human voices
 
+Switched off for now with `humanVoices: false` in `js/config.js`: Google's free allowance ran out within a
+single drive. Everything below still works if it's switched back on.
+
 Characters speak through the server's `/speak`, using one of two services:
 
 - [Gemini](https://ai.google.dev/gemini-api/docs/speech-generation): the key is a Worker secret called
