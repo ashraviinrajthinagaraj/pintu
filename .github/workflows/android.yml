@@ -14,6 +14,11 @@ on:
       - 'android-app/**'
       - '.github/workflows/android.yml'
   workflow_dispatch:
+    inputs:
+      rehearse:
+        description: Sign with a throwaway key and publish nothing, to check the build
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,7 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SEED: ${{ secrets.ANDROID_SIGNING_SEED }}
+      SEED: ${{ inputs.rehearse && 'a throwaway sentence used only to rehearse the build' || secrets.ANDROID_SIGNING_SEED }}
+      REHEARSE: ${{ inputs.rehearse && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Check for the signing secret
@@ -57,7 +63,10 @@ jobs:
         run: |
           node signing-key.mjs "$RUNNER_TEMP/key.pem"
           # The certificate is made once and kept here, so every build signs the same way.
-          if [ ! -f signing-cert.pem ]; then
+          if [ -n "$REHEARSE" ]; then
+            openssl req -new -x509 -key "$RUNNER_TEMP/key.pem" -sha256 -days 36500 -subj "/CN=Pintu/O=Pintu" -out "$RUNNER_TEMP/cert.pem"
+            cp "$RUNNER_TEMP/cert.pem" signing-cert.pem
+          elif [ ! -f signing-cert.pem ]; then
             openssl req -new -x509 -key "$RUNNER_TEMP/key.pem" -sha256 -days 36500 -subj "/CN=Pintu/O=Pintu" -out signing-cert.pem
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -85,8 +94,14 @@ jobs:
             ls -la app/build/outputs/apk/debug/
           fi
 
-      - name: Publish
+      - name: Check the signature
         if: env.SEED != ''
+        run: |
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          "$APKSIGNER" verify --print-certs "$RUNNER_TEMP/pintu.apk" | head -3
+
+      - name: Publish
+        if: env.SEED != '' && env.REHEARSE == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
