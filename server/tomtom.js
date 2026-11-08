@@ -512,7 +512,7 @@ export async function askRoute(req, key, fetchImpl = fetch) {
 // Counts are kept per server instance: enough to stop a runaway loop or
 // someone helping themselves. If a Cloudflare rate limiting binding called
 // TOMTOM_LIMITER is set up, it's used as well.
-export const PER_MINUTE = { api: 40, tile: 400 };
+export const PER_MINUTE = { api: 40, tile: 400, hub: 120 };
 const counts = new Map();
 
 export function allowed(who, kind, now = Date.now()) {

@@ -10,3 +10,17 @@ keep_vars = true
 # Keeps the logs that are already switched on in Cloudflare.
 [observability]
 enabled = true
+
+# The hub: live trips, road reports, convoys and morning alerts (server/hub.js).
+# A SQLite Durable Object, which Cloudflare's free plan includes.
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+# Every five minutes: morning alerts that are due, and tidying what's over.
+[triggers]
+crons = ["*/5 * * * *"]

@@ -7,6 +7,9 @@
 //   /speak?…       a line spoken by a character's human-sounding voice
 //   /traffic, /tiles/…, /limits, /geocode, /ev   TomTom's traffic, speed limits,
 //                  addresses and electric car charging (see tomtom.js)
+//   /share…, /reports…, /convoy…, /commute…, /push/key   what phones share with each
+//                  other for a few hours: live trips, road reports, convoys and
+//                  morning alerts (see hub.js)
 //
 // It runs on Cloudflare Workers and keeps no records. It only ever answers
 // Pintu's own page, and only ever contacts the sites listed here, so it can't be
@@ -21,10 +24,19 @@
 // TOMTOM_API_KEY. Without one, /traffic says so and Pintu simply shows none.
 
 // Shown when the server's address is opened, so it's clear which code is running.
-import { TOMTOM_POSTS, tomtomRoute, trafficCheck } from './tomtom.js';
-import { fuelRoute } from './fuel.js';
+import { TOMTOM_POSTS, allowed, tomtomRoute, trafficCheck } from './tomtom.js';
+import { fuelCheck, fuelRoute } from './fuel.js';
 
-const SERVER_VERSION = '2026-11-08.3';
+// The hub is a Durable Object, which Cloudflare finds by this name.
+export { Hub } from './hub.js';
+
+const HUB_GETS = ['/share', '/reports', '/convoy', '/push/key'];
+const HUB_POSTS = ['/share/start', '/share/update', '/share/end', '/reports/add', '/reports/vote', '/convoy/start', '/convoy/join',
+  '/convoy/update', '/convoy/leave', '/commute/set', '/commute/off', '/commute/test', '/commute/message'];
+const HUB_MAX_BODY = 20000;
+const hubOf = (env) => env.HUB.get(env.HUB.idFromName('pintu'));
+
+const SERVER_VERSION = '2026-11-08.4';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -712,6 +724,25 @@ async function speakRoute(url, origin, env, ctx, request) {
   return new Response(clip.audio, { headers: headers(clip.type) });
 }
 
+// Passed on to the hub, a little at a time from each connection.
+async function hubRoute(request, url, origin, env) {
+  if (!env?.HUB) return reply({ error: 'not set up' }, origin, 503);
+  const posting = HUB_POSTS.includes(url.pathname);
+  if (posting !== (request.method === 'POST')) return reply({ error: 'not allowed' }, origin, 405);
+  const who = request.headers.get('cf-connecting-ip') || 'unknown';
+  if (!allowed(who, 'hub')) return reply({ error: 'busy' }, origin, 429, { 'retry-after': '60' });
+  let body;
+  if (posting) {
+    body = await request.text();
+    if (body.length > HUB_MAX_BODY) return reply({ error: 'too long' }, origin, 413);
+  }
+  const res = await hubOf(env).fetch(new Request(`https://hub${url.pathname}${url.search}`, { method: request.method, body }));
+  return new Response(res.body, {
+    status: res.status,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': origin, vary: 'Origin', 'cache-control': 'no-store' },
+  });
+}
+
 async function handle(request, origin, env, ctx) {
   const url = new URL(request.url);
 
@@ -741,6 +772,8 @@ async function handle(request, origin, env, ctx) {
 
   if (url.pathname === '/speak') return speakRoute(url, origin, env, ctx, request);
 
+  if (HUB_GETS.includes(url.pathname) || HUB_POSTS.includes(url.pathname)) return hubRoute(request, url, origin, env);
+
   const tomtom = await tomtomRoute(request, url, origin, env, ctx, reply);
   if (tomtom) return tomtom;
 
@@ -748,6 +781,11 @@ async function handle(request, origin, env, ctx) {
 }
 
 export default {
+  // Every five minutes: morning alerts that are due, and tidying what's over.
+  async scheduled(event, env, ctx) {
+    if (env?.HUB) ctx.waitUntil(hubOf(env).fetch(new Request('https://hub/cron')).catch(() => {}));
+  },
+
   async fetch(request, env, ctx) {
     const origin = request.headers.get('origin');
     const url = new URL(request.url);
@@ -756,6 +794,7 @@ export default {
     if (url.pathname === '/' && !origin) {
       return new Response(`Pintu server is running. Version ${SERVER_VERSION}.`, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
     }
+    if (url.pathname === '/fuel' && url.searchParams.has('check') && !origin && request.method === 'GET') return fuelCheck();
     if (url.pathname === '/traffic' && url.searchParams.has('check') && !origin && request.method === 'GET') {
       try { return await trafficCheck(env); } catch { return new Response('Traffic: could not reach TomTom.', { status: 502 }); }
     }
@@ -765,7 +804,7 @@ export default {
     }
     // The route for traffic is sent as plain text, which a page can do without
     // asking first; everything else only reads.
-    const posting = request.method === 'POST' && TOMTOM_POSTS.includes(url.pathname);
+    const posting = request.method === 'POST' && (TOMTOM_POSTS.includes(url.pathname) || HUB_POSTS.includes(url.pathname));
     if (request.method !== 'GET' && !posting) return new Response('Not allowed', { status: 405 });
 
     try {

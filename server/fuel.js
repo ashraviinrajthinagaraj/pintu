@@ -21,15 +21,36 @@ export function readFuelPrices(answer) {
   return { date, prices };
 }
 
+// Without the filter too, in case data.gov.my ever stops understanding it: the
+// newest few rows always include the newest price level.
+export const FUEL_URL_PLAIN = 'https://api.data.gov.my/data-catalogue?id=fuelprice&sort=-date&limit=4';
+
+async function latestPrices() {
+  for (const url of [FUEL_URL, FUEL_URL_PLAIN]) {
+    const res = await fetch(url, {
+      headers: { 'user-agent': 'Mozilla/5.0 (compatible; PintuHelper/1.0)' },
+      cf: { cacheTtl: KEEP_S, cacheEverything: true },
+    });
+    if (!res.ok) { await res.body?.cancel(); continue; }
+    let rows;
+    try { rows = await res.json(); } catch { continue; }
+    const fuel = readFuelPrices(rows);
+    if (fuel) return fuel;
+  }
+  return null;
+}
+
 export async function fuelRoute(origin, reply) {
-  const res = await fetch(FUEL_URL, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; PintuHelper/1.0)' },
-    cf: { cacheTtl: KEEP_S, cacheEverything: true },
-  });
-  if (!res.ok) return reply({ error: 'source unavailable' }, origin, 502);
-  let rows;
-  try { rows = await res.json(); } catch { return reply({ error: 'could not read the prices' }, origin, 502); }
-  const fuel = readFuelPrices(rows);
+  const fuel = await latestPrices().catch(() => null);
   if (!fuel) return reply({ error: 'could not read the prices' }, origin, 502);
   return reply({ ...fuel, source: 'data.gov.my' }, origin, 200, { 'cache-control': `public, max-age=${KEEP_S}` });
+}
+
+// Opening /fuel?check=1 in a browser shows what Pintu would use, and nothing more.
+export async function fuelCheck() {
+  const fuel = await latestPrices().catch(() => null);
+  const text = fuel
+    ? `Fuel prices from data.gov.my, ${fuel.date || 'no date'}: ${Object.entries(fuel.prices).map(([k, v]) => `${k} RM${v.toFixed(2)}`).join(', ')}.`
+    : 'Fuel prices: data.gov.my could not be read.';
+  return new Response(text, { status: fuel ? 200 : 502, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
 }

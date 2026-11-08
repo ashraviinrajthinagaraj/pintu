@@ -1357,8 +1357,20 @@ test('passes on this week\'s official pump prices, checked', async () => {
   assert.equal(readFuelPrices([{ series_type: 'level', ron95: 'free', ron97: -1, diesel: 900 }]), null);
   assert.deepEqual(readFuelPrices({ data: [{ series_type: 'level', date: '2026-11-06T00:00:00', ron95: 2.6 }] }), { date: '2026-11-06', prices: { ron95: 2.6 } });
 
-  internet({ [FUEL_URL]: () => new Response('', { status: 429 }) });
+  // If the filtered ask fails, the newest few rows are read instead.
+  const { FUEL_URL_PLAIN } = await import('../server/fuel.js');
+  const mixed = [{ series_type: 'change_weekly', date: '2026-11-06', ron95: 0 }, ...week];
+  internet({ [FUEL_URL]: () => new Response('', { status: 400 }), [FUEL_URL_PLAIN]: () => new Response(JSON.stringify(mixed)) });
+  assert.equal((await (await ask('/fuel')).json()).prices.ron95_budi95, 1.99);
+
+  internet({ [FUEL_URL]: () => new Response('', { status: 429 }), [FUEL_URL_PLAIN]: () => new Response('', { status: 429 }) });
   assert.equal((await ask('/fuel')).status, 502);
-  internet({ [FUEL_URL]: () => new Response('not json') });
+  internet({ [FUEL_URL]: () => new Response('not json'), [FUEL_URL_PLAIN]: () => new Response('not json') });
   assert.equal((await ask('/fuel')).status, 502);
+
+  // Opened in a browser, it says what it would use.
+  internet({ [FUEL_URL]: () => new Response(JSON.stringify(week)) });
+  const check = await ask('/fuel?check=1', { origin: null });
+  assert.equal(check.status, 200);
+  assert.equal(await check.text(), 'Fuel prices from data.gov.my, 2026-11-06: ron95 RM2.60, ron97 RM3.18, diesel RM2.87, ron95_budi95 RM1.99.');
 });
