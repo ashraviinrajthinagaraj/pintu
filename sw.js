@@ -1,7 +1,7 @@
 // Keeps Pintu opening with poor signal. The app's own files come from the
 // network when possible so updates arrive by themselves. Searches, routes and
 // stops are never stored here.
-const VERSION = 'pintu-0.9.2';
+const VERSION = 'pintu-0.9.3';
 const SHELL = `${VERSION}-shell`;
 const LIBS = `${VERSION}-libs`;
 const TILES = 'pintu-tiles-1';
@@ -22,7 +22,7 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -36,7 +36,9 @@ self.addEventListener('activate', (e) => {
 async function networkFirst(request) {
   const cache = await caches.open(SHELL);
   try {
-    const res = await fetch(request);
+    // Always checked with the site, so an update shows the next time Pintu opens
+    // rather than when the browser's own copy happens to expire.
+    const res = await fetch(request, { cache: 'no-cache' });
     if (res.ok) cache.put(request, res.clone());
     return res;
   } catch (err) {
