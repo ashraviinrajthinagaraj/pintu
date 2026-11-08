@@ -54,6 +54,9 @@
     setStyle(url, o) { calls.push(['setStyle', url, o]); this.styleUrl = url; this.sources = { openmaptiles: {} }; this.layers = []; setTimeout(() => { this._fire('style.load', {}); this.draw(); }, 5); }
     addSource(id, s) { if (this.sources[id]) throw new Error(`source ${id} exists`); this.sources[id] = { ...s, setData: (d) => { this.sources[id].data = d; this.draw(); } }; }
     getSource(id) { return this.sources[id]; }
+    addImage(id, img) { (this.images ||= {})[id] = img; }
+    hasImage(id) { return !!this.images?.[id]; }
+    setFilter(id, f) { calls.push(['setFilter', id, f]); (this.filters ||= {})[id] = f; }
     addLayer(l, before) {
       if (this.layers.find((x) => x.id === l.id)) throw new Error(`layer ${l.id} exists`);
       if (l.type === 'custom') { this.layers.push(l); l.source.onReady?.(true); return; }

@@ -1054,3 +1054,178 @@ test('traffic: /traffic?check=1 in a browser says whether it works, and nothing 
   tomtom(() => new Response('{"detailedError":{"message":"Forbidden"}}', { status: 403 }));
   assert.match(await (await look(TT_KEY)).text(), /refused the key/);
 });
+
+/* ---------- More from TomTom ---------- */
+
+const askPintu = (path, { method = 'GET', body, env = TT_KEY, origin = PINTU } = {}) => worker.fetch(new Request(`${HOME}${path}`, {
+  method,
+  headers: { ...(origin ? { origin } : {}), 'content-type': 'text/plain' },
+  ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+}), env);
+
+test('traffic: a quicker way round comes back when asked for, staying on the route at first', async () => {
+  const alt = { summary: { travelTimeInSeconds: 600, trafficDelayInSeconds: 30, lengthInMeters: 2600 },
+    legs: [{ points: Array.from({ length: 1000 }, (_, i) => ({ latitude: 3.15 + i * 1e-5, longitude: 101.7 })) }] };
+  const calls = tomtom(async () => {
+    const main = await tomtomRoute().json();
+    main.routes.push(alt);
+    return new Response(JSON.stringify(main), { status: 200 });
+  });
+  const body = await (await askPintu('/traffic', { method: 'POST', body: { points: ROUTE, better: true } })).json();
+  const q = new URL(calls[0].url).searchParams;
+  assert.equal(q.get('maxAlternatives'), '1');
+  assert.equal(q.get('alternativeType'), 'betterRoute');
+  assert.equal(q.get('minDeviationDistance'), '500');
+  assert.equal(body.better.travel, 600);
+  assert.equal(body.better.path.length, 600, 'thinned');
+  assert.deepEqual(body.better.path[0], [101.7, 3.15]);
+  assert.deepEqual(body.better.path[599], [101.7, 3.15999]);
+
+  // Not asked for: not looked for.
+  const plain = tomtom(tomtomRoute);
+  await askPintu('/traffic', { method: 'POST', body: { points: ROUTE } });
+  assert.equal(new URL(plain[0].url).searchParams.get('maxAlternatives'), null);
+});
+
+test('traffic: what a slow stretch is, from the causes TomTom gives', async () => {
+  const { kindOf } = await import('../server/tomtom.js');
+  const cause = (...c) => ({ simpleCategory: 'OTHER', tec: { causes: c.map(([mainCauseCode, subCauseCode]) => ({ mainCauseCode, subCauseCode })) } });
+  assert.equal(kindOf(cause([1], [2])), 'ACCIDENT');
+  assert.equal(kindOf(cause([5, 1])), 'FLOOD');
+  assert.equal(kindOf(cause([7])), 'FLOOD');
+  assert.equal(kindOf(cause([5, 4])), 'OTHER', 'a landslip is not a flood');
+  assert.equal(kindOf(cause([13])), 'BREAKDOWN');
+  assert.equal(kindOf(cause([10])), 'HAZARD');
+  assert.equal(kindOf({ simpleCategory: 'ROAD_CLOSURE', tec: { causes: [{ mainCauseCode: 2 }] } }), 'ROAD_CLOSURE');
+  assert.equal(kindOf({ simpleCategory: 'JAM' }), 'JAM');
+  assert.equal(kindOf({ simpleCategory: 'ROAD_WORK' }), 'ROAD_WORK');
+  assert.equal(kindOf({}), 'OTHER');
+});
+
+test('traffic: when to leave, to arrive at a time, from how traffic usually is', async () => {
+  const calls = tomtom(async () => {
+    const main = await tomtomRoute().json();
+    Object.assign(main.routes[0].summary, { departureTime: '2026-11-09T08:05:00+08:00', arrivalTime: '2026-11-09T09:00:00+08:00' });
+    return new Response(JSON.stringify(main), { status: 200 });
+  });
+  const body = await (await askPintu('/traffic', { method: 'POST', body: { points: ROUTE, arriveAt: '2026-11-09T09:00:00+08:00', better: true } })).json();
+  const q = new URL(calls[0].url).searchParams;
+  assert.equal(q.get('arriveAt'), '2026-11-09T09:00:00+08:00');
+  assert.equal(q.get('maxAlternatives'), null, 'TomTom takes one or the other');
+  assert.equal(body.leave, '2026-11-09T08:05:00+08:00');
+  // Anything else as a time is ignored rather than passed on.
+  const odd = tomtom(tomtomRoute);
+  await askPintu('/traffic', { method: 'POST', body: { points: ROUTE, arriveAt: 'tomorrow&key=x' } });
+  assert.equal(new URL(odd[0].url).searchParams.get('arriveAt'), null);
+});
+
+test('tiles: traffic colours and incidents come through, kept a minute, key never shown', async () => {
+  const store = new Map();
+  globalThis.caches = { default: {
+    match: async (req) => store.get(req.url)?.clone(),
+    put: async (req, res) => { store.set(req.url, res); },
+  } };
+  const calls = tomtom(() => new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+  let res = await askPintu('/tiles/flow/12/3245/2012.pbf');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'application/x-protobuf');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=60');
+  assert.equal(res.headers.get('access-control-allow-origin'), PINTU);
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [1, 2, 3]);
+  assert.match(calls[0].url, /^https:\/\/api\.tomtom\.com\/traffic\/map\/4\/tile\/flow\/relative\/12\/3245\/2012\.pbf\?key=/);
+  res = await askPintu('/tiles/flow/12/3245/2012.pbf');
+  assert.equal(calls.length, 1, 'the second look came from the cache');
+  res = await askPintu('/tiles/incidents/12/3245/2012.pbf');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=120');
+  assert.match(calls[1].url, /\/tile\/incidents\/12\/3245\/2012\.pbf/);
+  assert.equal((await askPintu('/tiles/flow/3/9/1.pbf')).status, 404, 'no such tile');
+  assert.equal((await askPintu('/tiles/other/3/1/1.pbf')).status, 404);
+  assert.equal((await askPintu('/tiles/flow/12/3245/2012.pbf', { origin: 'https://evil.example' })).status, 403);
+  // No key yet: an empty tile, so the map simply shows nothing.
+  store.clear();
+  assert.equal((await askPintu('/tiles/flow/12/3245/2012.pbf', { env: {} })).status, 204);
+  delete globalThis.caches;
+});
+
+test('speed limits: TomTom\'s roads along the route, joined into stretches', async () => {
+  const road = (coords, value, extra = {}) => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: { speedLimits: { value, unit: 'kmph', type: 'Maximum', ...extra } } });
+  const calls = tomtom(() => new Response(JSON.stringify({ route: [
+    road([[101.7, 3.15], [101.701, 3.15]], 60),
+    road([[101.701, 3.15], [101.703, 3.15]], 60),
+    road([[101.703, 3.15], [101.71, 3.15]], 90),
+    { type: 'Feature', geometry: { type: 'LineString', coordinates: [[101.71, 3.15], [101.71, 3.155]] }, properties: {} },
+    road([[101.71, 3.155], [101.71, 3.16]], 40, { type: 'Recommended' }),
+  ] }), { status: 200 }));
+  const body = await (await askPintu('/limits', { method: 'POST', body: { points: ROUTE } })).json();
+  assert.deepEqual(body.limits, [
+    { from: [101.7, 3.15], to: [101.703, 3.15], limit: 60 },
+    { from: [101.703, 3.15], to: [101.71, 3.15], limit: 90 },
+  ]);
+  const { url, method, body: sent } = calls[0];
+  assert.equal(method, 'POST');
+  assert.match(url, /^https:\/\/api\.tomtom\.com\/snapToRoads\/1\?/);
+  assert.match(new URL(url).searchParams.get('fields'), /speedLimits\{value,unit,type\}/);
+  assert.deepEqual(sent.points[0], { type: 'Feature', geometry: { type: 'Point', coordinates: [101.7, 3.15] }, properties: {} });
+});
+
+test('addresses: from TomTom, named the way people say them', async () => {
+  const calls = tomtom(() => new Response(JSON.stringify({ results: [
+    { type: 'Point Address', position: { lat: 3.1101, lon: 101.6205 }, address: { streetNumber: '12', streetName: 'Jalan SS 2/24', municipalitySubdivision: 'SS 2', municipality: 'Petaling Jaya', countrySubdivision: 'Selangor', countryCode: 'MY', freeformAddress: '12, Jalan SS 2/24, 47300 Petaling Jaya, Selangor' } },
+    { type: 'Geography', position: { lat: 3.07, lon: 101.6 }, address: { municipality: 'Subang Jaya', countrySubdivision: 'Selangor', countryCode: 'MY' } },
+    { type: 'Street' },
+  ] }), { status: 200 }));
+  const res = await askPintu('/geocode?q=12%20jalan%20ss2%2F24&lat=3.1&lon=101.6');
+  const { places } = await res.json();
+  assert.deepEqual(places, [
+    { name: '12 Jalan SS 2/24', detail: 'SS 2, Petaling Jaya, Selangor', lng: 101.6205, lat: 3.1101, type: 'Point Address', country: 'MY' },
+    { name: 'Subang Jaya', detail: 'Selangor', lng: 101.6, lat: 3.07, type: 'Geography', country: 'MY' },
+  ]);
+  const q = new URL(calls[0].url);
+  assert.match(q.pathname, /^\/search\/2\/geocode\/12%20jalan%20ss2%2F24\.json$/);
+  assert.equal(q.searchParams.get('countrySet'), 'MY,SG,BN');
+  assert.equal(q.searchParams.get('lat'), '3.1000');
+  assert.equal((await askPintu('/geocode?q=ab')).status, 400);
+});
+
+test('electric cars: where to charge, how long, and how full on arrival', async () => {
+  const calls = tomtom(() => new Response(JSON.stringify({ routes: [{
+    summary: { travelTimeInSeconds: 14400, totalChargingTimeInSeconds: 1800, remainingChargeAtArrivalInkWh: 9 },
+    legs: [
+      { summary: { remainingChargeAtArrivalInkWh: 7.5, chargingInformationAtEndOfLeg: {
+        chargingParkName: 'Gentari R&R Seremban', chargingParkOperatorName: 'Gentari', targetChargeInkWh: 48, chargingTimeInSeconds: 1500,
+        chargingParkLocation: { coordinate: { latitude: 2.71, longitude: 101.94 } }, chargingConnectionInfo: { chargingPowerInkW: 90 } } },
+        points: [{ latitude: 3.1, longitude: 101.7 }, { latitude: 2.7, longitude: 101.9 }] },
+      { summary: { remainingChargeAtArrivalInkWh: 9 }, points: [{ latitude: 2.7, longitude: 101.9 }, { latitude: 1.5, longitude: 103.7 }] },
+    ],
+  }] }), { status: 200 }));
+  const trip = { points: [[101.7, 3.1], [103.7, 1.5]], battery: 60, level: 80, consumption: 15, avoidTolls: true };
+  const body = await (await askPintu('/ev', { method: 'POST', body: trip })).json();
+  assert.deepEqual(body, {
+    stops: [{ name: 'Gentari R&R Seremban', operator: 'Gentari', lng: 101.94, lat: 2.71, minutes: 25, arrive: 13, to: 80, kw: 90, before: 0 }],
+    arrive: 15,
+    charging: 30,
+    travel: 14400,
+  });
+  const q = new URL(calls[0].url).searchParams;
+  assert.equal(q.get('currentChargeInkWh'), '48.0');
+  assert.equal(q.get('maxChargeInkWh'), '60.0');
+  assert.equal(q.get('minChargeAtDestinationInkWh'), '6.0');
+  assert.equal(q.get('avoid'), 'tollRoads');
+  assert.equal(q.get('constantSpeedConsumptionInkWhPerHundredkm'), '30,11.25:60,12.75:90,15.75:110,18.75:130,21.75');
+  assert.match(new URL(calls[0].url).pathname, /calculateLongDistanceEVRoute\/3\.10000,101\.70000:1\.50000,103\.70000\/json$/);
+  assert.ok(calls[0].body.chargingParameters.chargingConnectors.every((c) => c.plugTypes.includes('Combo_to_IEC_62196_Type_2_Base')));
+  assert.equal((await askPintu('/ev', { method: 'POST', body: { ...trip, battery: 'big' } })).status, 400);
+  tomtom(() => new Response('{"detailedError":{"message":"No route found"}}', { status: 400 }));
+  const none = await askPintu('/ev', { method: 'POST', body: trip });
+  assert.equal(none.status, 422);
+  assert.equal((await none.json()).error, 'no way to charge');
+});
+
+test('everything TomTom needs a key, and says so without one', async () => {
+  tomtom(tomtomRoute);
+  for (const [path, opts] of [['/limits', { method: 'POST', body: { points: ROUTE } }], ['/geocode?q=jalan%20ampang', {}], ['/ev', { method: 'POST', body: {} }]]) {
+    const res = await askPintu(path, { ...opts, env: {} });
+    assert.equal(res.status, 503, path);
+    assert.deepEqual(await res.json(), { error: 'no key' });
+  }
+});

@@ -48,6 +48,7 @@
   <div class="float-row">
     <button id="btn-settings" class="round" type="button"></button>
     <div class="float-col">
+      <button id="btn-traffic" class="round round-traffic" type="button" aria-pressed="false" hidden></button>
       <button id="btn-3d-idle" class="round round-text" type="button"></button>
       <button id="btn-locate" class="round" type="button"></button>
     </div>
@@ -128,6 +129,7 @@
       <div class="plan-main">
         <strong id="plan-fuel-title"></strong>
         <span id="plan-fuel-detail"></span>
+        <button id="plan-charge" class="plate plate-btn plate-small plan-charge" type="button" hidden></button>
         <div id="plan-level-row" class="level-row" hidden>
           <input id="plan-level" type="range" min="0" max="100" step="5">
           <output id="plan-level-value"></output>
@@ -226,6 +228,13 @@
     <button id="btn-mute" class="round" type="button"></button>
     <button id="btn-add-stop" class="round" type="button"></button>
     <button id="btn-recenter" class="round round-accent" type="button" hidden></button>
+  </div>
+  <div id="faster" class="refill faster" role="alert" hidden>
+    <p><strong id="faster-title"></strong><span id="faster-detail"></span></p>
+    <div class="resume-actions">
+      <button id="faster-no" class="link-btn" type="button"></button>
+      <button id="faster-yes" class="plate plate-btn plate-small" type="button"></button>
+    </div>
   </div>
   <div id="refill" class="refill" hidden>
     <p id="refill-text"></p>
@@ -559,6 +568,11 @@
         <input id="traffic-on" type="checkbox">
         <span class="switch-track" aria-hidden="true"></span>
         <span id="traffic-on-label"></span>
+      </label>
+      <label class="switch switch-block">
+        <input id="traffic-map-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="traffic-map-on-label"></span>
       </label>
     </div>
     <div class="setting">

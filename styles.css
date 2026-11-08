@@ -185,6 +185,9 @@ a { color: inherit; }
 .round svg { width: 27px; height: 27px; }
 .round.is-off { background: var(--yellow); color: var(--on-yellow); border-color: transparent; }
 .round-text { font-family: var(--condensed); font-size: 20px; font-weight: 800; }
+/* Traffic on the map: lit up in traffic-light colours while it's showing. */
+.round-traffic.is-on { color: #fff; background: #2B7A3D; border-color: transparent; }
+.round-traffic[hidden] { display: none; }
 .round-text.is-on { background: var(--sky); color: #06203F; border-color: transparent; }
 .round-accent { background: var(--blue); color: #fff; border-color: transparent; }
 .resume, .refill {
@@ -453,6 +456,10 @@ a { color: inherit; }
 .route-tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
 .route-tags:empty { display: none; }
 .tag { font-size: 14px; font-weight: 700; padding: 1px 9px; border-radius: 6px; background: var(--yellow); color: var(--on-yellow); }
+/* Traffic on each route choice. */
+.tag-slow { background: #C62828; color: #fff; }
+.tag-clear { background: var(--green); color: #fff; }
+.tag-best { background: var(--panel); color: var(--ink); box-shadow: inset 0 0 0 2px var(--green); }
 
 /* The trip at a glance: where you are, and what's coming */
 .strip { position: relative; height: 22px; }
@@ -684,6 +691,12 @@ a { color: inherit; }
   flex-direction: column;
   gap: 10px;
 }
+.faster p { display: flex; flex-direction: column; gap: 2px; }
+.faster strong { font-size: 18px; }
+.faster span { font-weight: 500; color: var(--mute); }
+.faster span[hidden] { display: none; }
+.plan-charge { margin-top: 8px; align-self: flex-start; }
+.plan-charge[hidden] { display: none; }
 .refill {
   position: fixed;
   left: calc(12px + var(--safe-l));
@@ -1153,6 +1166,10 @@ a { color: inherit; }
   box-shadow: var(--lift);
 }
 .jam-alert[data-kind="ROAD_WORK"] { background: #E8590C; }
+.jam-alert[data-kind="FLOOD"] { background: #1E6FD9; }
+.jam-alert[data-kind="BREAKDOWN"], .jam-alert[data-kind="HAZARD"] { background: #F2A51A; }
+.jam-alert.is-dark-ink { color: #1E1E1E; }
+.jam-alert.is-dark-ink .jam-delay { background: rgba(0, 0, 0, .14); }
 .jam-alert[hidden] { display: none; }
 .jam-icon { width: 24px; height: 24px; display: block; }
 .jam-icon svg { width: 24px; height: 24px; display: block; }

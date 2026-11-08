@@ -89,22 +89,47 @@ whole route when a trip starts (`js/cameras.js`). A camera counts if it's mapped
 route. The warning shows from 300 to 800 m ahead, depending on speed, and is said once. Only mapped
 cameras are known, so no warning never means no camera.
 
-## Traffic
+## Traffic and TomTom
 
-Live traffic comes from [TomTom](https://developer.tomtom.com) through the server's `/traffic`
-(`js/traffic.js`). When a trip starts, and every 3 minutes while driving, the rest of the route is
-sent as up to 1,500 points; TomTom follows it with today's traffic and answers with each slow stretch
-on it and the minutes it adds. Pintu then:
+Live traffic and a few other things come from [TomTom](https://developer.tomtom.com), always through
+the server so the key stays there (`server/tomtom.js`). The app side is `js/traffic.js`,
+`js/traffic-map.js` and `js/tomtom.js`. Everything is free within TomTom's monthly allowances.
 
-- shows the next one within 10 km on the driving screen and the HUD (red for a jam or a closed road,
-  orange for roadworks), counting down from inside it;
-- says it once, about 2.5 km before;
-- adds the delay still ahead to the arrival time.
+- **Traffic on the map.** Roads coloured by speed against normal (green, orange, red, dark red),
+  drawn on the side cars drive on, plus markers for accidents, floods, broken-down vehicles,
+  roadworks, lane and road closures. Tiles are asked for no closer than zoom 14 and stretched beyond,
+  and the server keeps each one a minute or two, which keeps requests down. While driving only the
+  slow parts are drawn. A button on the map and a switch in Settings turn it off.
+- **Jams and incidents on the route.** When a trip starts, and every 3 minutes while driving, the
+  rest of the route goes to TomTom as up to 1,500 points; TomTom follows it with today's traffic and
+  answers with each slow stretch and what caused it. The next one within 10 km shows on the driving
+  screen and the HUD, is said once about 2.5 km before, and its delay is added to the arrival time.
+  Holdups under a minute aren't mentioned, but accidents, floods, breakdowns, hazards and closures
+  always are.
+- **A quicker way round.** The same request asks TomTom for a better route that stays on the
+  current one for at least 500 m. If it saves 3 minutes and 8% of the trip or more, Pintu asks the
+  route planner to pass through points along TomTom's way (so turn-by-turn still comes from
+  OpenStreetMap), checks it's about as long, and offers it: "Laluan lebih cepat: jimat 12 min",
+  with Tukar and Kekal. Said no once, it only asks again if the saving grows by 5 minutes. Only on
+  trips with no stops still to come.
+- **Route choices with traffic.** Each option shows its time with today's traffic, tagged with the
+  delay or "Trafik lancar"; the quickest now is chosen unless you've already picked one. The
+  chosen route's traffic is used when the trip starts.
+- **Leave by, from usual traffic.** With an arrival time set, TomTom works out when to leave from
+  how traffic usually is at that hour.
+- **Speed limits.** Once per trip (at most three times, with new routes), TomTom's speed limits
+  along the route fill in wherever OpenStreetMap has none.
+- **Addresses.** Search also asks TomTom, which knows more Malaysian street addresses. When the
+  search looks like an address (a number, "Jalan", "Taman" and so on), its answers come first.
+- **Charging an electric car.** On a trip an electric car can't make in one go, "Rancang hentian
+  cas" asks TomTom where to charge, for how long, and to what level, arriving everywhere with at
+  least a tenth left. The chargers become stops on the trip. The battery size comes from the car's
+  saved range and consumption; Type 2 and CCS2 plugs are assumed, at up to 100 kW.
 
-Holdups under a minute aren't mentioned. A simulated drive asks once, at the start. It can be switched
-off in Settings. The free allowance is about 20,000 route checks a month (an hour's drive uses about 20).
-TomTom's coverage is best on highways and main city roads; it has accidents and roadworks, but not
-driver reports like Waze.
+A simulated drive asks for traffic once, at the start, and never for a quicker way. Traffic can be
+switched off in Settings. Free allowances per month: about 20,000 route checks, 2,500 speed-limit
+and charging plans, 20,000 address searches and 200,000 map tiles. TomTom's coverage is best on
+highways and main city roads; it has accidents and roadworks, but not driver reports like Waze.
 
 ## Tolls
 

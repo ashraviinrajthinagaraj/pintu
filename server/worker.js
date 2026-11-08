@@ -4,7 +4,8 @@
 //   /warnings      MET Malaysia's weather warnings
 //   /mall?id=…     the shop list from a mall's own directory
 //   /speak?…       a line spoken by a character's human-sounding voice
-//   /traffic       live traffic along a route, from TomTom (sent the route's points)
+//   /traffic, /tiles/…, /limits, /geocode, /ev   TomTom's traffic, speed limits,
+//                  addresses and electric car charging (see tomtom.js)
 //
 // It runs on Cloudflare Workers and keeps no records. It only ever answers
 // Pintu's own page, and only ever contacts the sites listed here, so it can't be
@@ -19,7 +20,9 @@
 // TOMTOM_API_KEY. Without one, /traffic says so and Pintu simply shows none.
 
 // Shown when the server's address is opened, so it's clear which code is running.
-const SERVER_VERSION = '2026-11-07.4';
+import { TOMTOM_POSTS, tomtomRoute, trafficCheck } from './tomtom.js';
+
+const SERVER_VERSION = '2026-11-08.1';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -36,10 +39,6 @@ const MALLS = {
 
 const AGENT = 'Mozilla/5.0 (compatible; PintuHelper/1.0)';
 
-const TOMTOM_ROUTE = 'https://api.tomtom.com/routing/1/calculateRoute/';
-export const TRAFFIC_MAX_POINTS = 2000;
-// A short drive in KL, only to check the key works.
-const TRAFFIC_CHECK = [[101.71230, 3.15790], [101.71800, 3.15900]];
 
 function reply(body, origin, status = 200, extra = {}) {
   return new Response(JSON.stringify(body), {
@@ -711,98 +710,6 @@ async function speakRoute(url, origin, env, ctx, request) {
   return new Response(clip.audio, { headers: headers(clip.type) });
 }
 
-/* ---------- Traffic, from TomTom ---------- */
-
-const loc = ([lng, lat]) => `${lat.toFixed(5)},${lng.toFixed(5)}`;
-const round5 = (n) => Math.round(n * 1e5) / 1e5;
-
-function routePoints(raw) {
-  if (!Array.isArray(raw) || raw.length < 2 || raw.length > TRAFFIC_MAX_POINTS) return null;
-  for (const p of raw) {
-    if (!Array.isArray(p) || p.length < 2 || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return null;
-    if (Math.abs(p[0]) > 180 || Math.abs(p[1]) > 90) return null;
-  }
-  return raw.map((p) => [p[0], p[1]]);
-}
-
-// Asks TomTom to follow Pintu's own route point by point, with today's traffic,
-// and keeps only what Pintu shows: each slow stretch's ends and what it costs.
-export async function askTomTom(points, key, fetchImpl = fetch) {
-  const query = new URLSearchParams({
-    key,
-    traffic: 'true',
-    sectionType: 'traffic',
-    routeRepresentation: 'polyline',
-    computeTravelTimeFor: 'all',
-    travelMode: 'car',
-  });
-  const url = `${TOMTOM_ROUTE}${loc(points[0])}:${loc(points[points.length - 1])}/json?${query}`;
-  const init = points.length > 2
-    ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ supportingPoints: points.map(([lng, lat]) => ({ latitude: lat, longitude: lng })) }) }
-    : { method: 'GET' };
-  const res = await fetchImpl(url, init);
-  if (!res.ok) {
-    let why = '';
-    try {
-      const raw = await res.text();
-      try { why = JSON.parse(raw)?.detailedError?.message || raw; } catch { why = raw; }
-      why = String(why).slice(0, 160);
-    } catch { /* none given */ }
-    if (res.status === 401 || res.status === 403) return { status: 503, body: { error: 'key refused', why } };
-    if (res.status === 429) return { status: 429, body: { error: 'busy' } };
-    if (res.status === 400) return { status: 422, body: { error: 'could not follow the route', why } };
-    return { status: 502, body: { error: 'traffic unavailable' } };
-  }
-  const json = await res.json();
-  const route = json.routes?.[0];
-  if (!route) return { status: 502, body: { error: 'traffic unavailable' } };
-  const along = (route.legs || []).flatMap((leg) => leg.points || []);
-  const at = (i) => (along[i] ? [round5(along[i].longitude), round5(along[i].latitude)] : null);
-  const jams = [];
-  for (const sec of route.sections || []) {
-    if (sec.sectionType !== 'TRAFFIC') continue;
-    const from = at(sec.startPointIndex), to = at(sec.endPointIndex);
-    if (!from || !to) continue;
-    jams.push({
-      from,
-      to,
-      delay: Math.max(0, Math.round(sec.delayInSeconds ?? 0)),
-      speed: Number.isFinite(sec.effectiveSpeedInKmh) ? sec.effectiveSpeedInKmh : null,
-      kind: ['JAM', 'ROAD_WORK', 'ROAD_CLOSURE'].includes(sec.simpleCategory) ? sec.simpleCategory : 'OTHER',
-      size: Number.isFinite(sec.magnitudeOfDelay) ? sec.magnitudeOfDelay : null,
-    });
-  }
-  const sum = route.summary || {};
-  return {
-    status: 200,
-    body: { delay: Math.max(0, Math.round(sum.trafficDelayInSeconds ?? 0)), travel: sum.travelTimeInSeconds ?? null, length: sum.lengthInMeters ?? null, jams },
-  };
-}
-
-// Opening /traffic?check=1 in a browser says whether traffic works, and nothing more.
-async function trafficCheck(env) {
-  const text = (body) => new Response(body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
-  if (!env?.TOMTOM_API_KEY) return text('Traffic: no TomTom key yet. Add TOMTOM_API_KEY as a secret.');
-  const result = await askTomTom(TRAFFIC_CHECK, env.TOMTOM_API_KEY);
-  if (result.status === 200) return text(`Traffic: working. A test drive in KL came back with ${result.body.jams.length} slow stretch(es).`);
-  if (result.status === 503) return text(`Traffic: TomTom refused the key. ${result.body.why || ''}`.trim());
-  if (result.status === 429) return text('Traffic: the key works, but TomTom says it is busy or the allowance is used up.');
-  return text('Traffic: TomTom did not answer properly. Try again in a minute.');
-}
-
-async function trafficRoute(request, origin, env) {
-  if (!env?.TOMTOM_API_KEY) return reply({ error: 'no key' }, origin, 503);
-  if (request.method !== 'POST') return reply({ error: 'send the route' }, origin, 405);
-  let points = null;
-  try {
-    const raw = await request.text();
-    if (raw.length < 400000) points = routePoints(JSON.parse(raw).points);
-  } catch { /* not a route */ }
-  if (!points) return reply({ error: 'not a route' }, origin, 400);
-  const result = await askTomTom(points, env.TOMTOM_API_KEY);
-  return reply(result.body, origin, result.status, { 'cache-control': 'no-store' });
-}
-
 async function handle(request, origin, env, ctx) {
   const url = new URL(request.url);
 
@@ -830,7 +737,8 @@ async function handle(request, origin, env, ctx) {
 
   if (url.pathname === '/speak') return speakRoute(url, origin, env, ctx, request);
 
-  if (url.pathname === '/traffic') return trafficRoute(request, origin, env);
+  const tomtom = await tomtomRoute(request, url, origin, env, ctx, reply);
+  if (tomtom) return tomtom;
 
   return reply({ error: 'not found' }, origin, 404);
 }
@@ -853,7 +761,7 @@ export default {
     }
     // The route for traffic is sent as plain text, which a page can do without
     // asking first; everything else only reads.
-    const posting = request.method === 'POST' && url.pathname === '/traffic';
+    const posting = request.method === 'POST' && TOMTOM_POSTS.includes(url.pathname);
     if (request.method !== 'GET' && !posting) return new Response('Not allowed', { status: 405 });
 
     try {

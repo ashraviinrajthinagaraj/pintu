@@ -19,12 +19,16 @@ let nextRouteId = 1;
 
 const COSTING = { car: 'auto', motorcycle: 'motorcycle', walk: 'pedestrian' };
 
-function buildBody({ from, to, stops = [], mode, avoidTolls, heading, alternates }) {
+function buildBody({ from, to, stops = [], through = [], mode, avoidTolls, heading, alternates }) {
   const start = { lat: from.lat, lon: from.lng, type: 'break' };
   if (heading != null) { start.heading = Math.round(heading); start.heading_tolerance = 45; }
+  // Points to pass on the way without stopping, facing the way the road goes,
+  // so a point on a highway isn't taken as the road beside it.
+  const via = through.map((p) => ({ lat: p.lat, lon: p.lng, type: 'through', ...(p.heading != null ? { heading: Math.round(p.heading), heading_tolerance: 60 } : {}) }));
   const body = {
     locations: [
       start,
+      ...via,
       ...stops.map((p) => ({ lat: p.lat, lon: p.lng, type: 'break' })),
       { lat: to.lat, lon: to.lng, type: 'break' },
     ],
@@ -34,7 +38,7 @@ function buildBody({ from, to, stops = [], mode, avoidTolls, heading, alternates
     turn_lanes: true,
   };
   // Valhalla can't offer alternatives once a route has stops.
-  if (alternates && !stops.length) body.alternates = alternates;
+  if (alternates && !stops.length && !through.length) body.alternates = alternates;
   if (mode === 'car' && avoidTolls) body.costing_options = { auto: { use_tolls: 0 } };
   return body;
 }

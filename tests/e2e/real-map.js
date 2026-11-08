@@ -101,7 +101,7 @@ const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, { poi: POIS.filter((p
   return Math.floor(tx) === x && Math.floor(ty) === y;
 }) });
 
-async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [] }) {
+async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: 'block', locale: 'ms-MY', timezoneId: 'Asia/Kuala_Lumpur' });
   const errors = [];
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -120,6 +120,20 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
         return route.fulfill({ body: Buffer.from(tileBytes({ z, x, y })), contentType: 'application/x-protobuf', headers: CORS });
       }
       return route.fulfill({ status: 204, headers: CORS });
+    }
+    // Pintu's own server: TomTom's tiles when a test gives some, otherwise
+    // nothing, as with no TomTom key.
+    if (host.endsWith('.workers.dev')) {
+      const path = new URL(url).pathname;
+      const t = path.match(/^\/tiles\/(flow|incidents)\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+      if (t) {
+        const [z, x, y] = t.slice(2).map(Number);
+        const layers = traffic?.[t[1]]?.({ z, x, y });
+        if (!layers) return route.fulfill({ status: 204, headers: CORS });
+        return route.fulfill({ body: Buffer.from(encodeTile({ z, x, y }, layers)), contentType: 'application/x-protobuf', headers: CORS });
+      }
+      if (path === '/traffic') return route.fulfill({ json: { delay: 0, jams: [] }, headers: CORS });
+      return route.fulfill({ status: 503, json: { error: 'no key' }, headers: CORS });
     }
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
     if (host === 'api.stadiamaps.com') return route.fulfill({ status: 401, json: {}, headers: CORS });
@@ -491,6 +505,32 @@ await check('real library: tapping a place on the map opens its card', async () 
   assert.equal(await page.locator('#placecard-name').innerText(), 'Petronas Dari Peta');
   assert.match(await page.locator('#placecard-detail').innerText(), /Stesen minyak/);
   await page.screenshot({ path: `${shots}/r-place-card.png` });
+  await ctx.close();
+  assert.deepEqual(errors, []);
+});
+
+await check('real library: TomTom\'s traffic colours and incident markers draw', async () => {
+  // A slow stretch along Jalan Ampang, one side only, and a flood beside it.
+  const road = [[101.700, 3.1500], [101.705, 3.1500], [101.710, 3.1500]];
+  const traffic = {
+    flow: () => ({ 'Traffic flow': [
+      { line: road, props: { road_type: 'Major road', traffic_level: 0.18, traffic_road_coverage: 'one_side', left_hand_traffic: true } },
+      { line: [[101.700, 3.1530], [101.710, 3.1530]], props: { road_type: 'Major road', traffic_level: 0.95, traffic_road_coverage: 'full' } },
+    ] }),
+    incidents: () => ({ 'Traffic incident POI': [
+      { lng: 101.7046, lat: 3.1507, props: { icon_category: 11, magnitude: 3, poi_type: 'standalone_poi' } },
+      { lng: 101.7060, lat: 3.1507, props: { icon_category: 6, magnitude: 2, poi_type: 'standalone_poi' } },
+    ] }),
+  };
+  const { ctx, page, errors } = await open(browser, { styleFor: demoCity, traffic });
+  await page.evaluate(() => window.__map.jumpTo({ center: [101.705, 3.1512], zoom: 15 }));
+  await page.waitForFunction(() => window.__map.getLayer('pintu-flow') && window.__map.queryRenderedFeatures({ layers: ['pintu-flow'] }).length >= 2, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__map.queryRenderedFeatures({ layers: ['pintu-incidents'] }).length > 0, null, { timeout: 15000 });
+  const incidents = await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-incidents'] }).map((f) => f.properties.icon_category));
+  assert.deepEqual(incidents, [11], 'a flood shows; a jam is left to the colours');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${shots}/real-traffic.png` });
+  assert.deepEqual(await page.evaluate(() => window.__mapErrors), []);
   await ctx.close();
   assert.deepEqual(errors, []);
 });

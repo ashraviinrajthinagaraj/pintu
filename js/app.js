@@ -18,7 +18,8 @@ import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
-import { JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fetchTraffic, jamAhead } from './traffic.js';
+import { ALWAYS_SAY, JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fasterSaving, fetchTraffic, jamAhead, throughPoints } from './traffic.js';
+import { evCar, fetchLimits, mergeResults, planCharging, searchAddresses } from './tomtom.js';
 import { findParking } from './parking.js';
 import { leaveBy } from './leaveby.js';
 import { JUNCTION_RANGE, junctionFor, junctionSvg } from './junction.js';
@@ -26,7 +27,7 @@ import { kindLabel } from './kinds.js';
 import { NEARBY_ORDER, findNearby } from './nearby.js';
 import { parseLocationText, readResolved, resolveShortLink } from './links.js';
 import { fetchShops, mallFor, searchShops } from './malls.js';
-import { reversePlace, searchPlaces } from './search.js';
+import { parseCoordinates, reversePlace, searchPlaces } from './search.js';
 import { load, remove, save } from './store.js';
 import { DEFAULT_LOOKS, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from './vehicle.js';
 import { initVehicleUI } from './vehicle-ui.js';
@@ -65,7 +66,7 @@ const RAIN_SAY_M = 15000;
 const HUD_CONTROLS_MS = 6000;
 const HUD_BAR_M = 500;         // the bar fills over the last stretch before a turn
 const HUD_INKS = ['white', 'green', 'blue', 'amber'];
-const JAM_ICONS = { JAM: 'car', OTHER: 'car', ROAD_WORK: 'cone', ROAD_CLOSURE: 'closed' };
+const JAM_ICONS = { JAM: 'car', OTHER: 'car', ROAD_WORK: 'cone', ROAD_CLOSURE: 'closed', ACCIDENT: 'crash', FLOOD: 'waves', BREAKDOWN: 'hazard', HAZARD: 'hazard' };
 const DRIVE_TIME_SAVE_MS = 30000;
 const TRAFFIC_AGAIN_MS = 30000;      // after a new route, ask again this soon at the earliest
 
@@ -83,7 +84,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -258,6 +259,10 @@ function applyStaticText() {
   $('set-traffic-title').textContent = t('setTraffic');
   $('traffic-text').textContent = t('trafficText');
   $('traffic-on-label').textContent = t('trafficOn');
+  $('traffic-map-on-label').textContent = t('trafficMapOn');
+  label($('btn-traffic'), t('trafficMapBtn'), UI.trafficLight);
+  $('faster-yes').textContent = t('fasterYes');
+  $('faster-no').textContent = t('fasterNo');
   $('camera-icon').innerHTML = UI.camera;
   $('set-saved-title').textContent = t('setSavedTitle');
   $('set-saved-text').textContent = t('setSavedText');
@@ -397,6 +402,8 @@ function renderSegments() {
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
   $('traffic-on').checked = S.settings.traffic;
+  $('traffic-map-on').checked = S.settings.trafficMap;
+  $('traffic-map-on').disabled = !S.settings.traffic;
   $('weather-on').checked = S.settings.weather;
   set('lang-ms', S.settings.lang === 'ms');
   set('lang-en', S.settings.lang === 'en');
@@ -456,6 +463,27 @@ const IDLE_SHEETS = new Set(['explore', 'placecard', 'car']);
 function show(view) {
   S.view = view;
   render();
+  syncTrafficMap();
+}
+
+/* ---------- Traffic on the map ---------- */
+
+const trafficMapOn = () => !!(CONFIG.server && S.settings.traffic && S.settings.trafficMap);
+
+function syncTrafficMap() {
+  mapView?.setTraffic(trafficMapOn(), S.view === 'nav');
+  const btn = $('btn-traffic');
+  if (!btn) return;
+  btn.hidden = !(CONFIG.server && S.settings.traffic);
+  btn.setAttribute('aria-pressed', String(trafficMapOn()));
+  btn.classList.toggle('is-on', trafficMapOn());
+}
+
+function toggleTrafficMap() {
+  setSetting('trafficMap', !S.settings.trafficMap);
+  $('traffic-map-on').checked = S.settings.trafficMap;
+  syncTrafficMap();
+  toast(t(S.settings.trafficMap ? 'trafficMapShown' : 'trafficMapHidden'));
 }
 
 function render() {
@@ -971,8 +999,16 @@ async function runSearch(q) {
   const ctrl = new AbortController();
   S.searchCtrl = ctrl;
   try {
-    const results = await searchPlaces(q, { near: S.fix, signal: ctrl.signal });
+    // Places by name from the usual search, street addresses from TomTom.
+    let failed = null;
+    const named = searchPlaces(q, { near: S.fix, signal: ctrl.signal }).catch((e) => { failed = e; return []; });
+    const addresses = CONFIG.server && q.length >= 4 && !parseCoordinates(q)
+      ? searchAddresses(q, S.fix, { signal: ctrl.signal }).catch(() => [])
+      : Promise.resolve([]);
+    const [a, b] = await Promise.all([named, addresses]);
     if (ctrl.signal.aborted) return;
+    if (failed && !b.length) throw failed;
+    const results = mergeResults(a, b, q);
     $('search-status').textContent = results.length ? '' : t('noResults', { q });
     renderSearch(results);
   } catch {
@@ -1135,6 +1171,7 @@ function openPreview(place, { keepParking = false } = {}) {
   S.dest = place;
   S.routes = [];
   S.selected = 0;
+  if (!S.stops.some((st) => st.charge)) S.evPlan = null;
   mapView?.setDestination(place);
   mapView?.clearRoutes();
   mapView?.setStopPins(stopPins());
@@ -1226,8 +1263,10 @@ async function loadRoutes() {
     if (ctrl.signal.aborted) return;
     S.routes = routes;
     S.selected = 0;
+    S.routePicked = false;
     S.routeState = 'ready';
     renderRoutes();
+    loadRouteTraffic(routes);
     if (S.startWhenRouted) {
       S.startWhenRouted = false;
       S.route = routes[0];
@@ -1243,6 +1282,37 @@ async function loadRoutes() {
     S.routeError = routeErrorKey(err);
     renderRoutes();
   }
+}
+
+/* ---------- Traffic for each route choice ---------- */
+
+const withTraffic = (r) => r.time + (r.traffic?.delay || 0);
+
+function fastestNow(routes) {
+  let best = 0;
+  routes.forEach((r, i) => { if (withTraffic(r) < withTraffic(routes[best])) best = i; });
+  return best;
+}
+
+function loadRouteTraffic(routes) {
+  S.optionTrafficCtrl?.abort();
+  if (!CONFIG.server || !S.settings.traffic || S.mode === 'walk' || S.noTrafficKey) return;
+  const ctrl = new AbortController();
+  S.optionTrafficCtrl = ctrl;
+  const each = (r) => fetchTraffic(r, 0, { signal: ctrl.signal }).then((tr) => { r.traffic = tr; }).catch((e) => {
+    // The server has no TomTom key: no point asking again this time round.
+    if (e?.kind === 'no key') S.noTrafficKey = true;
+  });
+  Promise.all(routes.map(each)).then(() => {
+    if (ctrl.signal.aborted || S.routes !== routes || S.view !== 'preview') return;
+    // Unless you've already picked one, the quickest right now is chosen for you.
+    const best = fastestNow(routes);
+    if (!S.routePicked && best !== S.selected && withTraffic(routes[S.selected]) - withTraffic(routes[best]) >= 120) {
+      S.selected = best;
+      mapView?.showRoutes(routes, best);
+    }
+    renderRoutes();
+  });
 }
 
 function routeErrorKey(err) {
@@ -1286,7 +1356,7 @@ function renderRoutes() {
     btn.setAttribute('aria-checked', String(i === S.selected));
     const time = document.createElement('span');
     time.className = 'route-time';
-    time.textContent = fmtDuration(r.time, getLang());
+    time.textContent = fmtDuration(withTraffic(r), getLang());
     const dist = document.createElement('span');
     dist.className = 'route-dist';
     dist.textContent = fmtDistance(r.distanceKm * 1000);
@@ -1302,6 +1372,11 @@ function renderRoutes() {
     // Motorcycles don't pay tolls in Malaysia, so the tag would only mislead.
     if (r.hasToll && S.mode !== 'motorcycle') tags.append(tag(r.tollKm >= 1 ? t('tollKm', { km: kmText(r.tollKm) }) : t('tollStill')));
     if (r.hasFerry) tags.append(tag(t('ferry')));
+    if (r.traffic) {
+      const slow = r.traffic.delay >= 120;
+      tags.append(tag(slow ? t('trafficDelayTag', { time: fmtDuration(r.traffic.delay, getLang()) }) : t('trafficClearTag'), slow ? 'tag-slow' : 'tag-clear'));
+      if (S.routes.length > 1 && S.routes.every((x) => x.traffic) && i === fastestNow(S.routes)) tags.append(tag(t('fastestNow'), 'tag-best'));
+    }
     btn.append(tags);
     btn.addEventListener('click', () => selectRoute(i));
     li.append(btn);
@@ -1316,9 +1391,9 @@ function renderRoutes() {
   updateBottomInset();
 }
 
-function tag(text) {
+function tag(text, kind = '') {
   const el = document.createElement('span');
-  el.className = 'tag';
+  el.className = kind ? `tag ${kind}` : 'tag';
   el.textContent = text;
   return el;
 }
@@ -1326,6 +1401,7 @@ function tag(text) {
 function selectRoute(i) {
   if (!S.routes[i]) return;
   S.selected = i;
+  S.routePicked = true;
   renderRoutes();
   mapView?.showRoutes(S.routes, i);
 }
@@ -1355,12 +1431,19 @@ function renderPlan() {
     const name = document.createElement('strong');
     name.textContent = stop.name;
     main.append(name);
+    if (stop.charge) {
+      const more = document.createElement('span');
+      const c = stop.charge;
+      more.textContent = t('evStopDetail', { time: c.minutes ? fmtDuration(c.minutes * 60, getLang()) : '?', to: c.to ?? '?', arrive: c.arrive ?? '?' });
+      main.append(more);
+    }
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'icon-btn';
     label(removeBtn, t('removeStop', { name: stop.name }), UI.close);
     removeBtn.addEventListener('click', () => {
       S.stops.splice(i, 1);
+      if (!S.stops.some((st) => st.charge)) S.evPlan = null;
       mapView?.setStopPins(stopPins());
       loadRoutes();
     });
@@ -1387,6 +1470,7 @@ function renderPlanFuel(route) {
   $('plan-fuel-icon').innerHTML = kind === 'ev' ? UI.ev : UI.fuel;
   $('plan-fuel-edit').textContent = t(v ? 'vehEditBtn' : 'vehAddBtn');
   $('plan-level-row').hidden = !v?.range;
+  $('plan-charge').hidden = true;
   row.classList.remove('is-short');
   if (!v) {
     $('plan-fuel-title').textContent = t('vehAdd');
@@ -1409,18 +1493,96 @@ function renderPlanFuel(route) {
   } else if (plan.status === 'short') {
     detail = plan.refillWithinKm > 1 ? t('planShort', { refill, km: kmText(plan.refillWithinKm) }) : t('planShortNow', { refill });
   } else detail = t('planNoRange', { refill });
+  // An electric car on a trip it can't make in one go: TomTom can say where to charge.
+  const charging = S.stops.some((st) => st.charge);
+  if (charging && S.evPlan) {
+    detail = t('evArrive', { pct: S.evPlan.arrive ?? '?', time: fmtDuration(S.evPlan.charging * 60, getLang()) });
+  }
+  const canPlan = v.kind === 'ev' && !!CONFIG.server && !!evCar(v) && !charging && (plan.status === 'short' || plan.status === 'tight');
+  $('plan-charge').hidden = !canPlan;
+  $('plan-charge').textContent = t(S.evPlanning ? 'evPlanning' : 'evPlan');
+  $('plan-charge').disabled = !!S.evPlanning;
   $('plan-fuel-detail').textContent = detail;
-  row.classList.toggle('is-short', plan.status === 'short' || plan.status === 'tight');
+  row.classList.toggle('is-short', !charging && (plan.status === 'short' || plan.status === 'tight'));
   $('plan-level').value = String(v.level);
   $('plan-level-value').textContent = `${v.level}%`;
 }
 
+/* ---------- Charging stops for an electric car ---------- */
+
+const chargeStop = (c) => ({
+  name: c.name || t('evStopName'),
+  lng: c.lng,
+  lat: c.lat,
+  category: 'ev',
+  charge: { minutes: c.minutes, to: c.to, arrive: c.arrive },
+});
+
+async function planChargingStops() {
+  const car = evCar(vehicle());
+  const from = S.start || S.fix;
+  if (!car || !from || S.evPlanning) return;
+  S.evPlanning = true;
+  renderPlanFuel(S.routes[S.selected]);
+  try {
+    const own = S.stops.filter((st) => !st.charge);
+    const res = await planCharging({ from, to: routeEnd(), stops: own, car, avoidTolls: S.avoidTolls });
+    if (S.view !== 'preview') return;
+    if (!res.stops?.length) {
+      toast(t('evNoneNeeded', { pct: res.arrive ?? '?' }));
+      return;
+    }
+    // Each charger goes before whichever of your own stops comes next.
+    const next = [];
+    own.forEach((st, i) => {
+      next.push(...res.stops.filter((c) => c.before === i).map(chargeStop), st);
+    });
+    next.push(...res.stops.filter((c) => c.before >= own.length).map(chargeStop));
+    S.stops = next;
+    S.evPlan = { arrive: res.arrive, charging: res.charging || 0 };
+    mapView?.setStopPins(stopPins());
+    toast(t('evPlanned', { n: res.stops.length }));
+    loadRoutes();
+  } catch (e) {
+    toast(t(e?.kind === 'no way to charge' ? 'evNoWay' : 'evFailed'));
+  } finally {
+    S.evPlanning = false;
+    if (S.view === 'preview' && S.routes[S.selected]) renderPlanFuel(S.routes[S.selected]);
+  }
+}
+
 /* ---------- Leaving on time ---------- */
+
+// When to leave, from how traffic usually is at that hour, as TomTom knows it.
+function askLeave(route, arrive, key) {
+  clearTimeout(S.leaveTimer);
+  S.leaveAsk = { key, leave: null };
+  S.leaveTimer = setTimeout(() => {
+    fetchTraffic(route, 0, { arriveAt: arrive }).then((tr) => {
+      if (S.leaveAsk?.key !== key || !tr.leave || Number.isNaN(tr.leave.getTime())) return;
+      S.leaveAsk.leave = tr.leave;
+      if (S.view === 'preview' && S.routes[S.selected] === route) renderPlanArrive(route);
+    }).catch(() => { /* the plain estimate stands */ });
+  }, 700);
+}
 
 function renderPlanArrive(route) {
   const lang = getLang();
   const time = $('plan-arrive-time').value;
-  const plan = route ? leaveBy(Date.now(), time, route.time) : null;
+  const now = Date.now();
+  const plan = route ? leaveBy(now, time, withTraffic(route)) : null;
+  let usual = false;
+  if (plan && CONFIG.server && S.settings.traffic && S.mode !== 'walk') {
+    const key = `${route.id}|${time}|${plan.arrive.getTime()}`;
+    const known = S.leaveAsk?.key === key ? S.leaveAsk.leave : null;
+    if (known) {
+      const travel = (plan.arrive.getTime() - known.getTime()) / 1000;
+      Object.assign(plan, { leave: known, late: known.getTime() < now, lateBy: Math.max(0, (now - known.getTime()) / 1000), arriveIfNow: new Date(now + travel * 1000) });
+      usual = true;
+    } else if (S.leaveAsk?.key !== key) {
+      askLeave(route, plan.arrive, key);
+    }
+  }
   const clock = (date, tomorrow) => `${fmtClock(date, lang)}${tomorrow ? ` ${t('tomorrow')}` : ''}`;
   if (!plan) {
     $('plan-arrive-title').textContent = t('arriveTitle');
@@ -1430,7 +1592,7 @@ function renderPlanArrive(route) {
     $('plan-arrive-detail').textContent = t('leaveLateDetail', { clock: fmtClock(plan.arriveIfNow, lang) });
   } else {
     $('plan-arrive-title').textContent = t('leaveBy', { clock: clock(plan.leave, plan.leave.getDate() !== new Date().getDate()) });
-    $('plan-arrive-detail').textContent = t('leaveByDetail', { clock: clock(plan.arrive, plan.tomorrow) });
+    $('plan-arrive-detail').textContent = t(usual ? 'leaveByUsual' : 'leaveByDetail', { clock: clock(plan.arrive, plan.tomorrow) });
   }
   $('plan-arrive').classList.toggle('is-late', !!plan?.late);
 }
@@ -2170,11 +2332,17 @@ function startGuidance({ simulate }) {
   S.tolls = [];
   S.tollFetchedAt = 0;
   loadTolls(S.route);
-  S.traffic = null;
-  S.trafficAt = 0;
+  // Traffic looked up while choosing the route needn't be asked for again yet.
+  S.traffic = S.route.traffic?.from === 0 && S.mode !== 'walk' ? S.route.traffic : null;
+  S.trafficAt = S.traffic ? S.traffic.at : 0;
   S.trafficStopped = false;
   S.jamsSaid = new Set();
+  S.faster = null;
+  S.fasterDeclined = null;
+  renderFaster();
   loadTraffic();
+  S.limitAsks = 0;
+  loadLimits(S.route);
   $('camera-alert').hidden = true;
   $('junction').hidden = true;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
@@ -2485,7 +2653,7 @@ function renderEta(st) {
 
 function currentLimit(st) {
   if (S.mode === 'walk' || !S.settings.speedLimit || !st.onRoute) return null;
-  return limitAt(S.laneFetch?.limits, st.s);
+  return limitAt(S.laneFetch?.limits, st.s) ?? limitAt(S.ttLimits, st.s);
 }
 
 function renderSpeed(fix, st) {
@@ -2523,15 +2691,19 @@ function loadCameras(route) {
 /* ---------- Live traffic, from TomTom ---------- */
 
 function loadTraffic() {
-  if (!S.settings.traffic || S.trafficStopped || S.mode === 'walk' || !S.route || S.trafficCtrl) return;
+  if (!S.settings.traffic || S.trafficStopped || S.noTrafficKey || S.mode === 'walk' || !S.route || S.trafficCtrl) return;
   const route = S.route;
   const from = S.lastState?.onRoute ? S.lastState.s : 0;
   const ctrl = new AbortController();
   S.trafficCtrl = ctrl;
   S.trafficAt = Date.now();
   const timer = setTimeout(() => ctrl.abort(), 20000);
-  fetchTraffic(route, from, { signal: ctrl.signal }).then((traffic) => {
-    if (S.route === route) S.traffic = traffic;
+  // A quicker way is looked for only on a straight trip to one place.
+  const better = !S.sim && S.mode !== 'walk' && !S.stops.length;
+  fetchTraffic(route, from, { better, signal: ctrl.signal }).then((traffic) => {
+    if (S.route !== route) return;
+    S.traffic = traffic;
+    considerFaster();
   }).catch((e) => {
     // No key, or a key TomTom won't take: stop asking for this trip.
     if (e?.kind === 'no key' || e?.kind === 'key refused') S.trafficStopped = true;
@@ -2539,6 +2711,82 @@ function loadTraffic() {
     clearTimeout(timer);
     if (S.trafficCtrl === ctrl) S.trafficCtrl = null;
   });
+}
+
+const FASTER_OFFER_MS = 30000;
+
+async function considerFaster() {
+  const traffic = S.traffic;
+  const saving = fasterSaving(traffic);
+  if (!saving || S.faster || S.fasterBusy || !S.fix) return;
+  // Said no already: only ask again if it's become clearly better still.
+  if (S.fasterDeclined != null && saving < S.fasterDeclined + 300) return;
+  const through = throughPoints(traffic.better.path);
+  if (!through.length) return;
+  S.fasterBusy = true;
+  try {
+    const fix = S.fix;
+    const [route] = await fetchRoutes({
+      from: fix, to: routeEnd(), through, mode: S.mode, avoidTolls: S.avoidTolls,
+      heading: (fix.speed ?? 0) > 3 ? fix.heading : null,
+    });
+    if (S.view !== 'nav' || S.traffic !== traffic) return;
+    // It should follow TomTom's roads: about as long, not a detour of its own.
+    const expected = traffic.better.length;
+    if (expected && Math.abs(route.length - expected) > Math.max(1500, expected * 0.12)) return;
+    S.faster = { route, saving };
+    renderFaster();
+    clearTimeout(S.fasterTimer);
+    S.fasterTimer = setTimeout(() => dismissFaster(), FASTER_OFFER_MS);
+    if (S.settings.voiceLevel === 'full') speakText(t('fasterSay', { time: sayDuration(saving, getLang()) }), { wait: voice.WAIT_NORMAL_MS });
+  } catch { /* stay on the current route */ } finally {
+    S.fasterBusy = false;
+  }
+}
+
+function renderFaster() {
+  const box = $('faster');
+  box.hidden = !S.faster;
+  if (!S.faster) return;
+  const lang = getLang();
+  $('faster-title').textContent = t('fasterTitle', { time: fmtDuration(S.faster.saving, lang) });
+  const via = S.faster.route.via?.length ? t('via', { road: S.faster.route.via.slice(0, 2).join(', ') }) : '';
+  $('faster-detail').textContent = via;
+  $('faster-detail').hidden = !via;
+}
+
+function dismissFaster() {
+  clearTimeout(S.fasterTimer);
+  S.faster = null;
+  renderFaster();
+}
+
+function acceptFaster() {
+  const offer = S.faster;
+  if (!offer) return;
+  dismissFaster();
+  useRoute(offer.route);
+  toast(t('fasterTaken', { time: fmtDuration(offer.saving, getLang()) }));
+}
+
+function declineFaster() {
+  if (S.faster) S.fasterDeclined = S.faster.saving;
+  dismissFaster();
+}
+
+/* ---------- Speed limits from TomTom ---------- */
+
+// OpenStreetMap's limits come first where they're mapped; TomTom fills the gaps.
+function loadLimits(route) {
+  S.limitsCtrl?.abort();
+  S.ttLimits = [];
+  if (!CONFIG.server || S.mode === 'walk' || !S.settings.speedLimit || (S.limitAsks || 0) >= 3) return;
+  S.limitAsks = (S.limitAsks || 0) + 1;
+  const ctrl = new AbortController();
+  S.limitsCtrl = ctrl;
+  fetchLimits(route, { signal: ctrl.signal }).then((limits) => {
+    if (S.route === route) S.ttLimits = limits;
+  }).catch(() => { /* only OpenStreetMap's, then */ });
 }
 
 function jamWords(near, lang) {
@@ -2557,6 +2805,7 @@ function renderJam(st) {
   $('jam-icon').innerHTML = UI[JAM_ICONS[near.jam.kind]];
   $('jam-distance').textContent = near.inside ? t('jamLeft', { distance: fmtDistance(Math.max(near.left, 10)) }) : words.distance;
   $('jam-delay').hidden = closed || near.delay < 60;
+  box.classList.toggle('is-dark-ink', near.jam.kind === 'BREAKDOWN' || near.jam.kind === 'HAZARD');
   $('jam-delay').textContent = t('jamDelay', { time: words.time });
   box.setAttribute('aria-label', t(near.inside ? 'jamAriaIn' : 'jamAria', { ...words, distance: near.inside ? fmtDistance(near.left) : words.distance }));
   const id = `${Math.round(near.jam.start / 50)}`;
@@ -2565,7 +2814,8 @@ function renderJam(st) {
   S.jamsSaid.add(id);
   if (S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) return;
   const say = { kind: words.kind, distance: sayDistance(near.ahead, lang), time: sayDuration(near.delay, lang) };
-  speakText(t(closed ? 'jamSayClosed' : 'jamSay', say), { wait: voice.WAIT_TURN_MS });
+  const plain = closed || near.delay < 60;
+  speakText(t(plain ? 'jamSayPlain' : 'jamSay', say), { wait: voice.WAIT_TURN_MS });
 }
 
 /* ---------- Toll plazas, for the HUD ---------- */
@@ -2685,31 +2935,7 @@ async function reroute(fix, { added = false } = {}) {
       heading: moving ? fix.heading : null,
     });
     if (S.view !== 'nav') return;
-    S.route = route;
-    S.guidance = new Guidance(route, { walking: S.mode === 'walk' });
-    motion.setRoute(route);
-    startScene(route);
-    S.cameras = camerasOnRoute(route, S.cameraPool || []);
-    if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
-    S.tolls = tollsOnRoute(route, S.tollPool || []);
-    if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
-    // Traffic for the old route doesn't belong to this one.
-    S.traffic = null;
-    S.jamsSaid = new Set();
-    S.trafficAt = Math.min(S.trafficAt || 0, Date.now() - TRAFFIC_EVERY_MS + TRAFFIC_AGAIN_MS);
-    if (S.sim) {
-      S.sim.setRoute(route);
-      S.simStops = [...S.stops];
-    }
-    S.lastDrivenS = null;
-    S.lastTrimS = null;
-    S.lastSignKey = null;
-    S.rerouteFailed = false;
-    S.rerouteGap = 12000;
-    mapView?.showRoutes([route], 0);
-    S.rerouting = false;
-    $('nav-strip').dataset.key = '';
-    if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
+    useRoute(route);
     if (added) {
       const extra = before != null ? Math.round((route.time - before) / 60) : 0;
       toast(extra >= 1 ? t('stopAddedMore', { time: fmtDuration(route.time - before, getLang()) }) : t('stopAdded'));
@@ -2722,6 +2948,37 @@ async function reroute(fix, { added = false } = {}) {
     S.rerouting = false;
     if (S.view === 'nav') renderChips();
   }
+}
+
+// A new route mid-trip: everything that follows the route starts again on it.
+function useRoute(route) {
+  S.route = route;
+  S.guidance = new Guidance(route, { walking: S.mode === 'walk' });
+  motion.setRoute(route);
+  startScene(route);
+  S.cameras = camerasOnRoute(route, S.cameraPool || []);
+  if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
+  S.tolls = tollsOnRoute(route, S.tollPool || []);
+  if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
+  // Traffic for the old route doesn't belong to this one.
+  S.traffic = null;
+  S.jamsSaid = new Set();
+  S.trafficAt = Math.min(S.trafficAt || 0, Date.now() - TRAFFIC_EVERY_MS + TRAFFIC_AGAIN_MS);
+  if (S.sim) {
+    S.sim.setRoute(route);
+    S.simStops = [...S.stops];
+  }
+  S.lastDrivenS = null;
+  S.lastTrimS = null;
+  S.lastSignKey = null;
+  S.rerouteFailed = false;
+  S.rerouteGap = 12000;
+  mapView?.showRoutes([route], 0);
+  S.rerouting = false;
+  $('nav-strip').dataset.key = '';
+  dismissFaster();
+  loadLimits(route);
+  if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
 }
 
 function keepVehicleLevel() {
@@ -2742,6 +2999,9 @@ function stopGuidance() {
   S.trafficCtrl = null;
   S.traffic = null;
   $('jam-alert').hidden = true;
+  dismissFaster();
+  S.limitsCtrl?.abort();
+  S.ttLimits = [];
   saveDriveTime();
   keepVehicleLevel();
   leaveFullscreen();
@@ -3279,7 +3539,7 @@ function renderHud(st, fix) {
     $('hm-jam-icon').innerHTML = UI[JAM_ICONS[jam.jam.kind]];
     $('hm-jam-word').textContent = t(`jam_${jam.jam.kind}`);
     $('hm-jam-distance').textContent = jam.inside ? '' : fmtDistance(Math.max(jam.ahead, 10));
-    $('hm-jam-more').textContent = jam.jam.kind === 'ROAD_CLOSURE' ? ''
+    $('hm-jam-more').textContent = jam.jam.kind === 'ROAD_CLOSURE' || (!jam.inside && jam.delay < 60) ? ''
       : jam.inside ? t('jamLeft', { distance: fmtDistance(Math.max(jam.left, 10)) }) : t('jamDelay', { time: fmtDuration(jam.delay, lang) });
   }
 
@@ -3571,8 +3831,18 @@ function wire() {
     setSetting('speedCameras', e.target.checked);
     if (!e.target.checked) $('camera-alert').hidden = true;
   });
+  $('traffic-map-on').addEventListener('change', (e) => {
+    setSetting('trafficMap', e.target.checked);
+    syncTrafficMap();
+  });
+  $('btn-traffic').addEventListener('click', toggleTrafficMap);
+  $('faster-yes').addEventListener('click', acceptFaster);
+  $('faster-no').addEventListener('click', declineFaster);
+  $('plan-charge').addEventListener('click', planChargingStops);
   $('traffic-on').addEventListener('change', (e) => {
     setSetting('traffic', e.target.checked);
+    $('traffic-map-on').disabled = !e.target.checked;
+    syncTrafficMap();
     if (!e.target.checked) {
       $('jam-alert').hidden = true;
       $('hm-jam').hidden = true;
@@ -3824,9 +4094,11 @@ async function startMap() {
       onAltTap: (i) => selectRoute(i),
       onPlaceTap,
       onPuckTap: () => { if (S.view === 'idle' && !S.overlay) openCar(); },
+      trafficTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
     });
     await mapView.init();
     mapView.setCarOn(S.settings.view3d);
+    syncTrafficMap();
   } catch {
     $('map-problem-text').textContent = t('mapFailed');
     $('map-problem').hidden = false;

@@ -2,11 +2,15 @@
 // minutes the rest of the route is sent, and what comes back is each slow
 // stretch on it and how many minutes it adds.
 import { CONFIG } from './config.js';
+import { bearing, haversine } from './geo.js';
 import { pointAt } from './motion.js';
 import { placeOnRoute } from './places.js';
 
 export const TRAFFIC_EVERY_MS = 3 * 60 * 1000;
 export const TRAFFIC_POINTS = 1500;
+// A quicker way is only offered if it saves this much, and a fair share of the trip.
+export const FASTER_MIN_S = 180;
+export const FASTER_SHARE = 0.08;
 const MIN_STEP_M = 60;
 export const JAM_OFF_M = 80;            // TomTom's line and Pintu's can differ a little
 export const JAM_NOTICE_M = 10000;      // a slow stretch is shown once it's this close
@@ -43,10 +47,20 @@ export function placeTraffic(route, s, answer) {
     jams.push({ start, end, delay: j.delay || 0, speed: j.speed ?? null, kind: j.kind || 'OTHER' });
   }
   jams.sort((x, y) => x.start - y.start);
-  return { at: Date.now(), from: s, delay: answer?.delay || 0, jams };
+  return {
+    at: Date.now(),
+    from: s,
+    delay: answer?.delay || 0,
+    travel: Number.isFinite(answer?.travel) ? answer.travel : null,
+    better: answer?.better?.path?.length >= 2 ? answer.better : null,
+    leave: answer?.leave ? new Date(answer.leave) : null,
+    jams,
+  };
 }
 
-const worth = (j) => j.delay >= JAM_MIN_DELAY_S || j.kind === 'ROAD_CLOSURE';
+// Anything that isn't just slow traffic is worth knowing about, however short.
+export const ALWAYS_SAY = new Set(['ROAD_CLOSURE', 'ACCIDENT', 'FLOOD', 'BREAKDOWN', 'HAZARD']);
+const worth = (j) => j.delay >= JAM_MIN_DELAY_S || ALWAYS_SAY.has(j.kind);
 
 // The next slow stretch worth mentioning, if it's close enough.
 export function jamAhead(traffic, s, range = JAM_NOTICE_M) {
@@ -79,17 +93,52 @@ export class TrafficError extends Error {
   }
 }
 
-export async function fetchTraffic(route, s, { signal, fetchImpl = fetch, server = CONFIG.server } = {}) {
+// The arrival time as TomTom takes it: to the second, in UTC.
+export const isoTime = (date) => `${date.toISOString().slice(0, 19)}Z`;
+
+export async function fetchTraffic(route, s, { better = false, arriveAt = null, signal, fetchImpl = fetch, server = CONFIG.server } = {}) {
   if (!server) throw new TrafficError('no server', 0);
+  const ask = { points: tracePoints(route, s) };
+  if (better) ask.better = true;
+  if (arriveAt) ask.arriveAt = isoTime(arriveAt);
   const res = await fetchImpl(`${server}/traffic`, {
     method: 'POST',
     // Plain text, so the page needn't ask the server's permission first.
     headers: { 'content-type': 'text/plain' },
-    body: JSON.stringify({ points: tracePoints(route, s) }),
+    body: JSON.stringify(ask),
     signal,
   });
   let body = null;
   try { body = await res.json(); } catch { /* nothing readable */ }
   if (!res.ok) throw new TrafficError(body?.error || 'unavailable', res.status);
   return placeTraffic(route, s, body);
+}
+
+// How much a quicker way TomTom found would save, if it's worth offering.
+export function fasterSaving(traffic) {
+  if (!traffic?.better || !Number.isFinite(traffic.travel)) return 0;
+  const saving = traffic.travel - traffic.better.travel;
+  return saving >= Math.max(FASTER_MIN_S, traffic.travel * FASTER_SHARE) ? Math.round(saving) : 0;
+}
+
+// Points along TomTom's quicker way for the route planner to pass through, so
+// it takes the same roads. The first stretch is shared with the current
+// route anyway, and the very end is the destination itself.
+export function throughPoints(path, max = 12) {
+  let total = 0;
+  const cum = [0];
+  for (let i = 1; i < path.length; i++) cum.push(total += haversine(path[i - 1], path[i]));
+  if (total < 1500) return [];
+  const out = [];
+  const from = 600, to = total - 400;
+  for (let k = 0; k < max; k++) {
+    const at = from + ((to - from) * k) / Math.max(1, max - 1);
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < at) i++;
+    const a = path[i - 1], b = path[i];
+    const span = cum[i] - cum[i - 1] || 1;
+    const t = Math.min(1, Math.max(0, (at - cum[i - 1]) / span));
+    out.push({ lng: a[0] + (b[0] - a[0]) * t, lat: a[1] + (b[1] - a[1]) * t, heading: bearing(a, b) });
+  }
+  return out;
 }

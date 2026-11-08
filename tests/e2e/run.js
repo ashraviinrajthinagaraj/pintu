@@ -59,13 +59,13 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
-    const server = appServer || traffic ? "'https://pintu.test'" : 'null';
+    const server = appServer || traffic || tomtom ? "'https://pintu.test'" : 'null';
     const config = original.replace(/server: [^,]+,/, `server: ${server},`).replace(/humanVoices: [^,]+,/, `humanVoices: ${humanVoices},`);
     route.fulfill({ contentType: 'text/javascript', body: config });
   });
@@ -78,6 +78,16 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       return route.fulfill({ contentType: 'text/javascript', headers: CORS, body: stub });
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
+    const tomtomPath = host === 'pintu.test' ? new URL(url).pathname : '';
+    if (/^\/(limits|geocode|ev|tiles\/)/.test(tomtomPath)) {
+      const raw = route.request().postData();
+      const asked = { path: tomtomPath, url, body: raw ? JSON.parse(raw) : null };
+      log.tomtom.push(asked);
+      const answer = tomtom ? await tomtom(asked) : null;
+      if (!answer) return route.fulfill({ status: tomtomPath.startsWith('/tiles/') ? 204 : 503, json: tomtomPath.startsWith('/tiles/') ? undefined : { error: 'no key' }, headers: CORS });
+      if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
+      return route.fulfill({ json: answer, headers: CORS });
+    }
     if (host === 'pintu.test' && new URL(url).pathname === '/traffic') {
       const sent = JSON.parse(route.request().postData() || '{}');
       log.traffic.push(sent);
@@ -3285,8 +3295,9 @@ await check('traffic: a jam ahead shows, is said once, and counts in the arrival
   });
   await toNav(page);
   await roll(page, trip, 0, 200, 12);
-  assert.equal(log.traffic.length, 1, 'asked once at the start');
-  const sent = log.traffic[0].points;
+  const driving = log.traffic.filter((x) => x.better);
+  assert.equal(driving.length, 1, 'asked once at the start, looking for a quicker way too');
+  const sent = driving[0].points;
   assert.ok(sent.length >= 2 && sent.length <= 1500);
   assert.ok(haversine(sent[0], trip.coords[0]) < 30 && haversine(sent[sent.length - 1], trip.coords[trip.coords.length - 1]) < 1);
   const before = minutesIn(await text(page, '#eta-clock'));
@@ -3330,10 +3341,183 @@ await check('traffic: switched off, nothing asked and nothing shown; no key, no 
   const nokey = await newApp(browser, { ...quiet, traffic: () => null });
   await toNav(nokey.page);
   await roll(nokey.page, trip, 0, 600, 12);
-  assert.equal(nokey.log.traffic.length, 1);
+  assert.ok(nokey.log.traffic.length >= 1 && nokey.log.traffic.length <= 3, String(nokey.log.traffic.length));
+  assert.equal(nokey.log.traffic.filter((x) => x.better).length, 0, 'told there\'s no key while choosing, so not asked again');
   assert.equal(await vis(nokey.page, '#jam-alert'), false);
   assert.deepEqual(nokey.log.errors, []);
   await nokey.ctx.close();
+});
+
+/* ---------- More from TomTom ---------- */
+
+await check('traffic map: coloured roads and incident markers, switched from the map', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, traffic: () => ({ delay: 0, jams: [] }) });
+  await page.waitForFunction(() => window.__map?.getLayer('pintu-flow'));
+  const src = await page.evaluate(() => [window.__map.getSource('pintu-flow').tiles[0], window.__map.getSource('pintu-incidents').tiles[0], window.__map.getSource('pintu-flow').maxzoom]);
+  assert.deepEqual(src, ['https://pintu.test/tiles/flow/{z}/{x}/{y}.pbf', 'https://pintu.test/tiles/incidents/{z}/{x}/{y}.pbf', 14]);
+  const order = await page.evaluate(() => window.__map.layers.map((l) => l.id));
+  assert.ok(order.indexOf('pintu-flow') < order.indexOf('pintu-route'), 'traffic under the route');
+  assert.ok(await page.evaluate(() => window.__map.hasImage('pintu-incident-11')), 'a flood marker is ready');
+  assert.equal(await vis(page, '#btn-traffic'), true);
+  assert.equal(await page.getAttribute('#btn-traffic', 'aria-pressed'), 'true');
+  const shown = () => page.evaluate(() => window.__map.layout['pintu-flow'] ?? window.__map.getLayer('pintu-flow').layout.visibility);
+  assert.equal(await shown(), 'visible');
+  await page.click('#btn-traffic');
+  assert.equal(await page.evaluate(() => window.__map.layout['pintu-flow']), 'none');
+  assert.equal(await page.getAttribute('#btn-traffic', 'aria-pressed'), 'false');
+  await page.click('#btn-settings');
+  assert.equal(await page.isChecked('#traffic-map-on'), false, 'the same switch in Settings');
+  await page.click('label:has(#traffic-map-on)');
+  await page.click('#settings-back');
+  assert.equal(await shown(), 'visible');
+  // While driving, only the slow parts.
+  await toNav(page);
+  const filters = await page.evaluate(() => window.__mapCalls.filter((c) => c[0] === 'setFilter' && c[1] === 'pintu-flow').map((c) => JSON.stringify(c[2])));
+  assert.match(filters[filters.length - 1], /"<"/);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('route choices: each with today\'s traffic, and the quickest one chosen', async () => {
+  let n = 0;
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, traffic: (sent) => {
+    if (sent.arriveAt) {
+      const arrive = new Date(sent.arriveAt);
+      return { delay: 0, jams: [], leave: new Date(arrive.getTime() - 50 * 60000).toISOString() };
+    }
+    n++;
+    return n === 1 ? { delay: 900, travel: 1160, jams: [] } : { delay: 0, travel: 194, jams: [] };
+  } });
+  await toPreview(page);
+  await page.waitForSelector('.tag-slow');
+  const opts = await page.locator('.route-opt').allInnerTexts();
+  assert.match(opts[0], /^19 min[\s\S]*\+15 min trafik/);
+  assert.match(opts[1], /Trafik lancar[\s\S]*Paling cepat sekarang/);
+  assert.equal(await page.getAttribute('.route-opt >> nth=1', 'aria-checked'), 'true', 'the quicker one is picked');
+  await page.screenshot({ path: `${shots}/59-route-traffic.png` });
+
+  // Arriving at a time: when to leave, from the usual traffic then.
+  const target = await page.evaluate(() => {
+    const d = new Date(Date.now() + 3 * 3600000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  });
+  await page.fill('#plan-arrive-time', target);
+  await page.dispatchEvent('#plan-arrive-time', 'input');
+  await page.waitForFunction(() => /TomTom/.test(document.getElementById('plan-arrive-detail').textContent));
+  const asked = log.traffic.find((x) => x.arriveAt);
+  assert.match(asked.arriveAt, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  const leave = await page.evaluate((target) => {
+    const [h, m] = target.split(':').map(Number);
+    const d = new Date(); d.setHours(h, m - 50, 0, 0);
+    return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }, target);
+  assert.ok((await text(page, '#plan-arrive-title')).includes(leave), `${await text(page, '#plan-arrive-title')} vs ${leave}`);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('a quicker way round a jam: offered, said, and taken with one tap', async () => {
+  const quick = prepareTrip(altTrip());
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    scale: 2,
+    routeResponse: (b) => (b.locations.some((l) => l.type === 'through') ? { trip: altTrip() } : { trip: cityTrip() }),
+    traffic: (sent) => (sent.better
+      ? { delay: 900, travel: 1200, jams: [], better: { travel: 500, delay: 0, length: quick.length, path: quick.coords } }
+      : { delay: 0, jams: [] }),
+  });
+  const trip = prepareTrip(cityTrip());
+  await toNav(page);
+  await roll(page, trip, 0, 120, 12);
+  await page.waitForSelector('#faster:not([hidden])');
+  assert.equal(await text(page, '#faster-title'), 'Laluan lebih cepat: jimat 12 min');
+  const through = log.fossgis.find((b) => b.locations.some((l) => l.type === 'through'));
+  const via = through.locations.filter((l) => l.type === 'through');
+  assert.ok(via.length >= 2 && via.every((l) => Number.isFinite(l.heading)), 'passes TomTom\'s roads, facing their way');
+  assert.equal(through.locations[through.locations.length - 1].type, 'break');
+  assert.ok((await said(page)).some((x) => /^Ada laluan lebih cepat, jimat 12 minit/.test(x.text)));
+  await page.screenshot({ path: `${shots}/60-faster.png` });
+  const before = await text(page, '#sign-road');
+  await page.click('#faster-yes');
+  assert.equal(await vis(page, '#faster'), false);
+  await page.waitForFunction((b) => document.getElementById('sign-road').textContent !== b, before);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('an accident ahead is said even with no delay; TomTom\'s speed limit fills a gap', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    traffic: () => ({ delay: 0, jams: [{ from: pointAt(trip, 1500), to: pointAt(trip, 1600), delay: 0, kind: 'ACCIDENT' }] }),
+    tomtom: (asked) => (asked.path === '/limits' ? { limits: [{ from: trip.coords[0], to: trip.coords[trip.coords.length - 1], limit: 70 }] } : null),
+  });
+  await toNav(page);
+  await roll(page, trip, 0, 400, 12);
+  await page.waitForSelector('#jam-alert:not([hidden])');
+  assert.equal(await page.getAttribute('#jam-alert', 'data-kind'), 'ACCIDENT');
+  assert.equal(await vis(page, '#jam-delay'), false);
+  const words = (await said(page)).map((x) => x.text).filter((x) => /Kemalangan/.test(x));
+  assert.deepEqual(words.length, 1);
+  assert.match(words[0], /Kemalangan [\d.]+ (meter|kilometer) di hadapan\.$/);
+  const limits = log.tomtom.filter((x) => x.path === '/limits');
+  assert.equal(limits.length, 1);
+  assert.ok(limits[0].body.points.length >= 2);
+  await page.waitForSelector('#speed-limit:not([hidden])');
+  assert.equal(await text(page, '#speed-limit'), '70');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('search: street addresses from TomTom alongside places by name', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    tomtom: (asked) => (asked.path === '/geocode' ? { places: [{ name: '12 Jalan SS 2/24', detail: 'SS 2, Petaling Jaya, Selangor', lng: 101.6205, lat: 3.1101, country: 'MY' }] } : null),
+  });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  await page.fill('#search-input', '12 jalan ss2/24');
+  await page.waitForSelector('#search-results .place');
+  const first = await page.locator('#search-results .place').first().innerText();
+  assert.match(first, /12 Jalan SS 2\/24[\s\S]*Petaling Jaya/);
+  const asked = log.tomtom.find((x) => x.path === '/geocode');
+  assert.equal(new URL(asked.url).searchParams.get('q'), '12 jalan ss2/24');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('electric car: charging stops planned by TomTom become stops on the trip', async () => {
+  const long = () => buildTrip(P.a, [
+    { to: [101.95, 3.15], type: 1, street: 'E8', kph: 100 },
+    { to: [102.2, 3.0], type: 9, street: 'E8', kph: 100 },
+  ]);
+  const { ctx, page, log } = await newApp(browser, {
+    storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { kind: 'ev', range: 410, consumption: 14.7, level: 10 } } },
+    scale: 2,
+    routeResponse: () => ({ trip: long() }),
+    tomtom: (asked) => (asked.path === '/ev'
+      ? { stops: [{ name: 'Gentari R&R Lebuhraya', lng: 101.9, lat: 3.14, minutes: 25, arrive: 12, to: 80, kw: 90, before: 0 }], arrive: 18, charging: 25, travel: 7200 }
+      : null),
+  });
+  await toPreview(page);
+  await page.waitForSelector('#plan-charge:not([hidden])');
+  assert.equal(await text(page, '#plan-charge'), 'Rancang hentian cas');
+  const routesBefore = log.fossgis.length;
+  await page.click('#plan-charge');
+  await page.waitForSelector('.stop-row');
+  const ev = log.tomtom.find((x) => x.path === '/ev').body;
+  assert.equal(ev.battery, 60.3);
+  assert.equal(ev.level, 10);
+  assert.equal(ev.points.length, 2);
+  assert.match(await text(page, '.stop-row'), /Gentari R&R Lebuhraya[\s\S]*Cas lebih kurang 25 min hingga 80%, tiba dengan 12%/);
+  await page.waitForFunction((n) => document.querySelectorAll('.route-opt').length && true, routesBefore);
+  const again = log.fossgis.slice(routesBefore).find((b) => b.locations.length === 3);
+  assert.ok(again, 'routed again through the charger');
+  await page.waitForFunction(() => /18%/.test(document.getElementById('plan-fuel-detail').textContent));
+  assert.equal(await vis(page, '#plan-charge'), false, 'planned once');
+  await page.screenshot({ path: `${shots}/61-ev-plan.png` });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
 });
 
 /* ---------- Tolls ---------- */

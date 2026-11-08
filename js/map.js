@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
 import { carLayer } from './car-gl.js';
 import { boundsOf, sliceBetween, sliceFrom } from './geo.js';
+import { INCIDENTS, drawIncident, flowFilter, flowPaint, incidentFilter, incidentImageId } from './traffic-map.js';
 import { CATEGORY_ICONS, UI, destPinSvg, puckSvg } from './icons.js';
 
 const load = (tag, attrs) => new Promise((resolve, reject) => {
@@ -51,8 +52,11 @@ export const NEAR_REFRESH_M = 1500;
 const placeName = (p = {}) => p.name || p['name:latin'] || p.name_en || p['name:en'] || '';
 
 export class MapView {
-  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onPlaceTap, onPuckTap }) {
+  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onPlaceTap, onPuckTap, trafficTiles = null }) {
     this.el = el;
+    this.trafficTiles = trafficTiles;   // where TomTom's traffic tiles come from, if anywhere
+    this.trafficOn = false;
+    this.trafficDriving = false;
     this.theme = theme;
     this.view3d = view3d;
     this.onLongPress = onLongPress;
@@ -173,6 +177,7 @@ export class MapView {
     const m = this.map;
     const c = COLORS[this.theme];
     const beforeId = this._routeInsertPoint(m.getStyle().layers);
+    this._addTrafficLayers(beforeId);
 
     // One set of 3D buildings for day and night, so the switch behaves the same.
     if (m.getLayer('building-3d')) m.setLayoutProperty('building-3d', 'visibility', 'none');
@@ -225,6 +230,67 @@ export class MapView {
         onReady: (ok) => { this.carReady = ok; this._syncPuck(); },
       }));
     }
+  }
+
+  // Traffic goes under the route, so the way you're going is always on top.
+  _addTrafficLayers(beforeId) {
+    const m = this.map;
+    if (!this.trafficTiles) return;
+    const tiles = (kind) => [`${this.trafficTiles}/${kind}/{z}/{x}/{y}.pbf`];
+    // Asked for no closer than this and stretched beyond, which keeps the
+    // number of tiles, and of requests to TomTom, down.
+    if (!m.getSource('pintu-flow')) m.addSource('pintu-flow', { type: 'vector', tiles: tiles('flow'), minzoom: 6, maxzoom: 14 });
+    if (!m.getSource('pintu-incidents')) m.addSource('pintu-incidents', { type: 'vector', tiles: tiles('incidents'), minzoom: 6, maxzoom: 14 });
+    const visibility = this.trafficOn ? 'visible' : 'none';
+    if (!m.getLayer('pintu-flow')) {
+      m.addLayer({
+        id: 'pintu-flow',
+        type: 'line',
+        source: 'pintu-flow',
+        'source-layer': 'Traffic flow',
+        minzoom: 9,
+        filter: flowFilter(this.trafficDriving),
+        layout: { 'line-cap': 'round', 'line-join': 'round', visibility },
+        paint: flowPaint(),
+      }, beforeId);
+    }
+    for (const code of Object.keys(INCIDENTS)) {
+      const id = incidentImageId(code);
+      if (m.hasImage?.(id)) continue;
+      try {
+        const img = drawIncident(Number(code), Math.min(3, Math.max(1, Math.round(window.devicePixelRatio || 2))));
+        if (img) m.addImage?.(id, { width: img.width, height: img.height, data: img.data }, { pixelRatio: img.pixelRatio });
+      } catch { /* markers are a nicety */ }
+    }
+    if (!m.getLayer('pintu-incidents')) {
+      m.addLayer({
+        id: 'pintu-incidents',
+        type: 'symbol',
+        source: 'pintu-incidents',
+        'source-layer': 'Traffic incident POI',
+        minzoom: 10,
+        filter: incidentFilter,
+        layout: {
+          visibility,
+          'icon-image': ['concat', 'pintu-incident-', ['to-string', ['get', 'icon_category']]],
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.7, 15, 1],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      }, beforeId);
+    }
+  }
+
+  // Traffic on or off, and whether you're driving (only the slow parts then).
+  setTraffic(on, driving = false) {
+    this.trafficOn = !!on && !!this.trafficTiles;
+    this.trafficDriving = !!driving;
+    const m = this.map;
+    if (!m?.getLayer?.('pintu-flow')) return;
+    const visibility = this.trafficOn ? 'visible' : 'none';
+    m.setLayoutProperty('pintu-flow', 'visibility', visibility);
+    m.setLayoutProperty('pintu-incidents', 'visibility', visibility);
+    m.setFilter?.('pintu-flow', flowFilter(this.trafficDriving));
   }
 
   // The lane view, all from one source, told apart by each shape's kind.
