@@ -106,6 +106,11 @@ export const UI = {
   bed: line('<path d="M3 19V6M3 15h18v4M21 15v-3a3 3 0 0 0-3-3h-7v6"/><circle cx="7" cy="11.5" r="2"/>'),
   clock: line('<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.5l3.5 2"/>'),
   pin: line('<path d="M12 21.5s7.5-6.7 7.5-12a7.5 7.5 0 1 0-15 0c0 5.3 7.5 12 7.5 12Z"/><circle cx="12" cy="9.5" r="2.6"/>'),
+  // A police cap, seen from the front.
+  police: line('<path d="M3.5 9.5 12 5l8.5 4.5-2 3.5h-13Z"/><path d="M5.5 13c0 3.6 2.9 6 6.5 6s6.5-2.4 6.5-6"/><path d="M12 7.4v2.4" stroke-width="2.6"/>'),
+  share: line('<circle cx="17.5" cy="5.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="17.5" cy="18.5" r="2.5"/><path d="m8.7 10.8 6.6-4M8.7 13.2l6.6 4"/>'),
+  people: line('<circle cx="9" cy="8" r="3.2"/><path d="M3 19.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14c2.6 0 4.5 1.8 4.5 4.5"/>'),
+  bell: line('<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'),
   mic: line('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>'),
   battery: line('<rect x="3" y="7.5" width="16" height="9" rx="2"/><path d="M21.5 10.5v3"/><path d="M6 10.5h5v3H6Z" fill="currentColor" stroke-width="1.4"/>'),
   month: line('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M7.5 17v-3M12 17v-4.5M16.5 17v-2"/>'),

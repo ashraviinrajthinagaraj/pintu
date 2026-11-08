@@ -510,6 +510,54 @@ export class MapView {
     }
   }
 
+  // Other people: someone whose trip you're following, or friends in a convoy.
+  // A coloured dot with their initial, and their name under it.
+  setFriends(list) {
+    this.friends ||= new Map();
+    if (!this.map) return;
+    const keep = new Set();
+    for (const f of list) {
+      if (!f.pos) continue;
+      keep.add(f.id);
+      let m = this.friends.get(f.id);
+      if (!m) {
+        const el = document.createElement('div');
+        el.className = 'friend';
+        const dot = document.createElement('span');
+        dot.className = 'friend-dot';
+        const name = document.createElement('span');
+        name.className = 'friend-name';
+        el.append(dot, name);
+        m = { el, dot, name, marker: new this.lib.Marker({ element: el, anchor: 'top' }).setLngLat([f.pos.lng, f.pos.lat]).addTo(this.map) };
+        this.friends.set(f.id, m);
+      }
+      m.dot.textContent = (f.name || '?').trim().charAt(0).toUpperCase() || '?';
+      m.name.textContent = f.name || '';
+      m.name.hidden = !f.name;
+      m.el.style.setProperty('--friend', f.color || '#9C36B5');
+      m.el.dataset.id = f.id;
+      m.marker.setLngLat([f.pos.lng, f.pos.lat]);
+    }
+    for (const [id, m] of this.friends) {
+      if (keep.has(id)) continue;
+      m.marker.remove();
+      this.friends.delete(id);
+    }
+  }
+
+  // What people have reported on the road ahead.
+  setReports(list, icons) {
+    for (const m of this.reportPins || []) m.remove();
+    this.reportPins = [];
+    if (!this.map) return;
+    for (const r of list) {
+      const el = document.createElement('div');
+      el.className = `map-pin is-report report-${r.kind}`;
+      el.innerHTML = icons[r.kind] || '';
+      this.reportPins.push(new this.lib.Marker({ element: el }).setLngLat([r.lng, r.lat]).addTo(this.map));
+    }
+  }
+
   centerOn(lng, lat, zoom = 15) {
     this.map?.easeTo({ center: [lng, lat], zoom: Math.max(zoom, this.view3d ? 16 : zoom), pitch: this.view3d ? 55 : 0, duration: 900 });
   }

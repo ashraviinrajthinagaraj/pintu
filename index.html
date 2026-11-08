@@ -147,6 +147,11 @@
       <label class="plan-main" for="plan-arrive-time"><strong id="plan-arrive-title"></strong><span id="plan-arrive-detail"></span></label>
       <input id="plan-arrive-time" class="time-input" type="time">
     </div>
+    <button id="plan-convoy" class="plan-row" type="button" hidden>
+      <span id="plan-convoy-icon" class="plan-icon"></span>
+      <span class="plan-main"><strong id="plan-convoy-title"></strong><span id="plan-convoy-detail"></span></span>
+      <span id="plan-convoy-chev" class="plan-chev"></span>
+    </button>
     <div id="plan-parking-wrap" hidden>
       <div class="plan-row">
         <span class="plan-icon" id="plan-parking-icon"></span>
@@ -218,6 +223,7 @@
         <span id="then-label"></span><span id="then-icon" class="then-icon"></span>
       </div>
       <div id="chips" class="chips" role="status" aria-live="polite"></div>
+      <button id="convoy-bar" class="convoy-bar" type="button" hidden><span id="convoy-bar-icon"></span><span id="convoy-bar-text"></span></button>
     </div>
   </div>
   <div class="nav-left">
@@ -225,12 +231,14 @@
     <div id="speed" class="speed" hidden><strong id="speed-value"></strong><span id="speed-unit"></span></div>
     <div id="camera-alert" class="camera-alert" role="status" hidden><span id="camera-icon" class="camera-icon"></span><span id="camera-distance"></span><span id="camera-limit" class="camera-limit" hidden></span></div>
     <div id="jam-alert" class="jam-alert" role="status" hidden><span id="jam-icon" class="jam-icon"></span><span id="jam-distance"></span><span id="jam-delay" class="jam-delay"></span></div>
+    <div id="report-alert" class="jam-alert report-alert" role="status" hidden><span id="report-icon" class="jam-icon"></span><span id="report-distance"></span></div>
     <div id="nav-range" class="range-pill" hidden></div>
   </div>
   <div class="nav-float">
     <button id="btn-hud" class="round round-text round-hud" type="button"></button>
     <button id="btn-3d" class="round round-text" type="button"></button>
     <button id="btn-mute" class="round" type="button"></button>
+    <button id="btn-report" class="round round-report" type="button" hidden></button>
     <button id="btn-add-stop" class="round" type="button"></button>
     <button id="btn-recenter" class="round round-accent" type="button" hidden></button>
   </div>
@@ -239,6 +247,13 @@
     <div class="resume-actions">
       <button id="faster-no" class="link-btn" type="button"></button>
       <button id="faster-yes" class="plate plate-btn plate-small" type="button"></button>
+    </div>
+  </div>
+  <div id="report-ask" class="refill report-ask" role="alert" hidden>
+    <p><strong id="report-ask-title"></strong></p>
+    <div class="resume-actions">
+      <button id="report-gone" class="link-btn" type="button"></button>
+      <button id="report-still" class="plate plate-btn plate-small" type="button"></button>
     </div>
   </div>
   <div id="refill" class="refill" hidden>
@@ -265,6 +280,7 @@
         <strong id="eta-clock"></strong>
         <span id="eta-rest"></span>
       </div>
+      <button id="btn-share" class="share-btn" type="button" hidden></button>
       <button id="btn-end" class="end-btn" type="button"></button>
     </div>
   </div>
@@ -531,6 +547,35 @@
       <p id="set-saved-text" class="tip"></p>
       <ul id="saved-list" class="saved-list"></ul>
     </div>
+    <div class="setting" id="set-commute">
+      <h3 id="set-commute-title"></h3>
+      <p id="commute-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="commute-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="commute-on-label"></span>
+      </label>
+      <div id="commute-more">
+        <div class="field-row commute-row">
+          <label for="commute-time" id="commute-time-label" class="field-label"></label>
+          <input id="commute-time" class="time-input" type="time">
+        </div>
+        <p id="commute-days-label" class="field-label field-gap"></p>
+        <div id="commute-days" class="day-row" role="group"></div>
+        <label class="switch switch-block">
+          <input id="commute-slow" type="checkbox">
+          <span class="switch-track" aria-hidden="true"></span>
+          <span id="commute-slow-label"></span>
+        </label>
+        <button id="commute-test" class="outline-btn" type="button"></button>
+      </div>
+      <p id="commute-status" class="tip" role="status"></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-sharing-title"></h3>
+      <p id="sharing-text" class="tip"></p>
+      <input id="sharing-name" class="text-input" type="text" maxlength="30" autocomplete="given-name" enterkeyhint="done">
+    </div>
     <div class="setting">
       <h3 id="set-lang-title"></h3>
       <div class="segmented" role="radiogroup">
@@ -688,6 +733,63 @@
       <p id="version" class="tip"></p>
     </div>
   </div>
+</section>
+
+<!-- Reporting something on the road -->
+<section id="report-sheet" class="sheet sheet-auto sheet-over" hidden>
+  <div class="sheet-head">
+    <button id="report-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="report-title"></h2><p id="report-text" class="wrap"></p></div>
+  </div>
+  <div id="report-kinds" class="report-kinds"></div>
+</section>
+
+<!-- A trip being shared, or a convoy -->
+<section id="together" class="sheet sheet-auto sheet-over" hidden>
+  <div class="sheet-head">
+    <button id="together-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="together-title"></h2><p id="together-text" class="wrap"></p></div>
+  </div>
+  <ul id="together-list" class="together-list"></ul>
+  <button id="together-share" class="plate plate-btn sheet-action" type="button"></button>
+  <button id="together-stop" class="link-btn center" type="button"></button>
+</section>
+
+<!-- Asked to drive together -->
+<section id="convoy-join" class="sheet sheet-modal" hidden>
+  <h2 id="join-title"></h2>
+  <p id="join-text"></p>
+  <div id="join-name-wrap" class="field">
+    <label id="join-name-label" for="join-name"></label>
+    <input id="join-name" class="text-input" type="text" maxlength="30" autocomplete="given-name" enterkeyhint="done">
+  </div>
+  <div class="resume-actions">
+    <button id="join-no" class="link-btn" type="button"></button>
+    <button id="join-yes" class="plate plate-btn plate-small" type="button"></button>
+  </div>
+</section>
+
+<!-- Your name, the first time you share -->
+<section id="name-sheet" class="sheet sheet-modal" hidden>
+  <h2 id="name-title"></h2>
+  <p id="name-text"></p>
+  <input id="name-input" class="text-input" type="text" maxlength="30" autocomplete="given-name" enterkeyhint="done">
+  <div class="resume-actions field-gap">
+    <button id="name-cancel" class="link-btn" type="button"></button>
+    <button id="name-save" class="plate plate-btn plate-small" type="button"></button>
+  </div>
+</section>
+
+<!-- Following someone else's trip -->
+<section id="watch" class="sheet sheet-auto" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="watch-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="watch-title"></h2><p id="watch-to"></p></div>
+  </div>
+  <p id="watch-eta" class="watch-eta"></p>
+  <p id="watch-at" class="tip"></p>
+  <button id="watch-go" class="plate plate-btn sheet-action" type="button" hidden></button>
 </section>
 
 <!-- The month in trips -->

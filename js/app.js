@@ -38,6 +38,10 @@ import { GRADES, fetchFuelPrices, isStale, keptFuelPrices, priced } from './fuel
 import { canListen, listen, understand } from './voice-search.js';
 import { CrawlClock, forgetTrips, keptTrips, monthSummary, recordTrip, tripMonths } from './trips.js';
 import { frameDue, saverOn, watchBattery } from './battery.js';
+import { REPORT_KINDS, REPORTS_EVERY_MS, fetchReports, justPassed, reportAhead, reportBox, reportsOnRoute, sendReport as sendRoadReport, voteReport } from './road-reports.js';
+import { Convoy, TripShare, convoyOrder, watchTrip } from './together.js';
+import { COMMUTE_DEFAULTS, DAY_ORDER, CommuteError, commuteOff, commuteOn, commuteTest } from './commute.js';
+import { isCode } from './hub.js';
 import * as voice from './voice.js';
 
 const $ = (id) => document.getElementById(id);
@@ -91,7 +95,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -150,6 +154,17 @@ const S = {
   saving: false,            // battery saver on right now
   crawl: null,
   month: null,              // which month the summary shows
+  share: null,              // this trip, shared live with a link
+  pendingShare: null,       // a share from before the app was closed, for the resumed trip
+  convoy: Convoy.resume(),
+  watching: null,           // someone else's trip, being followed
+  together: null,           // which the sharing sheet is about: 'share' or 'convoy'
+  roadReports: [],
+  roadPlaced: [],
+  roadSaid: new Set(),
+  roadAsked: new Set(),
+  roadAt: 0,
+  asking: null,
 };
 
 const gps = new Gps(onGpsFix, onGpsError);
@@ -205,6 +220,36 @@ function applyStaticText() {
   label($('month-prev'), t('monthPrev'), UI.back);
   label($('month-next'), t('monthNext'), UI.back);
   $('month-days-label').textContent = t('monthDays');
+  label($('btn-report'), t('roadTitle'), UI.hazard);
+  label($('report-back'), t('back'), UI.close);
+  label($('together-back'), t('back'), UI.close);
+  label($('watch-back'), t('back'), UI.close);
+  $('report-title').textContent = t('roadTitle');
+  $('report-text').textContent = t('roadText');
+  $('report-still').textContent = t('roadStill');
+  $('report-gone').textContent = t('roadGone');
+  $('name-title').textContent = t('nameTitle');
+  $('name-text').textContent = t('nameText');
+  $('name-input').placeholder = t('namePlaceholder');
+  $('name-save').textContent = t('nameSave');
+  $('name-cancel').textContent = t('back');
+  $('join-name-label').textContent = t('nameTitle');
+  $('join-name').placeholder = t('namePlaceholder');
+  $('join-yes').textContent = t('convoyJoin');
+  $('join-no').textContent = t('convoyNo');
+  $('set-sharing-title').textContent = t('setSharing');
+  $('sharing-text').textContent = t('sharingText');
+  $('sharing-name').placeholder = t('namePlaceholder');
+  $('sharing-name').value = S.settings.name || '';
+  $('set-commute-title').textContent = t('setCommute');
+  $('commute-text').textContent = t('commuteText');
+  $('commute-on-label').textContent = t('commuteOn');
+  $('commute-time-label').textContent = t('commuteTime');
+  $('commute-days-label').textContent = t('commuteDays');
+  $('commute-slow-label').textContent = t('commuteSlow');
+  $('commute-test').textContent = t('commuteTest');
+  renderCommute();
+  renderShareBtn();
   $('set-saver-title').textContent = t('setSaver');
   $('saver-text').textContent = t('saverText');
   $('saver-auto').textContent = t('saverAuto');
@@ -515,12 +560,15 @@ function applyTheme() {
 /* ---------- Views ---------- */
 
 // Sheets that open over the main screen, in place of its buttons.
-const IDLE_SHEETS = new Set(['explore', 'placecard', 'car']);
+const IDLE_SHEETS = new Set(['explore', 'placecard', 'car', 'watch']);
 
 function show(view) {
   S.view = view;
   render();
   syncTrafficMap();
+  renderShareBtn();
+  renderConvoy();
+  $('btn-report').hidden = view !== 'nav' || !togetherReady() || S.mode === 'walk';
 }
 
 /* ---------- Traffic on the map ---------- */
@@ -565,6 +613,11 @@ function render() {
   $('settings').hidden = overlay !== 'settings';
   $('vehicle').hidden = overlay !== 'vehicle';
   $('summary').hidden = overlay !== 'summary';
+  $('report-sheet').hidden = overlay !== 'roadreport';
+  $('together').hidden = overlay !== 'together';
+  $('convoy-join').hidden = overlay !== 'convoyjoin';
+  $('name-sheet').hidden = overlay !== 'name';
+  $('watch').hidden = overlay !== 'watch';
   $('stops').hidden = overlay !== 'stops';
   observeBottom();
 }
@@ -590,6 +643,9 @@ addEventListener('popstate', (e) => {
   const was = S.overlay;
   S.overlay = st.overlay || null;
   cancelEar();
+  if (was === 'watch' && S.overlay !== 'watch') closeWatch();
+  if (was === 'convoyjoin') S.joining = null;
+  if (was === 'name' && S.overlay !== 'name' && !S.afterBack) S.afterName = null;
   if (was === 'vehicle' && S.overlay !== 'vehicle') vehicleUI.close();
   if (was === 'stops' && S.overlay !== 'stopsearch') closeStopsPanel();
   if (was === 'stopsearch' && !S.overlay) closeStopsPanel();
@@ -616,7 +672,7 @@ const bottomObserver = 'ResizeObserver' in window ? new ResizeObserver(() => upd
 function observeBottom() {
   if (bottomObserver) {
     bottomObserver.disconnect();
-    for (const id of ['preview', 'nav-bar', 'where', 'saved-row', 'car-pill', 'stops', 'steps', 'weather', 'explore', 'placecard', 'car']) bottomObserver.observe($(id));
+    for (const id of ['preview', 'nav-bar', 'where', 'saved-row', 'car-pill', 'stops', 'steps', 'weather', 'explore', 'placecard', 'car', 'watch']) bottomObserver.observe($(id));
   }
   updateBottomInset();
 }
@@ -1038,6 +1094,16 @@ async function pasteLink() {
 function openIncoming() {
   const q = new URLSearchParams(location.search);
   // A shortcut on the home screen: hold Pintu's icon.
+  // Someone's live trip, or an invitation to drive together.
+  const watch = q.get('watch');
+  const convoy = q.get('convoy');
+  if (isCode(watch, 10) || isCode(convoy, 10)) {
+    history.replaceState(history.state, '', location.pathname);
+    if (!togetherReady()) return;
+    if (watch) openWatch(watch);
+    else offerConvoy(convoy);
+    return;
+  }
   const go = q.get('go');
   if (go) {
     history.replaceState(history.state, '', location.pathname);
@@ -1532,6 +1598,7 @@ function renderPlan() {
 
   renderPlanFuel(route);
   renderPlanArrive(route);
+  renderPlanConvoy();
   renderPlanParking();
   renderPlanWeather(route);
   renderPlanMall();
@@ -1993,6 +2060,8 @@ function setSaved(kind, place) {
   renderSaved();
   toast(t('savedDone', { name: t(kind) }));
   refreshSavedEtas();
+  // A morning alert follows home and work wherever they move to.
+  changeCommute({});
 }
 
 function removeSaved(kind) {
@@ -2001,6 +2070,7 @@ function removeSaved(kind) {
   save('saved', all);
   delete S.savedEta?.[kind];
   renderSaved();
+  changeCommute({});
 }
 
 function openSavedSearch(kind) {
@@ -2431,6 +2501,19 @@ function startGuidance({ simulate }) {
   loadLimits(S.route);
   saveMapAhead(S.route);
   S.driveLog = !simulate && S.settings.keepDrive ? new DriveLog({ dest: S.dest, mode: S.mode, version: CONFIG.version }) : null;
+  S.roadReports = [];
+  S.roadPlaced = [];
+  S.roadSaid = new Set();
+  S.roadAsked = new Set();
+  S.roadAt = 0;
+  S.roadCtrl?.abort();
+  S.roadCtrl = null;
+  answerReport(null);
+  $('report-alert').hidden = true;
+  loadRoadReports();
+  // A trip shared before Pintu was closed carries on when the trip does.
+  if (!simulate && S.pendingShare) S.share = S.pendingShare;
+  S.pendingShare = null;
   S.awayWarned = false;
   $('camera-alert').hidden = true;
   $('junction').hidden = true;
@@ -2501,6 +2584,8 @@ function onNavFix(fix, takenAt) {
   S.gathering = [];
   for (const p of st.prompts) say(p);
   renderCamera(st, fix);
+  renderRoadReport(st, fix);
+  if (Date.now() - (S.roadAt || 0) > REPORTS_EVERY_MS) loadRoadReports();
   if (Date.now() - (S.trafficAt || 0) > TRAFFIC_EVERY_MS && !S.sim) loadTraffic();
   renderJam(st);
   flushSpeech();
@@ -3053,6 +3138,7 @@ function useRoute(route) {
   if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
   S.tolls = tollsOnRoute(route, S.tollPool || []);
   if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
+  placeRoadReports();
   // Traffic for the old route doesn't belong to this one.
   S.traffic = null;
   S.jamsSaid = new Set();
@@ -3163,6 +3249,24 @@ function keepTripSummary() {
 function stopGuidance() {
   keepTripSummary();
   S.crawl = null;
+  S.roadCtrl?.abort();
+  S.roadCtrl = null;
+  S.roadReports = [];
+  S.roadPlaced = [];
+  mapView?.setReports([], ROAD_ICONS);
+  answerReport(null);
+  $('report-alert').hidden = true;
+  if (!S.sim) {
+    stopSharing(!!S.arriving);
+    // Friends see you've arrived; after that, nothing more is sent.
+    const c = S.convoy;
+    if (c && S.arriving) {
+      c.send({ fix: S.fix, eta: Date.now(), remaining: 0 }).finally(() => c.stop());
+      S.convoy = null;
+      mapView?.setFriends([]);
+    }
+  }
+  S.arriving = false;
   S.cameraCtrl?.abort();
   S.cameras = [];
   S.tollCtrl?.abort();
@@ -3227,6 +3331,7 @@ function finishTrip() {
   const onFoot = S.mode === 'walk';
   const simulated = !!S.sim;
   $('arrival-stats').textContent = arrivalStats();
+  S.arriving = true;
   stopGuidance();
   mapView?.clearRoutes();
   mapView?.setDestination(null);
@@ -4004,6 +4109,8 @@ function changeLanguage(lang) {
   if (S.lastState) { renderSign(S.lastState); renderEta(S.lastState); }
   $('chips').dataset.key = '';
   renderChips();
+  // The morning message comes in the language Pintu speaks.
+  if (commuteSettings().on) changeCommute({});
 }
 
 function wire() {
@@ -4235,7 +4342,35 @@ function wire() {
   });
 
   $('resume-yes').addEventListener('click', resumeTrip);
-  $('resume-no').addEventListener('click', () => { remove('trip'); $('resume').hidden = true; });
+  $('resume-no').addEventListener('click', () => {
+    remove('trip');
+    $('resume').hidden = true;
+    S.pendingShare?.end(false);
+    S.pendingShare = null;
+  });
+  $('btn-share').addEventListener('click', shareTrip);
+  $('btn-report').addEventListener('click', openRoadReport);
+  $('report-back').addEventListener('click', () => history.back());
+  $('report-still').addEventListener('click', () => answerReport(true));
+  $('report-gone').addEventListener('click', () => answerReport(false));
+  $('together-back').addEventListener('click', () => history.back());
+  $('together-share').addEventListener('click', togetherShare);
+  $('together-stop').addEventListener('click', togetherStop);
+  $('convoy-bar').addEventListener('click', () => openTogether('convoy'));
+  $('plan-convoy').addEventListener('click', startConvoy);
+  $('join-yes').addEventListener('click', joinConvoy);
+  $('join-no').addEventListener('click', () => history.back());
+  $('join-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinConvoy(); });
+  $('name-save').addEventListener('click', saveName);
+  $('name-cancel').addEventListener('click', () => history.back());
+  $('name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
+  $('watch-back').addEventListener('click', () => history.back());
+  $('watch-go').addEventListener('click', goToWatched);
+  $('sharing-name').addEventListener('change', (e) => setSetting('name', e.target.value.replace(/\s+/g, ' ').trim().slice(0, 30)));
+  $('commute-on').addEventListener('change', (e) => switchCommute(e.target.checked));
+  $('commute-time').addEventListener('change', (e) => { if (/^\d\d:\d\d$/.test(e.target.value)) changeCommute({ time: e.target.value }); });
+  $('commute-slow').addEventListener('change', (e) => changeCommute({ slowOnly: e.target.checked }));
+  $('commute-test').addEventListener('click', testCommute);
 
   $('lang-ms').addEventListener('click', () => changeLanguage('ms'));
   $('lang-en').addEventListener('click', () => changeLanguage('en'));
@@ -4281,6 +4416,559 @@ function wire() {
   }, 30000);
   setInterval(renderClock, 15000);
   setInterval(() => { if (S.view === 'nav' && !S.sim) renderChips(); }, 5000);
+}
+
+/* ---------- With other people: shared trips, convoys, road reports ---------- */
+
+const FRIEND_COLORS = ['#E8590C', '#9C36B5', '#2B8A3E', '#C2255C', '#1971C2', '#5F3DC4', '#0C8599', '#A61E4D'];
+const ROAD_ICONS = { police: UI.police, crash: UI.crash, hazard: UI.hazard, jam: UI.trafficLight, closed: UI.closed };
+const togetherReady = () => !!CONFIG.server;
+
+// Your name, asked for once, the first time someone else will see it.
+function ensureName(then) {
+  if (S.settings.name) { then(); return; }
+  S.afterName = then;
+  $('name-input').value = '';
+  openOverlay('name');
+  setTimeout(() => $('name-input').focus(), 50);
+}
+
+function saveName() {
+  const name = $('name-input').value.replace(/\s+/g, ' ').trim().slice(0, 30);
+  if (!name) { $('name-input').focus(); return; }
+  setSetting('name', name);
+  $('sharing-name').value = name;
+  const next = S.afterName;
+  S.afterName = null;
+  S.afterBack = next;
+  history.back();
+}
+
+// The phone's share sheet, or the clipboard where there isn't one.
+async function shareLink(url, text, title) {
+  if (navigator.share) {
+    try {
+      await navigator.share({ title, text, url });
+      return true;
+    } catch (e) {
+      if (e?.name === 'AbortError') return false;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(`${text} ${url}`);
+    toast(t('shareCopied'), 5000);
+    return true;
+  } catch {
+    toast(url, 10000);
+    return false;
+  }
+}
+
+function tripNumbers() {
+  const st = S.lastState;
+  if (S.view === 'nav' && st) return { eta: Date.now() + timeLeft(st) * 1000, remaining: Math.round(st.remainingDistance) };
+  const r = S.routes?.[S.selected];
+  if (S.view === 'preview' && r) return { eta: Date.now() + withTraffic(r) * 1000, remaining: Math.round(r.distanceKm * 1000) };
+  return { eta: null, remaining: null };
+}
+
+// Once a second: send where you are to whoever is following, and hear from the convoy.
+function tickTogether() {
+  const now = Date.now();
+  if (S.share && S.view === 'nav' && !S.sim && S.share.due(now) && S.fix) {
+    S.share.send({ fix: S.fix, ...tripNumbers(), dest: S.dest }, now).then(() => {
+      if (S.share?.over) S.share = null;
+      renderShareBtn();
+    });
+  }
+  const c = S.convoy;
+  if (c && !S.sim && (S.view === 'nav' || S.view === 'preview' || S.view === 'idle') && c.due(now, S.view === 'nav')) {
+    c.send({ fix: S.fix, ...tripNumbers() }, now).then(() => {
+      if (c.over && S.convoy === c) {
+        S.convoy = null;
+        toast(t('convoyGone'));
+      }
+      renderConvoy();
+    });
+  }
+}
+
+/* ----- A live link to your trip ----- */
+
+function renderShareBtn() {
+  const btn = $('btn-share');
+  btn.hidden = !togetherReady() || !!S.sim || S.view !== 'nav';
+  const on = !!S.share;
+  label(btn, t('shareTripAria'), UI.share);
+  const word = document.createElement('span');
+  word.textContent = t(on ? (S.share.watched ? 'shareWatched' : 'shareOn') : 'shareTrip');
+  btn.append(word);
+  btn.classList.toggle('is-on', on);
+  btn.setAttribute('aria-pressed', String(on));
+}
+
+function shareTrip() {
+  if (S.share) { openTogether('share'); return; }
+  ensureName(async () => {
+    if (!S.fix || S.view !== 'nav') { toast(t('roadNoFix')); return; }
+    try {
+      const share = await new TripShare().start({ name: S.settings.name, dest: S.dest, fix: S.fix, ...tripNumbers() });
+      S.share = share;
+      renderShareBtn();
+      const sent = await shareLink(share.link, t('shareText', { dest: S.dest?.name || '' }), t('shareTitle'));
+      if (sent) toast(t('shareStarted'), 6000);
+    } catch {
+      toast(t('shareFailed'), 5000);
+    }
+  });
+}
+
+function stopSharing(arrived = false) {
+  if (!S.share) return;
+  S.share.end(arrived);
+  S.share = null;
+  renderShareBtn();
+}
+
+/* ----- Following someone's trip ----- */
+
+function openWatch(id) {
+  S.watching = { id, data: null, failures: 0, gone: false, fitted: false, timer: null };
+  openOverlay('watch');
+  renderWatch();
+  pollWatch();
+}
+
+async function pollWatch() {
+  const w = S.watching;
+  if (!w) return;
+  clearTimeout(w.timer);
+  try {
+    w.data = await watchTrip(w.id);
+    w.failures = 0;
+  } catch (e) {
+    if (e?.status === 404) w.gone = true;
+    else w.failures++;
+  }
+  if (S.watching !== w) return;
+  renderWatch();
+  if (!w.gone && !w.data?.ended) w.timer = setTimeout(pollWatch, 10000);
+}
+
+function renderWatch() {
+  const w = S.watching;
+  if (!w) return;
+  const d = w.data;
+  const lang = getLang();
+  const name = d?.name || t('watchSomeone');
+  $('watch-title').textContent = w.gone ? t('watchGone') : t('watchTitle', { name });
+  $('watch-to').textContent = d?.dest?.name ? t('watchTo', { dest: d.dest.name }) : '';
+  let eta = '';
+  if (d?.arrived) eta = t('watchArrived', { name, dest: d.dest.name });
+  else if (d?.ended) eta = t('watchEnded');
+  else if (d?.eta) eta = t('watchEta', { clock: fmtClock(new Date(d.eta), lang), time: fmtDuration(Math.max(60, (d.eta - d.now) / 1000), lang) });
+  $('watch-eta').textContent = eta;
+  const ago = d ? Math.floor((d.now - d.at) / 60000) : 0;
+  $('watch-at').textContent = w.failures ? t('watchFailed') : d && !d.ended ? t('watchAt', { ago: ago < 1 ? t('watchNow') : t('watchAgo', { n: ago }) }) : '';
+  $('watch-go').hidden = !d?.dest;
+  if (d?.dest) $('watch-go').textContent = t('watchGoThere', { dest: d.dest.name || '' });
+  if (!d || !mapView) return;
+  mapView.setFriends(d.pos && !d.arrived ? [{ id: 'watch', name, pos: d.pos, color: FRIEND_COLORS[0] }] : []);
+  mapView.setDestination(d.dest);
+  if (!w.fitted && d.pos) {
+    w.fitted = true;
+    mapView.fit([[[d.pos.lng, d.pos.lat], [d.dest.lng, d.dest.lat]]], { top: 120, bottom: $('watch').offsetHeight + 40, left: 50, right: 50 });
+  }
+}
+
+function closeWatch() {
+  if (!S.watching) return;
+  clearTimeout(S.watching.timer);
+  S.watching = null;
+  mapView?.setFriends(convoyFriends());
+  mapView?.setDestination(null);
+}
+
+function goToWatched() {
+  const dest = S.watching?.data?.dest;
+  if (!dest) return;
+  S.afterBack = () => goTo({ name: dest.name, detail: '', lng: dest.lng, lat: dest.lat, country: '' });
+  history.back();
+}
+
+/* ----- Convoys ----- */
+
+function convoyFriends() {
+  const c = S.convoy;
+  if (!c) return [];
+  return c.members.map((m, i) => ({ id: m.member, name: m.name, pos: m.pos, color: FRIEND_COLORS[i % FRIEND_COLORS.length], me: m.member === c.member }))
+    .filter((m) => !m.me);
+}
+
+function convoyLine(m) {
+  if (m.remaining === 0) return t('convoyArrived');
+  if (m.gap == null) return m.pos ? '' : t('convoyUnknown');
+  if (Math.abs(m.gap) < 150) return t('convoyNear');
+  return t(m.gap > 0 ? 'convoyAhead' : 'convoyBehind', { distance: fmtDistance(Math.abs(m.gap)) });
+}
+
+function renderConvoy() {
+  const c = S.convoy;
+  const others = c ? convoyOrder(c.members, c.member, tripNumbers().remaining) : [];
+  if (!S.watching) mapView?.setFriends(convoyFriends());
+  const bar = $('convoy-bar');
+  bar.hidden = !c || S.view !== 'nav';
+  if (!bar.hidden) {
+    $('convoy-bar-icon').innerHTML = UI.people;
+    $('convoy-bar-text').textContent = others.length
+      ? others.slice(0, 2).map((m) => [m.name, convoyLine(m)].filter(Boolean).join(' ')).join(' · ') + (others.length > 2 ? ` +${others.length - 2}` : '')
+      : t('convoyAlone');
+  }
+  if (S.view === 'preview') renderPlanConvoy();
+  if (S.overlay === 'together' && S.together === 'convoy') renderTogether();
+}
+
+function renderPlanConvoy() {
+  const row = $('plan-convoy');
+  row.hidden = !togetherReady() || S.mode === 'walk';
+  if (row.hidden) return;
+  $('plan-convoy-icon').innerHTML = UI.people;
+  $('plan-convoy-chev').innerHTML = UI.chevron;
+  const c = S.convoy;
+  const names = c ? c.members.filter((m) => m.member !== c.member).map((m) => m.name).filter(Boolean) : [];
+  $('plan-convoy-title').textContent = c ? t('convoyTitle') : t('convoyStart');
+  $('plan-convoy-detail').textContent = !c ? t('convoyStartDetail') : names.length ? t('convoyBar', { names: names.join(', ') }) : t('convoyAlone');
+}
+
+function startConvoy() {
+  if (S.convoy) { openTogether('convoy'); return; }
+  ensureName(async () => {
+    try {
+      const c = await Convoy.start({ name: S.settings.name, dest: S.dest, fix: S.fix });
+      S.convoy = c;
+      renderConvoy();
+      const sent = await shareLink(c.link, t('convoyText', { dest: S.dest?.name || '' }), t('convoyTitle'));
+      if (sent) toast(t('convoyStarted'), 5000);
+    } catch {
+      toast(t('convoyFailed'), 5000);
+    }
+  });
+}
+
+async function leaveConvoy() {
+  const c = S.convoy;
+  if (!c) return;
+  S.convoy = null;
+  await c.leave();
+  mapView?.setFriends([]);
+  renderConvoy();
+  toast(t('convoyLeft'));
+}
+
+async function offerConvoy(id) {
+  if (S.convoy?.id === id) {
+    goTo({ ...S.convoy.dest, detail: '', country: '' });
+    return;
+  }
+  let peek;
+  try {
+    peek = await Convoy.peek(id);
+  } catch (e) {
+    toast(t(e?.status === 404 ? 'convoyGone' : 'convoyFailed'), 6000);
+    return;
+  }
+  S.joining = { id, peek };
+  const names = peek.members.map((m) => m.name).filter(Boolean);
+  $('join-title').textContent = t('convoyJoinTitle', { dest: peek.dest.name });
+  $('join-text').textContent = t('convoyJoinText', { names: names.length ? names.join(', ') : t('convoyJoinSomeone') });
+  $('join-name').value = S.settings.name || '';
+  openOverlay('convoyjoin');
+}
+
+async function joinConvoy() {
+  const j = S.joining;
+  if (!j) return;
+  const name = $('join-name').value.replace(/\s+/g, ' ').trim().slice(0, 30);
+  if (!name) { $('join-name').focus(); return; }
+  setSetting('name', name);
+  $('join-yes').disabled = true;
+  try {
+    if (S.convoy) await S.convoy.leave();
+    const c = await Convoy.join(j.id, { name, fix: S.fix });
+    S.convoy = c;
+    S.joining = null;
+    S.afterBack = () => goTo({ name: c.dest.name, detail: '', lng: c.dest.lng, lat: c.dest.lat, country: '' });
+    history.back();
+  } catch (e) {
+    toast(t(e?.status === 409 ? 'convoyFull' : e?.status === 404 ? 'convoyGone' : 'convoyFailed'), 6000);
+  } finally {
+    $('join-yes').disabled = false;
+  }
+}
+
+/* ----- The sheet for either ----- */
+
+function openTogether(kind) {
+  S.together = kind;
+  openOverlay('together');
+  renderTogether();
+}
+
+function renderTogether() {
+  const kind = S.together;
+  const share = kind === 'share';
+  $('together-title').textContent = t(share ? 'shareMenuTitle' : 'convoyTitle');
+  $('together-text').textContent = t(share ? 'shareMenuText' : 'convoyMenuText');
+  $('together-share').textContent = t(share ? 'shareAgain' : 'convoyShare');
+  $('together-stop').textContent = t(share ? 'shareStop' : 'convoyLeave');
+  const c = S.convoy;
+  const rows = !share && c ? convoyOrder(c.members, c.member, tripNumbers().remaining) : [];
+  $('together-list').replaceChildren(...rows.map((m, i) => {
+    const li = document.createElement('li');
+    const dot = document.createElement('span');
+    dot.className = 'friend-dot';
+    dot.style.setProperty('--friend', FRIEND_COLORS[c.members.indexOf(c.members.find((x) => x.member === m.member)) % FRIEND_COLORS.length] || FRIEND_COLORS[i]);
+    dot.textContent = (m.name || '?').charAt(0).toUpperCase();
+    const name = document.createElement('strong');
+    name.textContent = m.name || t('convoyJoinSomeone');
+    const where = document.createElement('span');
+    where.textContent = convoyLine(m);
+    li.append(dot, name, where);
+    return li;
+  }));
+  $('together-list').hidden = !rows.length;
+}
+
+function togetherShare() {
+  if (S.together === 'share' && S.share) shareLink(S.share.link, t('shareText', { dest: S.dest?.name || '' }), t('shareTitle'));
+  if (S.together === 'convoy' && S.convoy) shareLink(S.convoy.link, t('convoyText', { dest: S.convoy.dest?.name || '' }), t('convoyTitle'));
+}
+
+function togetherStop() {
+  const kind = S.together;
+  S.afterBack = () => {
+    if (kind === 'share') {
+      stopSharing(false);
+      toast(t('shareStopped'));
+    } else {
+      leaveConvoy();
+    }
+  };
+  history.back();
+}
+
+/* ----- Road reports ----- */
+
+function renderReportKinds() {
+  $('report-kinds').replaceChildren(...REPORT_KINDS.map((kind) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `report-kind report-${kind}`;
+    b.innerHTML = ROAD_ICONS[kind];
+    const word = document.createElement('span');
+    word.textContent = t(`road_${kind}`);
+    b.append(word);
+    b.addEventListener('click', () => {
+      S.afterBack = () => submitReport(kind);
+      history.back();
+    });
+    return b;
+  }));
+}
+
+function openRoadReport() {
+  renderReportKinds();
+  openOverlay('roadreport');
+}
+
+async function submitReport(kind) {
+  if (!S.fix) { toast(t('roadNoFix')); return; }
+  try {
+    const r = await sendRoadReport(kind, S.fix);
+    // Your own report needn't be read back to you.
+    if (r?.id != null) {
+      S.roadSaid?.add(r.id);
+      S.roadAsked?.add(r.id);
+    }
+    toast(t('roadSent', { kind: t(`road_${kind}`) }));
+  } catch {
+    toast(t('roadFailed'), 5000);
+  }
+}
+
+function loadRoadReports() {
+  if (!togetherReady() || S.mode === 'walk' || !S.route || S.roadCtrl) return;
+  const route = S.route;
+  const ctrl = new AbortController();
+  S.roadCtrl = ctrl;
+  S.roadAt = Date.now();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  const from = S.lastState?.onRoute ? S.lastState.s : 0;
+  fetchReports(reportBox(route, from), { signal: ctrl.signal }).then((found) => {
+    if (S.route !== route) return;
+    S.roadReports = found;
+    placeRoadReports();
+  }).catch(() => { /* none heard is the same as none reported */ })
+    .finally(() => {
+      clearTimeout(timer);
+      if (S.roadCtrl === ctrl) S.roadCtrl = null;
+    });
+}
+
+function placeRoadReports() {
+  S.roadPlaced = S.route ? reportsOnRoute(S.route, S.roadReports || []) : [];
+  mapView?.setReports(S.view === 'nav' ? S.roadPlaced : [], ROAD_ICONS);
+}
+
+function renderRoadReport(st, fix) {
+  const box = $('report-alert');
+  const near = st.onRoute && S.mode !== 'walk' ? reportAhead(S.roadPlaced, st.s, fix.speed ?? 0) : null;
+  box.hidden = !near;
+  if (near) {
+    const { report, ahead } = near;
+    const lang = getLang();
+    box.dataset.kind = report.kind;
+    $('report-icon').innerHTML = ROAD_ICONS[report.kind];
+    const distance = fmtDistance(Math.max(ahead, 10));
+    $('report-distance').textContent = distance;
+    box.setAttribute('aria-label', t('roadAhead', { kind: t(`road_${report.kind}`), distance }));
+    if (!S.roadSaid.has(report.id) && !(voice.busy() && !st.prompts.length && ahead > 200)) {
+      S.roadSaid.add(report.id);
+      if (S.settings.voiceLevel === 'full' && !(S.sim && S.sim.factor >= SIM_FAST)) {
+        speakText(t(`say_${report.kind}`, { distance: sayDistance(ahead, lang) }), { wait: voice.WAIT_TURN_MS });
+      }
+    }
+  }
+  // Just past one: is it still there? Not in a practice drive, where nobody's looking.
+  if (!S.sim && !S.asking) {
+    const passed = justPassed(S.roadPlaced, st.s, S.roadAsked);
+    if (passed) askAboutReport(passed);
+  }
+}
+
+function askAboutReport(report) {
+  S.roadAsked.add(report.id);
+  S.asking = report;
+  $('report-ask-title').textContent = t('roadAsk', { kind: t(`road_${report.kind}`) });
+  $('report-ask').hidden = false;
+  clearTimeout(S.askTimer);
+  S.askTimer = setTimeout(() => answerReport(null), 12000);
+}
+
+function answerReport(still) {
+  const report = S.asking;
+  S.asking = null;
+  clearTimeout(S.askTimer);
+  $('report-ask').hidden = true;
+  if (!report || still == null) return;
+  voteReport(report.id, still).catch(() => {});
+  if (!still) {
+    S.roadReports = (S.roadReports || []).filter((r) => r.id !== report.id);
+    placeRoadReports();
+  }
+  toast(t('roadThanks'));
+}
+
+/* ----- Morning alerts ----- */
+
+const commuteSettings = () => ({ ...COMMUTE_DEFAULTS, ...(S.settings.commute || {}) });
+const homeAndWork = () => { const s = savedPlaces(); return s.home && s.work ? s : null; };
+
+function nextAlertText(c, now = new Date()) {
+  const [h, m] = c.time.split(':').map(Number);
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + i);
+    if (!c.days.includes(d.getDay())) continue;
+    if (i === 0 && now.getHours() * 60 + now.getMinutes() >= h * 60 + m) continue;
+    const day = i === 0 ? t('today') : i === 1 ? t('tomorrow') : t(`dayLong_${d.getDay()}`);
+    d.setHours(h, m, 0, 0);
+    return t('commuteReady', { day, time: fmtClock(d, getLang()) });
+  }
+  return '';
+}
+
+function renderCommute(status) {
+  const c = commuteSettings();
+  const places = homeAndWork();
+  const ready = togetherReady() && !!places;
+  $('set-commute').hidden = !togetherReady();
+  $('commute-on').checked = c.on;
+  $('commute-on').disabled = !ready && !c.on;
+  $('commute-more').hidden = !c.on;
+  $('commute-time').value = c.time;
+  $('commute-days').replaceChildren(...DAY_ORDER.map((d) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'day';
+    b.textContent = t(`day_${d}`);
+    b.setAttribute('aria-pressed', String(c.days.includes(d)));
+    b.setAttribute('aria-label', t(`dayLong_${d}`));
+    b.addEventListener('click', () => {
+      const days = c.days.includes(d) ? c.days.filter((x) => x !== d) : [...c.days, d];
+      if (!days.length) return;
+      changeCommute({ days });
+    });
+    return b;
+  }));
+  $('commute-slow').checked = c.slowOnly;
+  $('commute-status').textContent = status ?? (!places ? t('commuteNeedSaved') : c.on ? nextAlertText(c) : '');
+}
+
+async function workerReady() {
+  if (!('serviceWorker' in navigator)) return null;
+  return Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 6000))]);
+}
+
+async function sendCommute() {
+  const c = commuteSettings();
+  const places = homeAndWork();
+  if (!places) throw new CommuteError('places');
+  return commuteOn({ home: places.home, work: places.work, time: c.time, days: c.days, slowOnly: c.slowOnly, lang: getLang() }, await workerReady());
+}
+
+function commuteProblem(e) {
+  if (e instanceof CommuteError) return t({ denied: 'commuteDenied', unsupported: 'commuteUnsupported', places: 'commuteNeedSaved' }[e.kind] || 'commuteFailed');
+  return t('commuteFailed');
+}
+
+async function switchCommute(on) {
+  if (!on) {
+    setSetting('commute', { ...commuteSettings(), on: false });
+    renderCommute();
+    commuteOff(await workerReady());
+    return;
+  }
+  renderCommute(t('commuteSaving'));
+  try {
+    await sendCommute();
+    setSetting('commute', { ...commuteSettings(), on: true });
+    renderCommute();
+  } catch (e) {
+    setSetting('commute', { ...commuteSettings(), on: false });
+    renderCommute(commuteProblem(e));
+  }
+}
+
+// A change to the time, the days or home and work goes to the server too.
+function changeCommute(change) {
+  setSetting('commute', { ...commuteSettings(), ...change });
+  renderCommute();
+  if (!commuteSettings().on) return;
+  clearTimeout(S.commuteTimer);
+  S.commuteTimer = setTimeout(() => {
+    if (!homeAndWork()) { switchCommute(false); return; }
+    sendCommute().then(() => renderCommute()).catch((e) => renderCommute(commuteProblem(e)));
+  }, 800);
+}
+
+async function testCommute() {
+  try {
+    await commuteTest();
+    toast(t('commuteSent'), 5000);
+  } catch (e) {
+    toast(t(e?.status === 429 ? 'commuteTooMany' : e?.status === 503 ? 'commuteNoKey' : 'commuteFailed'), 6000);
+  }
 }
 
 /* ---------- Pump prices ---------- */
@@ -4582,6 +5270,13 @@ async function main() {
   show('idle');
   offerResume();
   startGpsIfAllowed();
+  // A trip shared before Pintu was closed: kept for the trip if it's picked up again.
+  const shared = TripShare.resume();
+  if (shared) {
+    if (S.resumeTrip) S.pendingShare = shared;
+    else shared.end(false);
+  }
+  setInterval(tickTogether, 1000);
   watchBattery((b) => {
     S.battery = b;
     applySaver();

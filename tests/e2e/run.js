@@ -3,6 +3,8 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
+import { Hub } from '../../server/hub.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -36,6 +38,22 @@ const ORIGIN = `http://127.0.0.1:${server.address().port}/`;
 
 const stub = await readFile(path.join(root, 'tests/e2e/stub-maplibre.js'), 'utf8');
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
+const HUB_PATHS = /^\/(share|reports|convoy|commute|push)(\/|$)/;
+
+// The real hub from server/hub.js, on an in-memory database, as a stand-in server.
+function standInHub({ now = () => Date.now(), env = {}, fetchImpl } = {}) {
+  const db = new DatabaseSync(':memory:');
+  const sql = {
+    exec(q, ...args) {
+      if (!args.length && q.trim().split(';').filter((x) => x.trim()).length > 1) { db.exec(q); return []; }
+      const st = db.prepare(q);
+      if (/^\s*SELECT/i.test(q)) return st.all(...args).map((r) => ({ ...r }));
+      st.run(...args);
+      return [];
+    },
+  };
+  return new Hub({ storage: { sql } }, env, { clock: now, fetchImpl });
+}
 
 const PHOTON = {
   features: [
@@ -59,13 +77,13 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom, fuel, init } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom, fuel, init, hub } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
-    const server = appServer || traffic || tomtom || fuel ? "'https://pintu.test'" : 'null';
+    const server = appServer || traffic || tomtom || fuel || hub ? "'https://pintu.test'" : 'null';
     const config = original.replace(/server: [^,]+,/, `server: ${server},`).replace(/humanVoices: [^,]+,/, `humanVoices: ${humanVoices},`);
     route.fulfill({ contentType: 'text/javascript', body: config });
   });
@@ -95,6 +113,14 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       if (!answer) return route.fulfill({ status: 503, json: { error: 'no key' }, headers: CORS });
       if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
       return route.fulfill({ json: answer, headers: CORS });
+    }
+    if (host === 'pintu.test' && HUB_PATHS.test(new URL(url).pathname)) {
+      const req = route.request();
+      const body = req.postData();
+      log.hub.push({ path: new URL(url).pathname, url, body: body ? JSON.parse(body) : null });
+      if (!hub) return route.fulfill({ status: 503, json: { error: 'not set up' }, headers: CORS });
+      const res = await hub.fetch(new Request(`https://hub${new URL(url).pathname}${new URL(url).search}`, { method: req.method(), body: body || undefined }));
+      return route.fulfill({ status: res.status, body: await res.text(), contentType: 'application/json', headers: CORS });
     }
     if (host === 'pintu.test' && new URL(url).pathname === '/fuel') {
       log.fuel.push(url);
@@ -4462,6 +4488,294 @@ await check('battery saver: comes on by itself when low, draws less, and can be 
   assert.match(await text(page, '#saver-now'), /Sedang hidup/);
   await noOverflow(page, 'settings with saver');
   assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+/* ---------- 0.9.5: shared trips, road reports, convoys, morning alerts ---------- */
+
+// The phone's share sheet, played by the test.
+const SHARE_SHEET = () => {
+  window.__shared = [];
+  navigator.share = async (d) => { window.__shared.push(d); };
+};
+const named = (name, extra = {}) => ({ storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { name, ...extra } } });
+const until = async (fn, ms = 25000, what = 'condition') => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const v = await fn();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+};
+
+await check('share my trip: asks your name once, sends a link, and others follow it until you arrive', async () => {
+  const hub = standInHub();
+  const a = await newApp(browser, { ...quiet, scale: 2, hub, init: SHARE_SHEET });
+  await toNav(a.page);
+  const trip = prepareTrip(cityTrip());
+  await roll(a.page, trip, 0, 200, 12);
+  assert.equal(await vis(a.page, '#btn-share'), true);
+  assert.equal(await text(a.page, '#btn-share'), 'Kongsi');
+  await a.page.click('#btn-share');
+  await a.page.waitForSelector('#name-sheet:not([hidden])');
+  await noOverflow(a.page, 'name sheet');
+  await a.page.fill('#name-input', 'Ali');
+  await a.page.click('#name-save');
+  await a.page.waitForFunction(() => window.__shared.length === 1);
+  const shared = (await a.page.evaluate(() => window.__shared))[0];
+  assert.match(shared.url, /\?watch=[a-z2-9]{10}$/);
+  assert.match(shared.text, /Suria KLCC/);
+  assert.equal(await text(a.page, '#btn-share'), 'Dikongsi');
+  assert.equal(await a.page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).name), 'Ali', 'asked once, kept');
+  const start = a.log.hub.find((x) => x.path === '/share/start');
+  assert.equal(start.body.name, 'Ali');
+  assert.ok(start.body.pos && start.body.eta > Date.now() && start.body.remaining > 0);
+  await a.page.screenshot({ path: `${shots}/63-sharing.png` });
+
+  // Someone opens the link.
+  const id = shared.url.split('=')[1];
+  const b = await newApp(browser, { ...quiet, scale: 2, hub, url: `${ORIGIN}?watch=${id}` });
+  await b.page.waitForFunction(() => /Ali dalam perjalanan/.test(document.getElementById('watch-title').textContent));
+  assert.equal(await text(b.page, '#watch-to'), 'Ke Suria KLCC');
+  assert.match(await text(b.page, '#watch-eta'), /^Tiba lebih kurang .+, \d+ min lagi$/);
+  assert.match(await text(b.page, '#watch-at'), /Dikemas kini baru sahaja/);
+  assert.equal(await b.page.locator('.friend .friend-name').innerText(), 'Ali');
+  assert.equal(await b.page.evaluate(() => location.search), '');
+  await noOverflow(b.page, 'watching');
+  await b.page.screenshot({ path: `${shots}/64-watching.png` });
+  await b.ctx.close();
+
+  // Where you are goes on being sent as you drive.
+  await roll(a.page, trip, 200, 400, 12);
+  await until(() => a.log.hub.some((x) => x.path === '/share/update'), 25000, 'an update');
+  // Arriving ends it, and says so.
+  await driveTo(a.page, cityTrip(), { from: 400 });
+  await a.page.waitForSelector('#arrival:not([hidden])');
+  await until(() => a.log.hub.some((x) => x.path === '/share/end' && x.body.arrived === true), 5000, 'the end');
+  const c = await newApp(browser, { ...quiet, hub, url: `${ORIGIN}?watch=${id}` });
+  await c.page.waitForFunction(() => /dah sampai/.test(document.getElementById('watch-eta').textContent));
+  assert.match(await text(c.page, '#watch-eta'), /^Ali dah sampai di Suria KLCC\.$/);
+  assert.deepEqual([...a.log.errors, ...c.log.errors], []);
+  await c.ctx.close();
+  await a.ctx.close();
+});
+
+await check('share my trip: stopped by hand; an ended or unknown link says so', async () => {
+  const hub = standInHub();
+  const a = await newApp(browser, { ...named('Ali'), hub, init: SHARE_SHEET });
+  await toNav(a.page);
+  await a.page.click('#btn-share');
+  await a.page.waitForFunction(() => window.__shared.length === 1);
+  assert.equal(await vis(a.page, '#name-sheet'), false, 'the name was known');
+  await a.page.click('#btn-share');
+  await a.page.waitForSelector('#together:not([hidden])');
+  assert.equal(await text(a.page, '#together-title'), 'Perjalanan ini dikongsi');
+  await a.page.click('#together-share');
+  await a.page.waitForFunction(() => window.__shared.length === 2);
+  await a.page.click('#together-stop');
+  await a.page.waitForFunction(() => document.getElementById('btn-share').textContent === 'Kongsi');
+  await until(() => a.log.hub.some((x) => x.path === '/share/end' && x.body.arrived === false), 5000, 'the end');
+  await a.ctx.close();
+
+  const b = await newApp(browser, { ...quiet, hub, url: `${ORIGIN}?watch=abcdefghjk` });
+  await b.page.waitForFunction(() => /tamat atau tidak wujud/.test(document.getElementById('watch-title').textContent));
+  assert.equal(await vis(b.page, '#watch-go'), false);
+  await b.page.click('#watch-back');
+  assert.equal(await vis(b.page, '#where'), true);
+  await b.ctx.close();
+});
+
+await check('road reports: police reported by one driver warns the next, who is asked if it\'s still there', async () => {
+  const hub = standInHub();
+  const trip = prepareTrip(cityTrip());
+  const a = await newApp(browser, { ...quiet, scale: 2, hub });
+  await toNav(a.page);
+  await roll(a.page, trip, 0, 300, 12);
+  assert.equal(await vis(a.page, '#btn-report'), true);
+  await smallTargets(a.page, 'report button', ['#btn-report', '#btn-share']);
+  await a.page.click('#btn-report');
+  await a.page.waitForSelector('#report-sheet:not([hidden])');
+  assert.deepEqual(await a.page.locator('.report-kind').allInnerTexts(), ['Polis', 'Kemalangan', 'Bahaya', 'Sesak', 'Jalan ditutup']);
+  await noOverflow(a.page, 'report sheet');
+  await a.page.screenshot({ path: `${shots}/65-report.png` });
+  await a.page.locator('.report-kind', { hasText: 'Polis' }).click();
+  await a.page.waitForFunction(() => /Polis dilaporkan/.test(document.getElementById('toast').textContent));
+  const sent = a.log.hub.find((x) => x.path === '/reports/add').body;
+  assert.equal(sent.kind, 'police');
+  assert.match(sent.device, /^[a-z2-9]{16}$/);
+  assert.ok(Number.isFinite(sent.heading), 'with the way you were going');
+  // Your own report isn't read back to you.
+  await roll(a.page, trip, 300, 340, 12);
+  assert.equal(await vis(a.page, '#report-ask'), false);
+  await a.ctx.close();
+
+  const b = await newApp(browser, { ...quiet, scale: 2, hub });
+  await toNav(b.page);
+  await until(() => b.log.hub.some((x) => x.path === '/reports'), 5000, 'reports asked for');
+  await roll(b.page, trip, 0, 60, 12);
+  await b.page.waitForSelector('#report-alert:not([hidden])');
+  assert.equal(await b.page.getAttribute('#report-alert', 'data-kind'), 'police');
+  assert.ok((await said(b.page)).some((x) => /^Polis dilaporkan .+ di hadapan\.$/.test(x.text)), JSON.stringify(await said(b.page)));
+  assert.equal(await b.page.locator('.map-pin.is-report').count(), 1);
+  await b.page.screenshot({ path: `${shots}/66-report-ahead.png` });
+  await roll(b.page, trip, 60, 380, 12);
+  await b.page.waitForSelector('#report-ask:not([hidden])');
+  assert.equal(await text(b.page, '#report-ask-title'), 'Polis masih ada?');
+  await noOverflow(b.page, 'still there?');
+  await b.page.click('#report-gone');
+  await until(() => b.log.hub.some((x) => x.path === '/reports/vote' && x.body.still === false), 5000, 'the vote');
+  assert.equal(await vis(b.page, '#report-ask'), false);
+  assert.equal(await b.page.locator('.map-pin.is-report').count(), 0);
+  assert.deepEqual(b.log.errors, []);
+  await b.ctx.close();
+});
+
+await check('convoy: started from the plan, a friend joins by the link, and each sees the other', async () => {
+  const hub = standInHub();
+  const a = await newApp(browser, { ...named('Ali'), scale: 2, hub, init: SHARE_SHEET });
+  await toPreview(a.page);
+  assert.equal(await vis(a.page, '#plan-convoy'), true);
+  assert.equal(await text(a.page, '#plan-convoy-title'), 'Pandu bersama kawan');
+  await a.page.click('#plan-convoy');
+  await a.page.waitForFunction(() => window.__shared.length === 1);
+  const link = (await a.page.evaluate(() => window.__shared))[0];
+  assert.match(link.url, /\?convoy=[a-z2-9]{10}$/);
+  assert.match(link.text, /Suria KLCC/);
+  assert.match(await text(a.page, '#plan-convoy-detail'), /menunggu kawan/);
+
+  const b = await newApp(browser, { ...quiet, scale: 2, hub, url: link.url.replace(/^.*\?/, `${ORIGIN}?`) });
+  await b.page.waitForSelector('#convoy-join:not([hidden])');
+  assert.equal(await text(b.page, '#join-title'), 'Pandu bersama ke Suria KLCC');
+  assert.match(await text(b.page, '#join-text'), /^Ali ajak anda/);
+  await noOverflow(b.page, 'join');
+  await b.page.screenshot({ path: `${shots}/67-convoy-join.png` });
+  await b.page.click('#join-yes');
+  assert.equal(await vis(b.page, '#convoy-join'), true, 'a name is needed first');
+  await b.page.fill('#join-name', 'Abu');
+  await b.page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.b);
+  await b.page.click('#join-yes');
+  await b.page.waitForSelector('.route-opt');
+  assert.equal(await text(b.page, '#dest-name'), 'Suria KLCC');
+  await b.page.waitForFunction(() => /Ali/.test(document.getElementById('plan-convoy-detail').textContent));
+
+  // Both drive, and each sees the other, by name.
+  await a.page.click('#start');
+  await a.page.waitForSelector('#nav-bar');
+  await b.page.click('#start');
+  if (await b.page.locator('#safety').isVisible()) await b.page.click('#safety-ok');
+  await b.page.waitForSelector('#nav-bar');
+  const trip = prepareTrip(cityTrip());
+  await roll(a.page, trip, 0, 600, 12);
+  await until(async () => (await a.page.locator('.friend .friend-name').allInnerTexts()).includes('Abu'), 25000, 'Abu on Ali\'s map');
+  await until(async () => (await b.page.locator('.friend .friend-name').allInnerTexts()).includes('Ali'), 25000, 'Ali on Abu\'s map');
+  await b.page.waitForFunction(() => /Ali/.test(document.getElementById('convoy-bar-text').textContent));
+  await noOverflow(b.page, 'convoy driving');
+  await b.page.screenshot({ path: `${shots}/68-convoy.png` });
+  await b.page.click('#convoy-bar');
+  await b.page.waitForSelector('#together:not([hidden])');
+  assert.deepEqual(await b.page.locator('#together-list strong').allInnerTexts(), ['Ali']);
+  await b.page.click('#together-stop');
+  await until(() => b.log.hub.some((x) => x.path === '/convoy/leave'), 5000, 'leaving');
+  assert.equal(await vis(b.page, '#convoy-bar'), false);
+  assert.deepEqual([...a.log.errors, ...b.log.errors], []);
+  await a.ctx.close();
+  await b.ctx.close();
+});
+
+// Notifications, played by the test: allowed or not, and a push subscription.
+const FAKE_PUSH = (permission = 'granted') => `(() => {
+  window.__push = { subscribed: 0, unsubscribed: 0, key: null };
+  let sub = null;
+  const pushManager = {
+    getSubscription: async () => sub,
+    subscribe: async (o) => {
+      window.__push.subscribed++;
+      window.__push.key = Array.from(o.applicationServerKey).length;
+      sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/test-phone', options: { applicationServerKey: o.applicationServerKey.buffer }, unsubscribe: async () => { window.__push.unsubscribed++; sub = null; return true; } };
+      return sub;
+    },
+  };
+  const reg = { pushManager };
+  Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register: async () => reg, ready: Promise.resolve(reg), addEventListener() {} } });
+  window.PushManager = function PushManager() {};
+  window.Notification = { permission: 'default', requestPermission: async () => '${permission}' };
+})()`;
+const HOME_WORK = { home: { name: 'Rumah', detail: '', lng: P.a[0], lat: P.a[1], country: 'my' }, work: { name: 'Pejabat', detail: '', lng: P.d[0], lat: P.d[1], country: 'my' } };
+
+await check('morning alert: needs home and work, then switched on, changed, tried and switched off', async () => {
+  const pushed = [];
+  const hub = standInHub({
+    env: { TOMTOM_API_KEY: 'k' },
+    fetchImpl: async (url) => {
+      if (String(url).startsWith('https://api.tomtom.com/')) return new Response(JSON.stringify({ routes: [{ summary: { travelTimeInSeconds: 2400, historicTrafficTravelTimeInSeconds: 1500 } }] }));
+      pushed.push(String(url));
+      return new Response(null, { status: 201 });
+    },
+  });
+  const commuter = () => hub.rows('SELECT * FROM commuters')[0];
+
+  const none = await newApp(browser, { ...quiet, hub, init: FAKE_PUSH() });
+  await none.page.click('#btn-settings');
+  assert.equal(await vis(none.page, '#set-commute'), true);
+  assert.equal(await none.page.isDisabled('#commute-on'), true);
+  assert.equal(await text(none.page, '#commute-status'), 'Tetapkan rumah dan tempat kerja dahulu.');
+  await none.ctx.close();
+
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, hub, init: FAKE_PUSH(), storage: { 'pintu.safetySeen': 'true', 'pintu.saved': HOME_WORK } });
+  await page.click('#btn-settings');
+  await page.click('label:has(#commute-on)');
+  await page.waitForFunction(() => /^Hidup\. Amaran seterusnya/.test(document.getElementById('commute-status').textContent));
+  assert.equal(await page.evaluate(() => window.__push.key), 65, 'the server\'s key, as bytes');
+  let c = commuter();
+  assert.equal(c.endpoint, 'https://fcm.googleapis.com/fcm/send/test-phone');
+  assert.equal(c.time, '07:30');
+  assert.deepEqual(JSON.parse(c.days), [1, 2, 3, 4, 5]);
+  assert.deepEqual(JSON.parse(c.work), { lng: P.d[0], lat: P.d[1] });
+  assert.equal(await vis(page, '#commute-more'), true);
+  await noOverflow(page, 'morning alert');
+  await page.locator('#set-commute').screenshot({ path: `${shots}/69-morning-alert.png` });
+
+  await page.fill('#commute-time', '06:45');
+  await page.locator('#commute-time').dispatchEvent('change');
+  await page.locator('#commute-days button', { hasText: 'Sab' }).click();
+  await page.click('label:has(#commute-slow)');
+  await until(() => { const x = commuter(); return x?.time === '06:45' && JSON.parse(x.days).includes(6) && x.slow_only === 1; }, 5000, 'the change on the server');
+  assert.equal(log.hub.filter((x) => x.path === '/commute/set').length >= 2, true);
+
+  await page.click('#commute-test');
+  await page.waitForFunction(() => /Contoh dihantar/.test(document.getElementById('toast').textContent));
+  assert.deepEqual(pushed, ['https://fcm.googleapis.com/fcm/send/test-phone']);
+  assert.match(JSON.parse(commuter().message).title, /^Ke tempat kerja: 40 min$/);
+
+  await page.click('label:has(#commute-on)');
+  await until(() => !commuter(), 5000, 'the alert gone from the server');
+  await page.waitForFunction(() => window.__push.unsubscribed === 1);
+  assert.equal(await vis(page, '#commute-more'), false);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('morning alert: blocked notifications say how to allow them', async () => {
+  const hub = standInHub();
+  const { ctx, page } = await newApp(browser, { ...quiet, hub, init: FAKE_PUSH('denied'), storage: { 'pintu.safetySeen': 'true', 'pintu.saved': HOME_WORK } });
+  await page.click('#btn-settings');
+  await page.click('label:has(#commute-on)');
+  await page.waitForFunction(() => /disekat/.test(document.getElementById('commute-status').textContent));
+  assert.equal(await page.isChecked('#commute-on'), false);
+  assert.equal(hub.rows('SELECT COUNT(*) AS n FROM commuters')[0].n, 0);
+  await ctx.close();
+});
+
+await check('without the server, there\'s nothing to share, report or join', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, url: `${ORIGIN}?convoy=abcdefghjk` });
+  assert.equal(await vis(page, '#convoy-join'), false);
+  await toNav(page);
+  assert.equal(await vis(page, '#btn-share'), false);
+  assert.equal(await vis(page, '#btn-report'), false);
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.click('#btn-settings').catch(() => {});
   await ctx.close();
 });
 

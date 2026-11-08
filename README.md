@@ -183,6 +183,48 @@ for each day, driving time, time stuck, fuel cost, the longest trip and where yo
 the months before. Lines older than 13 months are dropped, it can be switched off, and "Padam
 semua ringkasan" (two taps) deletes them.
 
+## Sharing a trip
+
+While driving, "Kongsi" sends a link through the phone's share sheet. Whoever opens it sees
+where you are, where you're going and when you'll arrive, updated every 15 seconds, and "dah
+sampai" when you get there (`js/together.js`, `server/hub.js`). It ends when you arrive or stop
+it, after 30 minutes without word from your phone, or after 12 hours at most. Your name is asked
+once, the first time, and can be changed in Settings.
+
+## Road reports
+
+The orange button while driving reports police, an accident, a hazard, a jam or a closed road
+where you are (`js/road-reports.js`). Everyone else whose route passes that spot, on the same side
+of the road, sees it ahead and hears it once, and just after passing is asked "masih ada?".
+Reports last from 45 minutes (a jam) to 6 hours (a closed road); "masih ada" keeps one going,
+and two people saying it's gone, or whoever reported it, clears it. Each phone can make 12
+reports an hour.
+
+## Driving together
+
+"Pandu bersama kawan" in the plan starts a convoy to that destination and sends a link. Friends
+who open it join with their name, get the route there, and everyone sees everyone on the map, with
+how far ahead or behind each is. Up to 12 cars; it ends 12 hours after the last move.
+
+## Morning alert
+
+Settings → Amaran pagi: on the days and at the time you choose, a notification says how long the
+drive from home to work is today and how that compares with usual (TomTom's traffic, checked by
+the server's five-minute schedule). "Only when it's slower than usual" keeps quiet on normal days,
+and "Hantar contoh sekarang" sends one at once. This is the one feature that keeps something
+of yours on the server: your home and work, until it's switched off. The notification itself
+carries nothing; the phone asks the server what to show. On an iPhone it needs Pintu on the
+home screen.
+
+## The hub
+
+`server/hub.js` is one Durable Object with its own small SQLite database, on Cloudflare's free
+plan: shared trips, reports, convoys and morning alerts. Phones send plain text and the server
+checks every figure; each connection gets 120 requests a minute. Notifications go only to the
+known push services (Google, Apple, Mozilla, Microsoft). The key that signs them is made by the
+hub the first time and kept there. Every five minutes it sends what's due and deletes what's over.
+`.github/workflows/check.yml` checks the live server by hand: Actions → Check the server.
+
 ## Battery saver
 
 With it on, the map is drawn at 1.5 times the screen's pixels instead of 2, at 30 frames a second
@@ -391,6 +433,7 @@ next month, and Pintu carries on without traffic.
 - Fuel and range figures are estimates from what you enter. Costs use the official pump price,
   which is what most stations charge, or the price you type in.
 - Voice search needs the internet and the phone's speech service.
+- A shared trip or a convoy only updates while Pintu is on screen, for the same reason.
 - Voice depends on the voices installed on each phone.
 
 ## Tests

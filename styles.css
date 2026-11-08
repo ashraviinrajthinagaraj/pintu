@@ -1378,3 +1378,128 @@ a { color: inherit; }
 .month-rows dd { font-weight: 600; text-align: right; }
 #month-forget.is-armed { color: var(--red); text-decoration-color: var(--red); }
 @media (prefers-reduced-motion: reduce) { .mic-btn.is-listening::before { animation: none; opacity: .6; } }
+
+/* ---------- With other people ---------- */
+/* Reporting is the one round button in road-sign orange, so it's found without looking long. */
+.round-report { background: #F2A51A; color: #1E1A05; border-color: transparent; }
+.share-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 6px 12px;
+  border-radius: 13px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  font-weight: 700;
+  font-size: 15px;
+}
+.share-btn svg { width: 20px; height: 20px; flex: none; }
+.share-btn.is-on { background: var(--green); color: #fff; border-color: transparent; }
+.nav-bar-row .nav-eta { flex: 1; }
+/* On the narrowest phones the share button is its icon alone, so the arrival time keeps its room. */
+@media (max-width: 380px) {
+  .share-btn { padding: 6px 13px; }
+  .share-btn span { display: none; }
+}
+
+.report-alert { background: #F2A51A; color: #1E1A05; }
+.report-alert[data-kind="police"] { background: #1259C3; color: #fff; }
+.report-alert[data-kind="crash"], .report-alert[data-kind="closed"] { background: #C62828; color: #fff; }
+.report-ask p { margin-bottom: 6px; }
+.report-ask strong { font-size: 18px; }
+
+.dest-title p.wrap { white-space: normal; }
+.report-kinds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 8px; }
+.report-kind {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 92px;
+  padding: 10px 6px;
+  border-radius: 15px;
+  background: var(--panel-2);
+  font-weight: 700;
+  font-size: 15px;
+  text-align: center;
+}
+.report-kind svg { width: 34px; height: 34px; }
+.report-police svg { color: #5AA6FF; }
+.report-crash svg, .report-closed svg { color: #FF7A6E; }
+.report-hazard svg, .report-jam svg { color: var(--yellow); }
+.map-pin.is-report { background: #F2A51A; color: #1E1A05; cursor: default; }
+.map-pin.is-report.report-police { background: #1259C3; color: #fff; }
+.map-pin.is-report.report-crash, .map-pin.is-report.report-closed { background: #C62828; color: #fff; }
+
+/* Friends on the map: a coloured dot with their initial, and their name. */
+.friend { display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; }
+.friend-dot {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--friend, #9C36B5);
+  color: #fff;
+  font-family: var(--condensed);
+  font-weight: 800;
+  font-size: 18px;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .5);
+}
+.friend-name {
+  max-width: 110px;
+  padding: 1px 7px;
+  border-radius: 8px;
+  background: rgba(14, 20, 22, .85);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.friend-name[hidden] { display: none; }
+.convoy-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 38px;
+  padding: 6px 12px 6px 9px;
+  border-radius: 11px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: var(--lift);
+}
+.convoy-bar[hidden] { display: none; }
+.convoy-bar svg { width: 20px; height: 20px; flex: none; color: var(--sky); }
+.convoy-bar span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.together-list li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.together-list .friend-dot { width: 30px; height: 30px; font-size: 16px; border-width: 2px; flex: none; }
+.together-list strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.together-list span:last-child { color: var(--mute); font-size: 15px; }
+.watch-eta { font-family: var(--condensed); font-size: 24px; font-weight: 700; margin: 4px 0 2px; }
+#watch .tip { margin-bottom: 12px; }
+
+/* ---------- Morning alert ---------- */
+.commute-row { margin-top: 12px; }
+.commute-row .field-label { margin: 0; }
+.day-row { display: flex; gap: 5px; margin: 6px 0 4px; max-width: 26rem; }
+.day {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 2px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--mute);
+  font-weight: 700;
+}
+.day[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+#commute-more[hidden] { display: none; }
