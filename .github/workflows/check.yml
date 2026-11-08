@@ -1,0 +1,26 @@
+# Checks the live server from outside, by hand: Actions → Check the server → Run workflow.
+name: Check the server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask the server
+        run: |
+          S=https://pintu.ashraviinrajthinagaraj.workers.dev
+          O='Origin: https://ashraviinrajthinagaraj.github.io'
+          T='content-type: text/plain;charset=UTF-8'
+          echo "== Version";      curl -sS "$S/"; echo
+          echo "== Fuel prices";  curl -sS "$S/fuel?check=1"; echo
+          echo "== Traffic";      curl -sS "$S/traffic?check=1"; echo
+          echo "== Hub: push key"; curl -sS -H "$O" "$S/push/key" | cut -c1-40; echo
+          echo "== Hub: a trip, shared and ended"
+          R=$(curl -sS -H "$O" -H "$T" -d '{"name":"Check","dest":{"name":"Check","lng":101.7,"lat":3.15},"pos":{"lng":101.69,"lat":3.14}}' "$S/share/start")
+          ID=$(echo "$R" | sed -n 's/.*"id":"\([a-z2-9]*\)".*/\1/p'); KEY=$(echo "$R" | sed -n 's/.*"key":"\([a-z2-9]*\)".*/\1/p')
+          curl -sS -H "$O" "$S/share?id=$ID" | cut -c1-120; echo
+          curl -sS -H "$O" -H "$T" -d "{\"id\":\"$ID\",\"key\":\"$KEY\"}" "$S/share/end"; echo
+          echo "== Hub: reports near KLCC"; curl -sS -H "$O" "$S/reports?bbox=101.6,3.1,101.8,3.2" | cut -c1-120; echo
