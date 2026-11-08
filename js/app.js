@@ -335,7 +335,7 @@ function applyStaticText() {
   $('set-privacy-title').textContent = t('setPrivacy');
   $('privacy-text').textContent = t('privacy');
   $('set-credits-title').textContent = t('setCredits');
-  $('version').textContent = t('version', { v: CONFIG.version });
+  renderVersion();
   $('veh-body-label').textContent = t('vehShape');
   $('veh-color-label').textContent = t('vehColor');
   $('veh-preset-label').textContent = t('vehPreset');
@@ -414,6 +414,7 @@ function renderSegments() {
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
   $('traffic-on').checked = S.settings.traffic;
+  renderVersion();
   $('keep-drive').checked = S.settings.keepDrive;
   $('report-drive-row').hidden = !lastDrive();
   const used = usage();
@@ -1285,6 +1286,7 @@ async function loadRoutes() {
     S.routes = routes;
     S.selected = 0;
     S.routePicked = false;
+    save('lastProvider', routes[0]?.provider || '');
     S.routeState = 'ready';
     renderRoutes();
     loadRouteTraffic(routes);
@@ -3009,6 +3011,12 @@ function useRoute(route) {
   if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
 }
 
+// Which route server answered last, so it's easy to see the backups at work.
+function renderVersion() {
+  const from = { stadia: 'Stadia Maps', fossgis: 'FOSSGIS', tomtom: 'TomTom' }[load('lastProvider', '')];
+  $('version').textContent = from ? t('versionFrom', { v: CONFIG.version, from }) : t('version', { v: CONFIG.version });
+}
+
 /* ---------- Problem reports ---------- */
 
 function reportInfo() {
@@ -3046,7 +3054,9 @@ async function sendReport() {
     $('report-note').value = '';
   } catch (e) {
     // Closing the share sheet isn't a failure.
-    if (e?.name !== 'AbortError') toast(t('reportFailed'));
+    if (e?.name === 'AbortError') return;
+    rememberError(`report: ${e?.name || ''} ${e?.message || ''}`.trim(), 'share');
+    toast(t('reportFailed', { why: e?.name || 'Error' }));
   }
 }
 

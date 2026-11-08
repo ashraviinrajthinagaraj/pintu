@@ -47,13 +47,28 @@ test('the report: plain lines, no places, and the drive only when attached', () 
   assert.ok(!/KLCC|101\.7/.test(text), 'places only travel in the attached file');
 });
 
-test('shared through the phone, with the drive as a file when it can be', async () => {
-  const shared = [];
-  const nav = { share: async (d) => shared.push(d), canShare: () => true };
+test('shared through the phone, with the drive as a text file when it can be', async () => {
+  const shared = [], copied = [];
+  const clipboard = { writeText: async (t) => copied.push(t) };
+  const nav = { share: async (d) => shared.push(d), canShare: () => true, clipboard };
   assert.equal(await shareReport({ text: 'hi', drive: { a: 1 } }, nav), 'shared-with-drive');
-  assert.equal(shared[0].files[0].name, 'pintu-drive.json');
+  assert.equal(shared[0].files[0].name, 'pintu-drive.txt');
+  assert.equal(shared[0].files[0].type, 'text/plain');
+  assert.deepEqual(copied, ['hi'], 'copied first, just in case');
   assert.equal(await shareReport({ text: 'hi', drive: null }, nav), 'shared');
-  const copied = [];
-  assert.equal(await shareReport({ text: 'hi' }, { clipboard: { writeText: async (t) => copied.push(t) } }), 'copied');
-  assert.deepEqual(copied, ['hi']);
+});
+
+test('a phone that refuses the file gets the words alone; one that refuses everything has them copied', async () => {
+  const shared = [];
+  const fussy = { canShare: () => true, clipboard: { writeText: async () => {} }, share: async (d) => {
+    if (d.files) throw Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' });
+    shared.push(d);
+  } };
+  assert.equal(await shareReport({ text: 'hi', drive: { a: 1 } }, fussy), 'shared');
+  assert.equal(shared.length, 1);
+  const stubborn = { canShare: () => true, clipboard: { writeText: async () => {} }, share: async () => { throw Object.assign(new Error('no'), { name: 'NotAllowedError' }); } };
+  assert.equal(await shareReport({ text: 'hi', drive: { a: 1 } }, stubborn), 'copied');
+  const closed = { clipboard: { writeText: async () => {} }, share: async () => { throw Object.assign(new Error('closed'), { name: 'AbortError' }); } };
+  await assert.rejects(shareReport({ text: 'hi' }, closed), (e) => e.name === 'AbortError', 'closing the share sheet is not a failure');
+  await assert.rejects(shareReport({ text: 'hi' }, {}), /neither share nor copy/);
 });

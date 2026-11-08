@@ -3608,7 +3608,7 @@ await check('report a problem: shared through the phone, with the last drive att
   assert.match(shared.text, /What happened: Belok kiri terlambat/);
   assert.match(shared.text, /Last drive: .*GPS readings, events: .*left the app ×2.*\(file attached\)/);
   assert.match(shared.text, /a test fault/);
-  assert.deepEqual(shared.files, ['pintu-drive.json']);
+  assert.deepEqual(shared.files, ['pintu-drive.txt']);
   const drive = await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.lastDrive')));
   assert.ok(drive.fixes.length >= 40);
   // Turning the keeping off forgets it.
@@ -3616,6 +3616,7 @@ await check('report a problem: shared through the phone, with the last drive att
   assert.equal(await page.evaluate(() => localStorage.getItem('pintu.lastDrive')), null);
   assert.equal(await vis(page, '#report-drive-row'), false);
   assert.match(await text(page, '#tomtom-use'), /^Telefon ini tanya TomTom \d+ kali hari ini/);
+  assert.match(await text(page, '#version'), /^Versi [\d.]+\. Laluan terakhir dari FOSSGIS\.$/);
   await ctx.close();
 });
 

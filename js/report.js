@@ -104,16 +104,38 @@ export function reportText(info, now = Date.now()) {
   return lines.join('\n');
 }
 
-// Through the phone's own share sheet (WhatsApp, Telegram, email…), or copied
-// if the phone can't share.
+// Through the phone's own share sheet (WhatsApp, Telegram, email…). The
+// words are copied first, so the report isn't lost whatever the phone does.
 export async function shareReport({ text, drive }, nav = globalThis.navigator) {
-  const files = drive ? [new File([JSON.stringify(drive)], 'pintu-drive.json', { type: 'application/json' })] : [];
+  // Started, not waited for: the share sheet must open while the tap still counts.
+  let copying = Promise.resolve(false);
+  try {
+    if (nav?.clipboard?.writeText) copying = nav.clipboard.writeText(text).then(() => true, () => false);
+  } catch { /* not allowed here */ }
+  const copied = () => Promise.race([copying, new Promise((r) => setTimeout(() => r(false), 1500))]);
+  // Phones only share some kinds of file, and plain text is one of them.
+  const files = drive ? [new File([JSON.stringify(drive)], 'pintu-drive.txt', { type: 'text/plain' })] : [];
   if (nav?.share) {
     const data = { title: 'Pintu', text };
     if (files.length && nav.canShare?.({ files })) data.files = files;
-    await nav.share(data);
-    return data.files ? 'shared-with-drive' : 'shared';
+    try {
+      await nav.share(data);
+      return data.files ? 'shared-with-drive' : 'shared';
+    } catch (e) {
+      if (e?.name === 'AbortError') throw e;
+      // Some phones refuse a file: once more with just the words.
+      if (data.files) {
+        try {
+          await nav.share({ title: 'Pintu', text });
+          return 'shared';
+        } catch (again) {
+          if (again?.name === 'AbortError') throw again;
+        }
+      }
+      if (await copied()) return 'copied';
+      throw e;
+    }
   }
-  await nav.clipboard.writeText(text);
-  return 'copied';
+  if (await copied()) return 'copied';
+  throw new Error('This phone can neither share nor copy');
 }
