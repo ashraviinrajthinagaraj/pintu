@@ -4677,7 +4677,7 @@ await check('convoy: started from the plan, a friend joins by the link, and each
   assert.deepEqual(await b.page.locator('#together-list strong').allInnerTexts(), ['Ali']);
   await b.page.click('#together-stop');
   await until(() => b.log.hub.some((x) => x.path === '/convoy/leave'), 5000, 'leaving');
-  assert.equal(await vis(b.page, '#convoy-bar'), false);
+  await b.page.waitForSelector('#convoy-bar', { state: 'hidden' });
   assert.deepEqual([...a.log.errors, ...b.log.errors], []);
   await a.ctx.close();
   await b.ctx.close();
@@ -4776,6 +4776,67 @@ await check('without the server, there\'s nothing to share, report or join', asy
   await page.click('#btn-end');
   await page.click('#btn-end');
   await page.click('#btn-settings').catch(() => {});
+  await ctx.close();
+});
+
+/* ---------- 0.9.6: Chinese and Tamil ---------- */
+
+await check('Chinese: the whole app, spoken directions, and nothing off the screen', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...withCast('uncle'), scale: 2, voices: [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'zh-CN', name: 'Chinese' }] });
+  await page.click('#btn-settings');
+  await page.click('#lang-zh');
+  assert.equal(await text(page, '#settings-title'), '设置');
+  assert.equal(await page.evaluate(() => document.documentElement.lang), 'zh');
+  assert.equal(await page.getAttribute('#lang-zh', 'aria-checked'), 'true');
+  assert.equal(await vis(page, '#lang-note'), true);
+  assert.equal(await vis(page, '#voice-try'), false, 'the jokes are Malay and English only');
+  assert.match(await text(page, '#voice-status'), /中文/);
+  await noOverflow(page, 'settings in Chinese');
+  await page.click('#settings-back');
+  assert.equal(await text(page, '#where-text'), '要去哪里？');
+  await toNav(page);
+  assert.equal(await text(page, '#sign-action'), '右转');
+  await page.waitForFunction(() => window.__said.some((s) => /[一-鿿]/.test(s.text)));
+  const words = (await said(page)).filter((s) => /[一-鿿]/.test(s.text));
+  assert.ok(words.every((s) => s.lang === 'zh-CN' && s.voice === 'Chinese'), JSON.stringify(words));
+  assert.ok(words.some((s) => /^直走1.1公里，然后右转，进入 Jalan Tun Razak。$/.test(s.text)), JSON.stringify(words));
+  assert.ok(!(await said(page)).some((s) => /[A-Za-z]{5,} [a-z]{3,} [a-z]{3,}/.test(s.text.replace(/Jalan [A-Z][a-z]+( [A-Z][a-z]+)*/g, ''))), 'no English or Malay sentences');
+  await noOverflow(page, 'driving in Chinese');
+  await page.screenshot({ path: `${shots}/70-chinese.png` });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('Tamil: the whole app, spoken directions, and long words still fit', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, viewport: { width: 360, height: 740 }, voices: [{ lang: 'ta-IN', name: 'Tamil' }, { lang: 'en-GB', name: 'British' }] });
+  await page.click('#btn-settings');
+  await page.click('#lang-ta');
+  assert.equal(await text(page, '#settings-title'), 'அமைப்புகள்');
+  await noOverflow(page, 'settings in Tamil');
+  await page.click('#settings-back');
+  await noOverflow(page, 'home screen in Tamil');
+  await toPreview(page);
+  await noOverflow(page, 'route choices in Tamil');
+  await page.screenshot({ path: `${shots}/71-tamil-preview.png` });
+  await page.click('#start');
+  if (await page.locator('#safety').isVisible()) await page.click('#safety-ok');
+  await page.waitForSelector('#nav-bar');
+  assert.equal(await text(page, '#sign-action'), 'வலதுபுறம் திரும்புங்கள்');
+  await page.waitForFunction(() => window.__said.some((s) => /[஀-௿]/.test(s.text)));
+  const words = (await said(page)).filter((s) => /[஀-௿]/.test(s.text));
+  assert.ok(words.every((s) => s.lang === 'ta-IN' && s.voice === 'Tamil'), JSON.stringify(words));
+  await noOverflow(page, 'driving in Tamil');
+  await page.screenshot({ path: `${shots}/72-tamil-nav.png` });
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('a phone with no Chinese voice still says it in Chinese, and asks for nothing from the voice server', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...withCast('captain', { lang: 'zh' }), appServer: voiceServer() });
+  await toNav(page);
+  await page.waitForFunction(() => window.__said.length > 0);
+  assert.equal((await said(page))[0].lang, 'zh-CN');
+  assert.deepEqual(log.server.filter((u) => u.includes('/speak') && !u.includes('check=')), [], 'human voices are Malay and English only');
   await ctx.close();
 });
 

@@ -3,7 +3,7 @@
 A private navigation web app for a small group: a 3D map with your own vehicle on it,
 place search, routes, stops along the way, fuel and charge planning, solat times, a
 lane-by-lane road view and spoken
-turn-by-turn directions in Bahasa Melayu and English. No accounts and no install file;
+turn-by-turn directions in Bahasa Melayu, English, Chinese and Tamil. No accounts and no install file;
 open the link and add it to the home screen.
 
 It's plain HTML, CSS and JavaScript with no build step, so GitHub Pages can serve this
@@ -72,6 +72,15 @@ A simulated drive has a pause button, speeds from 1× to 30×, and a jump to the
 turn on a list. The trip line can be dragged or tapped to go anywhere, forward or back. None of
 this counts as leaving the route. From 10× it's silent apart from arriving, and the lane view
 is off. Ending the drive returns to the route screen with the plan unchanged.
+
+## Languages
+
+Settings has Bahasa Melayu, English, 中文 (Simplified Chinese) and தமிழ் (Tamil). Everything on
+screen and every spoken direction is in the chosen language (`js/i18n.js`, `js/instructions.js`),
+with distances, times and clocks written the way each is in Malaysia (`js/format.js`). Road and
+place names stay as the map has them. The characters' jokes and the human voices are Malay and
+English only: in Chinese and Tamil Pintu speaks plainly with the phone's own voice, still at each
+character's pitch and pace. Voice search and the morning alert follow the chosen language too.
 
 ## Voices
 

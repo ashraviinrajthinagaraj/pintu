@@ -36,16 +36,20 @@ const CAST = {
 };
 
 export const CHARACTER_IDS = Object.keys(CAST);
-export const characterName = (id, lang) => (CAST[id] || CAST.standard).name[lang === 'ms' ? 'ms' : 'en'];
-export const characterAbout = (id, lang) => (CAST[id] || CAST.standard).about[lang === 'ms' ? 'ms' : 'en'];
+// The characters speak Malay and English. In other languages Pintu speaks plainly.
+export const CAST_LANGS = ['ms', 'en'];
+const castLang = (lang) => (lang === 'ms' ? 'ms' : 'en');
+export const characterName = (id, lang) => (CAST[id] || CAST.standard).name[castLang(lang)];
+export const characterAbout = (id, lang) => (CAST[id] || CAST.standard).about[castLang(lang)];
 export const characterVoice = (id) => (CAST[id] || CAST.standard).voice;
-export const characterTag = (id, lang) => (CAST[id] || CAST.standard).tag[lang === 'ms' ? 'ms' : 'en'];
+export const characterTag = (id, lang) => (CAST[id] || CAST.standard).tag[castLang(lang)];
 
 const last = new Map();
 
 // A line of this kind, avoiding the one just used. Empty if there's none.
 export function pick(id, key, lang, { rand = Math.random, vars = {} } = {}) {
-  const lines = CAST[id]?.lines?.[lang === 'ms' ? 'ms' : 'en']?.[key];
+  if (!CAST_LANGS.includes(lang)) return '';
+  const lines = CAST[id]?.lines?.[lang]?.[key];
   if (!lines?.length) return '';
   let i = Math.floor(rand() * lines.length) % lines.length;
   const memo = `${id}:${key}:${lang}`;
@@ -107,7 +111,7 @@ export function dress(id, kind, base, lang, { rand = Math.random, vars = {} } = 
 
 // A short sample, for choosing a voice.
 export function sample(id, lang, base) {
-  if (!CAST[id]?.lines) return base;
+  if (!CAST[id]?.lines || !CAST_LANGS.includes(lang)) return base;
   const lead = pick(id, 'start', lang);
   const tail = pick(id, 'tail', lang);
   return `${lead} [plain]${base} ${tail}`;

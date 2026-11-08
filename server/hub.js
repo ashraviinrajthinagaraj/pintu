@@ -118,12 +118,13 @@ export function commuteDue(c, now) {
 /* ---------- The morning message ---------- */
 
 const mins = (s) => Math.max(1, Math.round(s / 60));
+const UNITS = { ms: ['j', 'min'], en: ['hr', 'min'], zh: ['小时', '分钟'], ta: ['மணி', 'நிமி'] };
 function duration(seconds, lang) {
   const m = mins(seconds);
-  if (m < 60) return `${m} min`;
+  const [hour, min] = UNITS[lang] || UNITS.ms;
+  if (m < 60) return `${m} ${min}`;
   const h = Math.floor(m / 60), r = m % 60;
-  const hour = lang === 'en' ? 'hr' : 'j';
-  return r ? `${h} ${hour} ${r} min` : `${h} ${hour}`;
+  return r ? `${h} ${hour} ${r} ${min}` : `${h} ${hour}`;
 }
 function clock(ms, lang) {
   const d = new Date(ms + LOCAL_OFFSET_MS);
@@ -134,28 +135,44 @@ function clock(ms, lang) {
     h = h % 12 || 12;
     return `${h}:${m} ${pm ? 'pm' : 'am'}`;
   }
+  if (lang === 'zh') return `${h < 12 ? '上午' : '下午'}${h % 12 || 12}:${m}`;
+  if (lang === 'ta') return `${h < 12 ? 'காலை' : h < 15 ? 'மதியம்' : h < 19 ? 'மாலை' : 'இரவு'} ${h % 12 || 12}:${m}`;
   const part = h < 12 ? 'pg' : h < 14 ? 'tgh' : h < 19 ? 'ptg' : 'mlm';
   return `${h % 12 || 12}:${m} ${part}`;
 }
 
+const MORNING = {
+  ms: {
+    title: (t) => `Ke tempat kerja: ${t}`,
+    slow: (x) => `${x} lebih lama daripada biasa.`, fast: () => 'Lebih lancar daripada biasa.', usual: () => 'Seperti biasa.',
+    leave: (a) => `Bertolak sekarang, sampai lebih kurang ${a}.`,
+  },
+  en: {
+    title: (t) => `To work: ${t}`,
+    slow: (x) => `${x} longer than usual.`, fast: () => 'Quicker than usual.', usual: () => 'About as usual.',
+    leave: (a) => `Leave now and you'll arrive about ${a}.`,
+  },
+  zh: {
+    title: (t) => `去公司：${t}`,
+    slow: (x) => `比平常慢 ${x}。`, fast: () => '比平常顺畅。', usual: () => '和平常差不多。',
+    leave: (a) => `现在出发，大约 ${a} 到达。`,
+  },
+  ta: {
+    title: (t) => `வேலைக்கு: ${t}`,
+    slow: (x) => `வழக்கத்தைவிட ${x} அதிகம்.`, fast: () => 'வழக்கத்தைவிட விரைவாக உள்ளது.', usual: () => 'வழக்கம் போலவே.',
+    leave: (a) => `இப்போது புறப்பட்டால் சுமார் ${a} மணிக்குச் சேர்வீர்கள்.`,
+  },
+};
+export const MORNING_LANGS = Object.keys(MORNING);
+
 // What to say, from TomTom's live and usual times for the trip.
 export function commuteMessage({ travel, usual }, now, lang = 'ms') {
+  const w = MORNING[lang] || MORNING.ms;
+  const l = MORNING[lang] ? lang : 'ms';
   const extra = usual ? travel - usual : 0;
-  const en = lang === 'en';
-  const title = en ? `To work: ${duration(travel, 'en')}` : `Ke tempat kerja: ${duration(travel, 'ms')}`;
-  const arrive = clock(now + travel * 1000, lang);
-  let body;
-  if (extra >= 5 * 60) {
-    body = en ? `${duration(extra, 'en')} longer than usual. Leave now and you'll arrive about ${arrive}.`
-      : `${duration(extra, 'ms')} lebih lama daripada biasa. Bertolak sekarang, sampai lebih kurang ${arrive}.`;
-  } else if (extra <= -5 * 60) {
-    body = en ? `Quicker than usual. Leave now and you'll arrive about ${arrive}.`
-      : `Lebih lancar daripada biasa. Bertolak sekarang, sampai lebih kurang ${arrive}.`;
-  } else {
-    body = en ? `About as usual. Leave now and you'll arrive about ${arrive}.`
-      : `Seperti biasa. Bertolak sekarang, sampai lebih kurang ${arrive}.`;
-  }
-  return { title, body, slow: extra >= 5 * 60, url: './?go=work' };
+  const how = extra >= 5 * 60 ? w.slow(duration(extra, l)) : extra <= -5 * 60 ? w.fast() : w.usual();
+  const gap = l === 'zh' ? '' : ' ';
+  return { title: w.title(duration(travel, l)), body: `${how}${gap}${w.leave(clock(now + travel * 1000, l))}`, slow: extra >= 5 * 60, url: './?go=work' };
 }
 
 /* ---------- Notifications ---------- */
@@ -446,7 +463,7 @@ export class Hub {
     if (!sub) return nope('notifications not supported here');
     if (!home || !work || !time || !days) return nope('not an alert');
     if (metres(home, work) < 300) return nope('home and work are the same place');
-    const lang = b.lang === 'en' ? 'en' : 'ms';
+    const lang = MORNING_LANGS.includes(b.lang) ? b.lang : 'ms';
     const known = isId(b.id, 10) && isId(b.key, 22) ? this.row('SELECT * FROM commuters WHERE id = ?', b.id) : null;
     const mine = known && known.key === b.key;
     const id = mine ? known.id : randomId(10);

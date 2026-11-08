@@ -1,5 +1,5 @@
 import { CONFIG } from './config.js';
-import { sayDuration, fmtClock, fmtDistance, fmtDuration, sayDistance } from './format.js';
+import { sayDuration, fmtClock, fmtDistance, fmtDuration, localeOf, sayDistance } from './format.js';
 import { clamp, haversine } from './geo.js';
 import { Guidance } from './guidance.js';
 import { getLang, setLang, t } from './i18n.js';
@@ -45,6 +45,10 @@ import { isCode } from './hub.js';
 import * as voice from './voice.js';
 
 const $ = (id) => document.getElementById(id);
+// Bahasa Melayu, English, Chinese and Tamil. The characters' jokes and the human
+// voices are in the first two only.
+const LANGS = ['ms', 'en', 'zh', 'ta'];
+const castSpeaks = () => getLang() === 'ms' || getLang() === 'en';
 
 const RECENT_LIMIT = 8;
 const TRIP_MAX_AGE = 3 * 60 * 60 * 1000;
@@ -459,8 +463,10 @@ function render3DButtons() {
 function renderVoiceStatus() {
   const status = voice.voiceStatus(getLang());
   const key = { exact: 'voiceExact', near: 'voiceNear', none: 'voiceNone' }[status] || 'voiceMissing';
-  const human = voice.humanVoice();
-  const parts = human === 'on' ? [t('voiceHuman')]
+  // Human voices and the characters' jokes are Malay and English only.
+  const human = castSpeaks() ? voice.humanVoice() : 'off';
+  const parts = !castSpeaks() ? [t(key)]
+    : human === 'on' ? [t('voiceHuman')]
     : human === 'resting' ? [t('voiceHumanResting')]
     : human === 'refused' ? [t('voiceHumanRefused'), t(key)]
       : voice.humanVoicesOffered() ? [t('voiceHumanOff'), t(key)]
@@ -468,8 +474,8 @@ function renderVoiceStatus() {
   $('voice-status').textContent = parts.join(' ');
   const silent = human !== 'on' && key === 'voiceMissing';
   $('voice-test').hidden = silent;
-  $('voice-try').hidden = silent || S.settings.voiceCharacter === 'standard';
-  $('voice-check').hidden = !voice.humanVoicesOffered();
+  $('voice-try').hidden = silent || S.settings.voiceCharacter === 'standard' || !castSpeaks();
+  $('voice-check').hidden = !voice.humanVoicesOffered() || !castSpeaks();
 }
 
 function renderInstall() {
@@ -507,8 +513,9 @@ function renderSegments() {
   $('traffic-map-on').checked = S.settings.trafficMap;
   $('traffic-map-on').disabled = !S.settings.traffic;
   $('weather-on').checked = S.settings.weather;
-  set('lang-ms', S.settings.lang === 'ms');
-  set('lang-en', S.settings.lang === 'en');
+  for (const l of LANGS) set(`lang-${l}`, S.settings.lang === l);
+  $('lang-note').textContent = t('langNote');
+  $('lang-note').hidden = !t('langNote');
   set('theme-auto', S.settings.theme === 'auto');
   set('theme-day', S.settings.theme === 'day');
   set('theme-night', S.settings.theme === 'night');
@@ -1554,7 +1561,7 @@ const refillWord = (kind) => t(kind === 'ev' ? 'refillEv' : 'refillFuel');
 const kmText = (km) => fmtDistance(Math.max(0, km) * 1000);
 const amountText = (n) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
 const money = (n) => n.toFixed(2);
-const locale = () => (getLang() === 'ms' ? 'ms-MY' : 'en-MY');
+const locale = () => localeOf(getLang());
 const dateText = (iso) => (iso ? new Date(`${iso}T12:00:00+08:00`).toLocaleDateString(locale(), { day: 'numeric', month: 'short' }) : '');
 const categoryName = (c) => ({ fuel: 'nameFuel', ev: 'nameEv', rest: 'nameRest', surau: 'nameSurau', food: 'nameFood' }[c]);
 
@@ -1853,7 +1860,7 @@ function carClock(car) {
   const at = new Date(car.at);
   const clock = fmtClock(at, lang);
   if (at.toDateString() === new Date().toDateString()) return clock;
-  return `${clock}, ${at.toLocaleDateString(lang === 'ms' ? 'ms-MY' : 'en-GB', { day: 'numeric', month: 'short' })}`;
+  return `${clock}, ${at.toLocaleDateString(localeOf(lang), { day: 'numeric', month: 'short' })}`;
 }
 
 const carDistance = (car) => (S.fix ? haversine([S.fix.lng, S.fix.lat], [car.lng, car.lat]) : null);
@@ -2744,7 +2751,7 @@ function renderSign(st) {
     $('sign-road').textContent = d.road;
     $('sign-ref').textContent = d.ref;
     $('sign-ref').hidden = !d.ref;
-    $('sign-toward').textContent = d.toward ? `${getLang() === 'ms' ? 'Menuju' : 'Towards'} ${d.toward}` : '';
+    $('sign-toward').textContent = d.toward ? t('towardSign', { to: d.toward }) : '';
     $('sign-toward').hidden = !d.toward;
     sign.classList.remove('swap');
     void sign.offsetWidth;
@@ -3682,7 +3689,7 @@ function hearNow(line) {
   const hint = $('voice-wait');
   hint.textContent = voice.humanVoice() === 'on' ? t('voicePreparing') : '';
   voice.speak(line, { evenIfMuted: true, wait: voice.WAIT_SAMPLE_MS, onStart: () => { hint.textContent = ''; } }).then((heard) => {
-    if (heard !== 'phone' || !voice.humanVoicesOffered()) return;
+    if (heard !== 'phone' || !voice.humanVoicesOffered() || !castSpeaks()) return;
     const why = voice.voiceProblem() || (voice.humanVoice() === 'on' ? t('voiceTooSlow') : t('voiceNotConnected'));
     hint.textContent = t('voiceHeardPhone', { why });
     renderVoiceStatus();
@@ -4043,7 +4050,7 @@ document.addEventListener('visibilitychange', () => {
         S.awayWarned = true;
         try {
           const u = new SpeechSynthesisUtterance(t('awaySay'));
-          u.lang = getLang() === 'ms' ? 'ms-MY' : 'en-GB';
+          u.lang = voice.chooseVoice(window.speechSynthesis.getVoices?.() || [], getLang()).tag;
           window.speechSynthesis.speak(u);
         } catch { /* nothing to be done */ }
       }
@@ -4372,8 +4379,7 @@ function wire() {
   $('commute-slow').addEventListener('change', (e) => changeCommute({ slowOnly: e.target.checked }));
   $('commute-test').addEventListener('click', testCommute);
 
-  $('lang-ms').addEventListener('click', () => changeLanguage('ms'));
-  $('lang-en').addEventListener('click', () => changeLanguage('en'));
+  for (const l of LANGS) $(`lang-${l}`).addEventListener('click', () => changeLanguage(l));
   $('voice-test').addEventListener('click', trySample);
   $('voice-check').addEventListener('click', checkVoiceNow);
   for (const b of document.querySelectorAll('#voice-try button')) b.addEventListener('click', () => tryMoment(b.dataset.moment));
@@ -4659,10 +4665,10 @@ async function leaveConvoy() {
   const c = S.convoy;
   if (!c) return;
   S.convoy = null;
-  await c.leave();
   mapView?.setFriends([]);
   renderConvoy();
   toast(t('convoyLeft'));
+  await c.leave();
 }
 
 async function offerConvoy(id) {

@@ -69,6 +69,17 @@ export function chooseVoice(list, language) {
     if (id) return { voice: id, tag: id.lang, match: 'near' };
     return { voice: null, tag: 'ms-MY', match: 'none' };
   }
+  if (language === 'zh') {
+    const zh = find('zh-cn') || find('zh-hans') || find('cmn') || find('zh-sg') || find('zh-my');
+    if (zh) return { voice: zh, tag: zh.lang, match: 'exact' };
+    const any = find('zh');
+    if (any) return { voice: any, tag: any.lang, match: 'near' };
+    return { voice: null, tag: 'zh-CN', match: 'none' };
+  }
+  if (language === 'ta') {
+    const ta = find('ta');
+    return ta ? { voice: ta, tag: ta.lang, match: 'exact' } : { voice: null, tag: 'ta-IN', match: 'none' };
+  }
   const en = find('en-my') || find('en-sg') || find('en-gb') || find('en');
   return en ? { voice: en, tag: en.lang, match: 'exact' } : { voice: null, tag: 'en-GB', match: 'none' };
 }
@@ -124,7 +135,8 @@ function stopTalking() {
 const voiceServer = () => (CONFIG.humanVoices ? CONFIG.server : null);
 export const humanVoicesOffered = () => !!voiceServer();
 
-const humanPossible = () => !!voiceServer() && humanState !== 'off' && humanState !== 'refused' && Date.now() >= Math.max(stepBackUntil, restingUntil);
+// The human voices speak Malay and English only.
+const humanPossible = () => !!voiceServer() && (lang === 'ms' || lang === 'en') && humanState !== 'off' && humanState !== 'refused' && Date.now() >= Math.max(stepBackUntil, restingUntil);
 
 function clipAddress(text, who = character, language = lang) {
   const q = new URLSearchParams({ v: SPEECH_VERSION, who, lang: language, text });
@@ -324,7 +336,7 @@ export function prepare(text, who = character) {
 /* ---------- Whether the human voice is available ---------- */
 
 export function humanVoice() {
-  if (!voiceServer()) return 'off';
+  if (!voiceServer() || (lang !== 'ms' && lang !== 'en')) return 'off';
   return Date.now() < restingUntil ? 'resting' : humanState;
 }
 

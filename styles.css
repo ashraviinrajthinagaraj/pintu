@@ -1503,3 +1503,7 @@ a { color: inherit; }
 }
 .day[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 #commute-more[hidden] { display: none; }
+
+/* Four languages, each named in its own script. */
+.lang-row { display: flex; flex-wrap: wrap; }
+.lang-row button { flex: 1 0 auto; }
