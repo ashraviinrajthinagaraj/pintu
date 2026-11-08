@@ -2,6 +2,7 @@
 //
 //   /link?u=…      where a shared short map link leads
 //   /warnings      MET Malaysia's weather warnings
+//   /fuel          this week's official pump prices, from data.gov.my
 //   /mall?id=…     the shop list from a mall's own directory
 //   /speak?…       a line spoken by a character's human-sounding voice
 //   /traffic, /tiles/…, /limits, /geocode, /ev   TomTom's traffic, speed limits,
@@ -21,8 +22,9 @@
 
 // Shown when the server's address is opened, so it's clear which code is running.
 import { TOMTOM_POSTS, tomtomRoute, trafficCheck } from './tomtom.js';
+import { fuelRoute } from './fuel.js';
 
-const SERVER_VERSION = '2026-11-08.2';
+const SERVER_VERSION = '2026-11-08.3';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -724,6 +726,8 @@ async function handle(request, origin, env, ctx) {
     if (!res.ok) return reply({ error: 'source unavailable' }, origin, 502);
     return reply(await res.json(), origin, 200, { 'cache-control': 'public, max-age=600' });
   }
+
+  if (url.pathname === '/fuel') return fuelRoute(origin, reply);
 
   if (url.pathname === '/mall') {
     const source = MALLS[url.searchParams.get('id')];

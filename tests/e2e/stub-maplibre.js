@@ -25,6 +25,7 @@
       this.handlers = {};
       this.jumpCount = 0;
       this.layout = {};
+      this.pixelRatio = opts.pixelRatio;
       this.sources = { openmaptiles: {} };
       this.layers = [];
       this.styleUrl = opts.style;
@@ -49,6 +50,7 @@
     setLayoutProperty(id, key, value) { calls.push(['setLayoutProperty', id, key, value]); this.layout[id] = value; }
     jumpTo(o) { this.jumpCount++; this.lastJump = o; Object.assign(this.cam, o); this.draw(); }
     triggerRepaint() {}
+    setPixelRatio(r) { calls.push(['setPixelRatio', r]); this.pixelRatio = r; }
     getZoom() { return this.cam.zoom; }
     getPitch() { return this.cam.pitch; }
     setStyle(url, o) { calls.push(['setStyle', url, o]); this.styleUrl = url; this.sources = { openmaptiles: {} }; this.layers = []; setTimeout(() => { this._fire('style.load', {}); this.draw(); }, 5); }

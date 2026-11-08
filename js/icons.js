@@ -106,6 +106,9 @@ export const UI = {
   bed: line('<path d="M3 19V6M3 15h18v4M21 15v-3a3 3 0 0 0-3-3h-7v6"/><circle cx="7" cy="11.5" r="2"/>'),
   clock: line('<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.5l3.5 2"/>'),
   pin: line('<path d="M12 21.5s7.5-6.7 7.5-12a7.5 7.5 0 1 0-15 0c0 5.3 7.5 12 7.5 12Z"/><circle cx="12" cy="9.5" r="2.6"/>'),
+  mic: line('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>'),
+  battery: line('<rect x="3" y="7.5" width="16" height="9" rx="2"/><path d="M21.5 10.5v3"/><path d="M6 10.5h5v3H6Z" fill="currentColor" stroke-width="1.4"/>'),
+  month: line('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M7.5 17v-3M12 17v-4.5M16.5 17v-2"/>'),
 };
 
 export const CATEGORY_ICONS = { sights: UI.star, hotel: UI.bed, parking: UI.parking, fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };

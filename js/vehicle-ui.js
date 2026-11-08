@@ -2,12 +2,13 @@
 import { CarPreview } from './car-gl.js';
 import { t } from './i18n.js';
 import { CAR_BODIES, COLORS, PRESETS, cleanVehicle, kmPerLitreToL100, l100ToKmPerLitre } from './vehicle.js';
+import { GRADES, cleanGrade } from './fuel-price.js';
 
 const $ = (id) => document.getElementById(id);
 const round1 = (n) => Math.round(n * 10) / 10;
 
-export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMode, onDone }) {
-  const state = { kind: 'petrol', unit: 'l100', body: 'hatchback', color: COLORS[0].hex };
+export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMode, getFuel = () => null, onDone }) {
+  const state = { kind: 'petrol', unit: 'l100', body: 'hatchback', color: COLORS[0].hex, grade: null };
   let preview = null;
 
   function ensurePreview() {
@@ -81,6 +82,25 @@ export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMod
     $('veh-range-label').textContent = ev ? t('vehRangeEv') : t('vehRangeFuel');
     $('veh-level-label').textContent = ev ? t('vehLevelEv') : t('vehLevelFuel');
     $('veh-price-label').textContent = ev ? t('vehPriceEv') : t('vehPriceFuel');
+    renderGrade();
+  }
+
+  // Which pump price to use when no price is typed in, with this week's figure.
+  function renderGrade() {
+    const grades = GRADES[state.kind] || [];
+    $('veh-grade-field').hidden = !grades.length;
+    $('veh-grade-label').textContent = t('vehGrade');
+    state.grade = cleanGrade(state.kind, state.grade);
+    const prices = getFuel()?.prices || {};
+    $('veh-grade').replaceChildren(...grades.map((g) => {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = prices[g] ? `${t(`grade_${g}`)}, RM${prices[g].toFixed(2)}` : t(`grade_${g}`);
+      return opt;
+    }));
+    if (state.grade) $('veh-grade').value = state.grade;
+    const price = prices[state.grade];
+    $('veh-price-tip').textContent = state.kind === 'ev' ? t('vehPriceTipEv') : t('vehPriceTip', { price: price ? ` (RM${price.toFixed(2)})` : '' });
   }
 
   function showLevel() {
@@ -97,6 +117,7 @@ export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMod
     fillPresets();
     const v = getVehicle();
     state.kind = v?.kind || 'petrol';
+    state.grade = v?.grade || null;
     state.unit = 'l100';
     preset.value = '';
     $('veh-name').value = v?.name || '';
@@ -135,6 +156,7 @@ export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMod
   for (const k of ['petrol', 'diesel', 'ev']) {
     $(`veh-kind-${k}`).addEventListener('click', () => { state.kind = k; renderKind(); });
   }
+  $('veh-grade').addEventListener('change', () => { state.grade = $('veh-grade').value; renderGrade(); });
   for (const [id, unit] of [['veh-unit-l100', 'l100'], ['veh-unit-kml', 'kml']]) {
     $(id).addEventListener('click', () => {
       if (state.unit === unit) return;
@@ -154,6 +176,7 @@ export function initVehicleUI({ getVehicle, setVehicle, getLook, setLook, getMod
       consumption: consumptionValue(),
       range: $('veh-range').value,
       price: $('veh-price').value,
+      grade: state.grade,
       level: $('veh-level').value,
     });
     // The look saves on its own. Fuel figures only count once there are some.

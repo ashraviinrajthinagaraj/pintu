@@ -473,6 +473,7 @@ a { color: inherit; }
 .tag-slow { background: #C62828; color: #fff; }
 .tag-clear { background: var(--green); color: #fff; }
 .tag-best { background: var(--panel); color: var(--ink); box-shadow: inset 0 0 0 2px var(--green); }
+.tag-cost { background: var(--panel-3); color: var(--ink); }
 
 /* The trip at a glance: where you are, and what's coming */
 .strip { position: relative; height: 22px; }
@@ -1316,3 +1317,64 @@ a { color: inherit; }
 .arrival-car .text-input::placeholder { color: rgba(255, 255, 255, .7); }
 .arrival-car[hidden] { display: none; }
 #report-drive-row { margin-top: 12px; }
+
+/* ---------- Saying where to go ---------- */
+.where-row { display: flex; gap: 10px; }
+.where-row .plate-where { flex: 1; min-width: 0; }
+.plate-mic {
+  flex: none;
+  width: 78px;
+  min-height: 78px;
+  display: grid;
+  place-items: center;
+  box-shadow: var(--lift);
+}
+.plate-mic svg { width: 34px; height: 34px; }
+.mic-btn { position: relative; }
+.mic-btn.is-listening { color: #fff; background: #C4202A; }
+.mic-btn.is-listening::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 3px solid #C4202A;
+  animation: mic-ring 1.2s ease-out infinite;
+}
+@keyframes mic-ring { from { opacity: .9; transform: scale(.9); } to { opacity: 0; transform: scale(1.35); } }
+@media (max-height: 520px) { .plate-mic { min-height: 70px; width: 70px; } }
+
+/* ---------- Pump prices ---------- */
+.plan-price { display: block; color: var(--mute); font-size: 13px; margin-top: 2px; }
+.field-tip { margin-top: 6px; font-size: 14px; }
+
+/* ---------- The month in trips ---------- */
+.month-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px -6px 14px; }
+.month-nav h3 { font-family: var(--condensed); font-size: 23px; font-weight: 700; text-align: center; flex: 1; }
+.month-nav .icon-btn:disabled { opacity: .3; }
+#month-next svg { transform: scaleX(-1); }
+.month-plate {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 18px 22px 16px;
+}
+.month-plate strong { font-family: var(--condensed); font-size: 52px; font-weight: 800; line-height: 1; letter-spacing: -.01em; }
+.month-plate span { font-family: var(--condensed); font-size: 21px; font-weight: 600; margin-top: 4px; }
+.month-vs { color: var(--mute); margin: 10px 2px 0; }
+.month-days-wrap { margin: 22px 0 6px; }
+.month-days {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 76px;
+  margin-top: 8px;
+  border-bottom: 2px solid var(--panel-3);
+}
+.month-days span { flex: 1; height: var(--h, 0); background: var(--sky); border-radius: 2px 2px 0 0; }
+.month-days-ends { display: flex; justify-content: space-between; color: var(--mute); font-size: 13px; margin-top: 4px; }
+.month-rows { margin: 14px 0 10px; }
+.month-rows div { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 13px 0; border-top: 1px solid var(--line); }
+.month-rows dt { color: var(--mute); flex: none; max-width: 48%; }
+.month-rows dd { font-weight: 600; text-align: right; }
+#month-forget.is-armed { color: var(--red); text-decoration-color: var(--red); }
+@media (prefers-reduced-motion: reduce) { .mic-btn.is-listening::before { animation: none; opacity: .6; } }

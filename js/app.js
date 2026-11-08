@@ -34,6 +34,10 @@ import { parseCoordinates, reversePlace, searchPlaces } from './search.js';
 import { load, remove, save } from './store.js';
 import { DEFAULT_LOOKS, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan } from './vehicle.js';
 import { initVehicleUI } from './vehicle-ui.js';
+import { GRADES, fetchFuelPrices, isStale, keptFuelPrices, priced } from './fuel-price.js';
+import { canListen, listen, understand } from './voice-search.js';
+import { CrawlClock, forgetTrips, keptTrips, monthSummary, recordTrip, tripMonths } from './trips.js';
+import { frameDue, saverOn, watchBattery } from './battery.js';
 import * as voice from './voice.js';
 
 const $ = (id) => document.getElementById(id);
@@ -87,7 +91,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -140,6 +144,12 @@ const S = {
   lastFrameAt: 0,
   lastTrimAt: 0,
   lastTrimS: null,
+  fuel: keptFuelPrices(),   // this week's official pump prices
+  ear: null,                // voice search, while listening
+  battery: null,
+  saving: false,            // battery saver on right now
+  crawl: null,
+  month: null,              // which month the summary shows
 };
 
 const gps = new Gps(onGpsFix, onGpsError);
@@ -162,10 +172,13 @@ const vehicleUI = initVehicleUI({
     renderAfterVehicleChange();
   },
   getMode: () => driveMode(),
+  getFuel: () => S.fuel,
   onDone: () => history.back(),
 });
 
 function vehicle() { return S.vehicles[S.mode] || null; }
+// With this week's pump price filled in when you haven't typed one.
+function pricedVehicle() { return priced(vehicle(), S.fuel); }
 // The vehicle in question, even while you're on foot.
 function driveMode() { return S.mode === 'walk' ? (S.returnMode || load('mode', 'car')) : S.mode; }
 function saveVehicles() { save('vehicles', S.vehicles); }
@@ -179,7 +192,24 @@ function applyStaticText() {
   $('where-glyph').innerHTML = doorSvg('style="--knob:#00794A"');
   label($('btn-settings'), t('settings'), UI.settings);
   label($('btn-locate'), t('locate'), UI.locate);
-  for (const id of ['search-back', 'preview-back', 'settings-back', 'vehicle-back', 'pick-back']) label($(id), t('back'), UI.back);
+  for (const id of ['search-back', 'preview-back', 'settings-back', 'vehicle-back', 'pick-back', 'summary-back']) label($(id), t('back'), UI.back);
+  label($('where-mic'), t('micSearch'), UI.mic);
+  renderMic();
+  $('where-mic').hidden = !canListen();
+  $('search-mic').hidden = !canListen();
+  $('set-summary-title').textContent = t('setSummary');
+  $('summary-text').textContent = t('summaryText');
+  $('summary-open').textContent = t('summaryOpen');
+  $('keep-trips-label').textContent = t('keepTrips');
+  $('summary-title').textContent = t('summaryTitle');
+  label($('month-prev'), t('monthPrev'), UI.back);
+  label($('month-next'), t('monthNext'), UI.back);
+  $('month-days-label').textContent = t('monthDays');
+  $('set-saver-title').textContent = t('setSaver');
+  $('saver-text').textContent = t('saverText');
+  $('saver-auto').textContent = t('saverAuto');
+  $('saver-on').textContent = t('saverOn');
+  $('saver-off').textContent = t('saverOff');
   for (const id of ['stops-back', 'steps-back']) label($(id), t('back'), UI.close);
   setSearchPrompt();
   label($('swap-ends'), t('swapEnds'), UI.swap);
@@ -416,6 +446,12 @@ function renderSegments() {
   $('traffic-on').checked = S.settings.traffic;
   renderVersion();
   $('keep-drive').checked = S.settings.keepDrive;
+  $('keep-trips').checked = S.settings.keepTrips;
+  set('saver-auto', S.settings.saver === 'auto');
+  set('saver-on', S.settings.saver === 'on');
+  set('saver-off', S.settings.saver === 'off');
+  renderSaverNow();
+  renderFuelWeek();
   $('report-drive-row').hidden = !lastDrive();
   const used = usage();
   $('tomtom-use').textContent = t('tomtomUse', { today: used.today, month: used.month, cap: DAILY_CAP });
@@ -528,6 +564,7 @@ function render() {
   $('arrival').hidden = view !== 'arrival';
   $('settings').hidden = overlay !== 'settings';
   $('vehicle').hidden = overlay !== 'vehicle';
+  $('summary').hidden = overlay !== 'summary';
   $('stops').hidden = overlay !== 'stops';
   observeBottom();
 }
@@ -552,6 +589,7 @@ addEventListener('popstate', (e) => {
   }
   const was = S.overlay;
   S.overlay = st.overlay || null;
+  cancelEar();
   if (was === 'vehicle' && S.overlay !== 'vehicle') vehicleUI.close();
   if (was === 'stops' && S.overlay !== 'stopsearch') closeStopsPanel();
   if (was === 'stopsearch' && !S.overlay) closeStopsPanel();
@@ -687,6 +725,8 @@ async function startGpsIfAllowed() {
 
 function frame(now) {
   requestAnimationFrame(frame);
+  // Battery saver draws thirty frames a second instead of sixty.
+  if (!frameDue(now, S.lastFrameAt, S.saving)) return;
   const dt = Math.min(0.25, (now - S.lastFrameAt) / 1000);
   S.lastFrameAt = now;
   const pose = motion.frame(now);
@@ -997,6 +1037,16 @@ async function pasteLink() {
 // Arriving with a link: shared to Pintu from another app, or opened from a message.
 function openIncoming() {
   const q = new URLSearchParams(location.search);
+  // A shortcut on the home screen: hold Pintu's icon.
+  const go = q.get('go');
+  if (go) {
+    history.replaceState(history.state, '', location.pathname);
+    if (go === 'home' || go === 'work') goSaved(go);
+    else if (go === 'car') openCar();
+    else if (go === 'search') openSearch();
+    else if (NEARBY_ORDER.includes(go)) openExplore(go);
+    return;
+  }
   const text = q.get('to') || [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n');
   if (!text) return;
   history.replaceState(history.state, '', location.pathname);
@@ -1370,6 +1420,7 @@ function renderRoutes() {
 
   const list = $('route-list');
   list.setAttribute('role', 'radiogroup');
+  const pv = S.mode === 'walk' ? null : pricedVehicle();
   list.replaceChildren(...S.routes.map((r, i) => {
     const li = document.createElement('li');
     const btn = document.createElement('button');
@@ -1395,6 +1446,8 @@ function renderRoutes() {
     // Motorcycles don't pay tolls in Malaysia, so the tag would only mislead.
     if (r.hasToll && S.mode !== 'motorcycle') tags.append(tag(r.tollKm >= 1 ? t('tollKm', { km: kmText(r.tollKm) }) : t('tollStill')));
     if (r.hasFerry) tags.append(tag(t('ferry')));
+    const cost = pv ? tripPlan(pv, r.distanceKm)?.cost : null;
+    if (cost != null) tags.append(tag(t(pv.kind === 'ev' ? 'costEv' : 'costFuel', { cost: money(cost) }), 'tag-cost'));
     if (r.traffic) {
       const slow = r.traffic.delay >= 120;
       tags.append(tag(slow ? t('trafficDelayTag', { time: fmtDuration(r.traffic.delay, getLang()) }) : t('trafficClearTag'), slow ? 'tag-slow' : 'tag-clear'));
@@ -1434,6 +1487,9 @@ function selectRoute(i) {
 const refillWord = (kind) => t(kind === 'ev' ? 'refillEv' : 'refillFuel');
 const kmText = (km) => fmtDistance(Math.max(0, km) * 1000);
 const amountText = (n) => (n < 10 ? n.toFixed(1) : String(Math.round(n)));
+const money = (n) => n.toFixed(2);
+const locale = () => (getLang() === 'ms' ? 'ms-MY' : 'en-MY');
+const dateText = (iso) => (iso ? new Date(`${iso}T12:00:00+08:00`).toLocaleDateString(locale(), { day: 'numeric', month: 'short' }) : '');
 const categoryName = (c) => ({ fuel: 'nameFuel', ev: 'nameEv', rest: 'nameRest', surau: 'nameSurau', food: 'nameFood' }[c]);
 
 function renderPlan() {
@@ -1486,7 +1542,7 @@ function renderPlan() {
 }
 
 function renderPlanFuel(route) {
-  const v = vehicle();
+  const v = pricedVehicle();
   const row = $('plan-fuel');
   row.hidden = S.mode === 'walk';
   const kind = v?.kind || 'petrol';
@@ -1494,6 +1550,7 @@ function renderPlanFuel(route) {
   $('plan-fuel-edit').textContent = t(v ? 'vehEditBtn' : 'vehAddBtn');
   $('plan-level-row').hidden = !v?.range;
   $('plan-charge').hidden = true;
+  $('plan-fuel-price').hidden = true;
   row.classList.remove('is-short');
   if (!v) {
     $('plan-fuel-title').textContent = t('vehAdd');
@@ -1504,8 +1561,13 @@ function renderPlanFuel(route) {
   const refill = refillWord(v.kind);
   if (plan.used != null) {
     $('plan-fuel-title').textContent = plan.cost != null
-      ? t('planUsedCost', { amount: amountText(plan.used), unit: plan.unit, cost: plan.cost.toFixed(2) })
+      ? t('planUsedCost', { amount: amountText(plan.used), unit: plan.unit, cost: money(plan.cost) })
       : t('planUsed', { amount: amountText(plan.used), unit: plan.unit });
+    // Where the price came from, when it wasn't typed in.
+    if (plan.cost != null && v.priceFrom === 'official') {
+      $('plan-fuel-price').hidden = false;
+      $('plan-fuel-price').textContent = t(isStale(S.fuel) ? 'fuelPriceOld' : 'fuelPriceOfficial', { grade: t(`grade_${v.grade}`), price: money(v.price), date: dateText(S.fuel.date) });
+    }
   } else {
     $('plan-fuel-title').textContent = t('planRangeNow', { km: kmText(plan.rangeNow) });
   }
@@ -2343,6 +2405,7 @@ function startGuidance({ simulate }) {
   S.drivenKm = 0;
   S.tripKm = 0;
   S.tripStart = Date.now();
+  S.crawl = new CrawlClock();
   S.lastDrivenS = null;
   S.rangeSpoken = 0;
   S.lastSignKey = null;
@@ -2422,6 +2485,7 @@ function onNavFix(fix, takenAt) {
     S.tripKm += km;
   }
   S.lastDrivenS = st.s;
+  if (!S.sim) S.crawl?.add(fix.time ?? Date.now(), fix.speed);
 
   renderSign(st);
   renderEta(st);
@@ -3088,8 +3152,17 @@ function keepVehicleLevel() {
   renderRangePill();
 }
 
+// A line for the monthly summary, kept on this phone.
+function keepTripSummary() {
+  if (S.sim || !S.guidance || S.mode === 'walk' || !S.settings.keepTrips) return;
+  const plan = tripPlan(pricedVehicle(), S.tripKm);
+  recordTrip({ km: S.tripKm, s: S.crawl?.span || (Date.now() - S.tripStart) / 1000, slow: S.crawl?.slow || 0, cost: plan?.cost ?? null, mode: S.mode, to: S.dest?.name || '' });
+}
+
 // The trip's over one way or another: put everything back.
 function stopGuidance() {
+  keepTripSummary();
+  S.crawl = null;
   S.cameraCtrl?.abort();
   S.cameras = [];
   S.tollCtrl?.abort();
@@ -3138,10 +3211,12 @@ function arrivalStats() {
   const parts = [];
   const distance = fmtDistance(S.tripKm * 1000);
   parts.push(S.sim ? distance : t('statsDrive', { distance, time: fmtDuration((Date.now() - S.tripStart) / 1000, lang) }));
-  const v = vehicle();
+  const v = pricedVehicle();
   if (v?.consumption) {
     const plan = tripPlan(v, S.tripKm);
-    parts.push(t('statsUsed', { amount: amountText(plan.used), unit: plan.unit }));
+    parts.push(plan.cost != null
+      ? t('statsUsedCost', { amount: amountText(plan.used), unit: plan.unit, cost: money(plan.cost) })
+      : t('statsUsed', { amount: amountText(plan.used), unit: plan.unit }));
   }
   return parts.join(', ');
 }
@@ -3961,6 +4036,18 @@ function wire() {
     }
   });
   $('report-btn').addEventListener('click', sendReport);
+  $('keep-trips').addEventListener('change', (e) => setSetting('keepTrips', e.target.checked));
+  $('summary-open').addEventListener('click', openSummary);
+  $('summary-back').addEventListener('click', () => history.back());
+  $('month-prev').addEventListener('click', () => shiftMonth(-1));
+  $('month-next').addEventListener('click', () => shiftMonth(1));
+  $('month-forget').addEventListener('click', forgetMonths);
+  for (const value of ['auto', 'on', 'off']) $(`saver-${value}`).addEventListener('click', () => setSaverSetting(value));
+  $('search-mic').addEventListener('click', voiceSearch);
+  $('where-mic').addEventListener('click', () => {
+    openSearch();
+    voiceSearch();
+  });
   $('traffic-map-on').addEventListener('change', (e) => {
     setSetting('trafficMap', e.target.checked);
     syncTrafficMap();
@@ -4196,6 +4283,239 @@ function wire() {
   setInterval(() => { if (S.view === 'nav' && !S.sim) renderChips(); }, 5000);
 }
 
+/* ---------- Pump prices ---------- */
+
+async function loadFuelPrices() {
+  const fuel = await fetchFuelPrices();
+  if (!fuel || fuel === S.fuel || (S.fuel && fuel.at === S.fuel.at)) return;
+  S.fuel = fuel;
+  renderFuelWeek();
+  if (S.view === 'preview' && S.routeState === 'ready') renderRoutes();
+}
+
+function renderFuelWeek() {
+  const el = $('fuel-week');
+  const f = S.fuel;
+  el.hidden = !f?.prices || isStale(f);
+  if (el.hidden) return;
+  const list = [...GRADES.petrol, ...GRADES.diesel]
+    .filter((g) => f.prices[g])
+    .map((g) => `${t(`grade_${g}`)} RM${money(f.prices[g])}`)
+    .join(', ');
+  el.textContent = t('fuelWeek', { date: dateText(f.date), list });
+}
+
+/* ---------- Saying where to go ---------- */
+
+function renderMic() {
+  const on = !!S.ear;
+  const btn = $('search-mic');
+  label(btn, t(on ? 'micStop' : 'micSearch'), UI.mic);
+  btn.classList.toggle('is-listening', on);
+  btn.setAttribute('aria-pressed', String(on));
+}
+
+function voiceSearch() {
+  if (S.ear) {
+    S.ear.stop();
+    return;
+  }
+  const input = $('search-input');
+  input.blur();
+  clearTimeout(S.searchTimer);
+  S.searchCtrl?.abort();
+  input.value = '';
+  renderSearch([]);
+  input.placeholder = t('voiceListening');
+  $('search-status').textContent = t('voiceHint');
+  const forWhat = S.searchFor;
+  S.ear = listen({
+    lang: getLang(),
+    onWords: (words) => { input.value = words; },
+    onDone: (words) => {
+      earDone();
+      heard(words, forWhat);
+    },
+    onFail: (why) => {
+      earDone();
+      voiceFailed(why);
+    },
+  });
+  renderMic();
+}
+
+function earDone() {
+  S.ear = null;
+  setSearchPrompt();
+  renderMic();
+}
+
+function cancelEar() {
+  if (!S.ear) return;
+  S.ear.cancel();
+  earDone();
+}
+
+function voiceFailed(why) {
+  const key = why === 'not-allowed' || why === 'service-not-allowed' ? 'voiceMicDenied'
+    : why === 'network' ? 'voiceNoNet'
+      : why === 'no-speech' || why === 'aborted' ? 'voiceHeardNothing'
+        : 'voiceFailed';
+  $('search-status').textContent = t(key);
+}
+
+// What was said, done: home, work, your car and the nearest petrol station go
+// straight there, and anything else is searched for.
+function heard(words, forWhat) {
+  // The search was closed or changed while listening.
+  if (S.searchFor !== forWhat || $('search').hidden) return;
+  const asked = understand(words);
+  if (!asked) {
+    voiceFailed('no-speech');
+    return;
+  }
+  const input = $('search-input');
+  // Choosing a stop, a start or your home, what you said is only ever searched for.
+  if (forWhat !== 'destination' || asked.kind === 'search') {
+    input.value = asked.kind === 'search' ? asked.query : words;
+    onSearchInput();
+    return;
+  }
+  input.value = words;
+  if (asked.kind === 'saved') {
+    const place = savedPlaces()[asked.which];
+    if (!place) {
+      S.searchFor = asked.which;
+      resetSearch();
+      $('search-status').textContent = t('voiceNotSet', { name: t(asked.which) });
+      return;
+    }
+    input.blur();
+    voice.unlockVoice();
+    replaceHistory('preview');
+    S.stops = [];
+    S.start = null;
+    openPreview({ ...place, name: place.name || t(asked.which) });
+    return;
+  }
+  S.afterBack = asked.kind === 'car' ? () => openCar() : () => openExplore(asked.category);
+  history.back();
+}
+
+/* ---------- The month in trips ---------- */
+
+const monthIndex = (m) => m.year * 12 + m.month;
+
+function openSummary() {
+  const now = new Date();
+  S.month = { year: now.getFullYear(), month: now.getMonth() };
+  S.forgetArmed = false;
+  openOverlay('summary');
+  renderSummary();
+}
+
+function shiftMonth(by) {
+  const i = monthIndex(S.month) + by;
+  S.month = { year: Math.floor(i / 12), month: ((i % 12) + 12) % 12 };
+  renderSummary();
+}
+
+function renderSummary() {
+  if (!S.month) return;
+  const lang = getLang();
+  const trips = keptTrips();
+  const months = tripMonths(trips);
+  const now = new Date();
+  const latest = monthIndex({ year: now.getFullYear(), month: now.getMonth() });
+  const earliest = months.length ? Math.min(latest, monthIndex(months[months.length - 1])) : latest;
+  const at = monthIndex(S.month);
+  $('month-prev').disabled = at <= earliest;
+  $('month-next').disabled = at >= latest;
+  $('month-name').textContent = new Date(S.month.year, S.month.month, 1).toLocaleDateString(locale(), { month: 'long', year: 'numeric' });
+  const m = monthSummary(trips, S.month.year, S.month.month);
+  $('month-empty').hidden = m.trips > 0;
+  $('month-empty').textContent = t('monthEmpty');
+  $('month-body').hidden = m.trips === 0;
+  $('month-forget').hidden = !trips.length;
+  $('month-forget').textContent = t(S.forgetArmed ? 'monthForgetSure' : 'monthForget');
+  $('month-forget').classList.toggle('is-armed', !!S.forgetArmed);
+  if (!m.trips) return;
+
+  $('month-km').textContent = fmtDistance(m.km * 1000);
+  $('month-trips').textContent = m.trips === 1 ? t('monthTripsOne') : t('monthTrips', { n: m.trips });
+  const diff = m.km - m.prevKm;
+  $('month-vs').hidden = !m.prevKm;
+  $('month-vs').textContent = Math.abs(diff) < 1 ? t('monthVsSame') : t(diff > 0 ? 'monthVsMore' : 'monthVsLess', { km: fmtDistance(Math.abs(diff) * 1000) });
+
+  const most = Math.max(...m.perDay, 0.1);
+  $('month-days').replaceChildren(...m.perDay.map((km) => {
+    const bar = document.createElement('span');
+    bar.style.setProperty('--h', `${Math.max(km ? 4 : 0, Math.round((km / most) * 100))}%`);
+    return bar;
+  }));
+  $('month-days-last').textContent = String(m.perDay.length);
+
+  const share = Math.round((100 * m.slow) / Math.max(1, m.seconds));
+  const rows = [
+    [t('monthDriving'), fmtDuration(m.seconds, lang)],
+    [t('monthSlow'), m.slow < 30 ? '0 min' : t('monthSlowShare', { time: fmtDuration(m.slow, lang), pct: share })],
+    [t('monthCost'), m.cost == null ? t('monthCostNone') : m.costAll ? `RM${money(m.cost)}` : t('monthCostSome', { cost: money(m.cost), n: m.costed })],
+  ];
+  if (m.longest) rows.push([t('monthLongest'), m.longest.to ? t('monthLongestDetail', { km: fmtDistance(m.longest.km * 1000), to: m.longest.to }) : fmtDistance(m.longest.km * 1000)]);
+  if (m.top) rows.push([t('monthTop'), t('monthTopDetail', { name: m.top.name, n: m.top.count })]);
+  $('month-rows').replaceChildren(...rows.map(([name, value]) => {
+    const row = document.createElement('div');
+    const dt = document.createElement('dt');
+    dt.textContent = name;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    row.append(dt, dd);
+    return row;
+  }));
+}
+
+// Two taps, so one stray tap can't lose a year of trips.
+function forgetMonths() {
+  clearTimeout(S.forgetTimer);
+  if (!S.forgetArmed) {
+    S.forgetArmed = true;
+    renderSummary();
+    S.forgetTimer = setTimeout(() => {
+      S.forgetArmed = false;
+      if (S.overlay === 'summary') renderSummary();
+    }, 4000);
+    return;
+  }
+  S.forgetArmed = false;
+  forgetTrips();
+  toast(t('monthForgotten'));
+  renderSummary();
+}
+
+/* ---------- Battery saver ---------- */
+
+function applySaver() {
+  const on = saverOn(S.settings.saver, S.battery);
+  if (on !== S.saving) {
+    S.saving = on;
+    mapView?.setSaver(on);
+    if (on && S.settings.saver === 'auto' && S.battery) toast(t('saverAutoOn', { pct: Math.round(S.battery.level * 100) }), 5000);
+  }
+  renderSaverNow();
+}
+
+function renderSaverNow() {
+  const el = $('saver-now');
+  el.hidden = !S.saving;
+  if (S.saving) el.textContent = S.battery ? t('saverNowBattery', { pct: Math.round(S.battery.level * 100) }) : t('saverNow');
+}
+
+function setSaverSetting(value) {
+  setSetting('saver', value);
+  renderSegments();
+  applySaver();
+}
+
 function openVehicle() {
   openOverlay('vehicle');
   vehicleUI.open();
@@ -4227,6 +4547,7 @@ async function startMap() {
       trafficTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
     });
     await mapView.init();
+    mapView.setSaver(S.saving);
     mapView.setCarOn(S.settings.view3d);
     syncTrafficMap();
   } catch {
@@ -4261,7 +4582,13 @@ async function main() {
   show('idle');
   offerResume();
   startGpsIfAllowed();
+  watchBattery((b) => {
+    S.battery = b;
+    applySaver();
+  });
+  applySaver();
   requestAnimationFrame(frame);
+  loadFuelPrices();
   await startMap();
   openIncoming();
 

@@ -41,7 +41,9 @@ const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').match
 // the pixels or more, which slows every frame for detail nobody can see while
 // driving. Twice is still crisp.
 export const MAX_PIXEL_RATIO = 2;
-export const mapPixelRatio = () => Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+// Battery saver draws a little less sharply still.
+export const SAVER_PIXEL_RATIO = 1.5;
+export const mapPixelRatio = (saving = false) => Math.min(window.devicePixelRatio || 1, saving ? SAVER_PIXEL_RATIO : MAX_PIXEL_RATIO);
 
 // As you drive, the line behind you is taken away several times a second. Only
 // the next few kilometres are sent again each time; the rest of the trip, which
@@ -59,6 +61,7 @@ export class MapView {
     this.trafficDriving = false;
     this.theme = theme;
     this.view3d = view3d;
+    this.saving = false;    // battery saver: no 3D buildings, fewer pixels
     this.onLongPress = onLongPress;
     this.onUserMove = onUserMove;
     this.onAltTap = onAltTap;
@@ -92,7 +95,7 @@ export class MapView {
       attributionControl: { compact: true, customAttribution: 'Traffic © TomTom' },
       fadeDuration: 120,
       maxPitch: 70,
-      pixelRatio: mapPixelRatio(),
+      pixelRatio: mapPixelRatio(this.saving),
     });
     this.map.on('style.load', () => this._addLayers());
     this.map.on('dragstart', () => this.onUserMove?.());
@@ -189,7 +192,7 @@ export class MapView {
         'source-layer': 'building',
         minzoom: 14,
         filter: ['!', ['has', 'hide_3d']],
-        layout: { visibility: this.view3d ? 'visible' : 'none' },
+        layout: { visibility: this.view3d && !this.saving ? 'visible' : 'none' },
         paint: {
           'fill-extrusion-color': c.building,
           'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.5, ['get', 'render_height']],
@@ -350,7 +353,18 @@ export class MapView {
 
   setView3D(on) {
     this.view3d = on;
-    if (this.map?.getLayer('pintu-3d')) this.map.setLayoutProperty('pintu-3d', 'visibility', on ? 'visible' : 'none');
+    this._syncBuildings();
+  }
+
+  _syncBuildings() {
+    if (this.map?.getLayer('pintu-3d')) this.map.setLayoutProperty('pintu-3d', 'visibility', this.view3d && !this.saving ? 'visible' : 'none');
+  }
+
+  setSaver(on) {
+    if (this.saving === on) return;
+    this.saving = on;
+    this._syncBuildings();
+    try { this.map?.setPixelRatio?.(mapPixelRatio(on)); } catch { /* an older map library: sharpness stays */ }
   }
 
   _wireLongPress() {

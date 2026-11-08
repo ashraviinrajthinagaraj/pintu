@@ -19,6 +19,7 @@ folder as it is.
 | Routing, lane arrows and lane counts | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
 | Rain forecast | [Open-Meteo](https://open-meteo.com/) | Free for non-commercial use, with credit |
 | Official warnings | [MET Malaysia via data.gov.my](https://developer.data.gov.my/realtime-api/weather) | 4 requests a minute |
+| Pump prices | [data.gov.my fuel prices](https://data.gov.my/data-catalogue/fuelprice), through the small server | Set weekly. 4 requests a minute, so the server keeps the answer 6 hours |
 | Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
@@ -148,6 +149,47 @@ which on PLUS depend on where you enter and leave.
 Saved on the phone, set from the main screen or settings. With a position, each shows the journey
 time and arrival clock, asked again after 5 minutes or a 500 m move.
 
+## Home-screen shortcuts
+
+Holding Pintu's icon on the home screen offers Rumah, Kerja, Cari, Kereta and Minyak
+(`shortcuts` in `manifest.webmanifest`). Each opens `./?go=…`: straight to the route home or to work
+(or to setting it, if it isn't set), the search box, where the car is, or petrol stations nearby.
+Phones only pick up shortcuts when Pintu is added to the home screen again, or after Chrome
+refreshes its copy of the app, which can take a day.
+
+## Saying where to go
+
+The microphone beside "Nak ke mana?" and in the search box uses the phone's own speech service
+(`js/voice-search.js`; on Android that is Google's, in Malay or English to match Pintu). "Rumah",
+"pergi kerja", "kereta saya" and "stesen minyak terdekat" (and the English for each) go straight
+there; anything else is searched for without the "bawa saya ke". When choosing a stop or a start,
+what you say is only ever searched for.
+
+## Pump prices
+
+The government sets Malaysia's pump prices every Wednesday and data.gov.my publishes them. The
+server's `/fuel` passes on the newest week (`server/fuel.js`), and the phone keeps it for 12 hours
+(`js/fuel-price.js`). A vehicle with no price typed in uses the official price for the fuel it
+takes: RON95 BUDI95 unless RON95 at full price, RON97 or diesel is chosen. Each route choice
+shows its cost, the plan says which price it used, and a price older than about two weeks says
+how old it is. Electric cars need a price typed in, because charging prices differ by station.
+
+## Monthly summary
+
+Settings has "Ringkasan bulanan": each real drive leaves one line on the phone (`js/trips.js`):
+distance, time, time below 10 km/h, the fuel cost at the price then, and the destination's name.
+Simulated drives and walking aren't counted. The summary shows the month's distance, trips, a bar
+for each day, driving time, time stuck, fuel cost, the longest trip and where you went most, with
+the months before. Lines older than 13 months are dropped, it can be switched off, and "Padam
+semua ringkasan" (two taps) deletes them.
+
+## Battery saver
+
+With it on, the map is drawn at 1.5 times the screen's pixels instead of 2, at 30 frames a second
+instead of 60, and without 3D buildings (`js/battery.js`). Directions, voice and GPS don't change.
+"Auto", the default, turns it on when the phone says its battery is at 20% or less and not
+charging; iPhones don't say, so there it only comes on when set to "Hidup".
+
 ## Parking
 
 Car parks within 500 m of the destination come from the map's own tiles (`js/parking.js`).
@@ -234,7 +276,8 @@ shop list for a lot number.
 ## The small server
 
 `server/worker.js` runs on Cloudflare Workers (the free plan is plenty). It resolves short map links,
-passes on MET warnings if the browser can't get them directly, and reads a mall's shop list. It only
+passes on MET warnings if the browser can't get them directly, passes on this week's pump prices,
+and reads a mall's shop list. It only
 answers this site, and only ever contacts the sites named in the file.
 
 It's live at `https://pintu.ashraviinrajthinagaraj.workers.dev`, set as `server` in `js/config.js`. To
@@ -326,7 +369,7 @@ hit, and a note, and opens the phone's share sheet (or copies it). Nothing is se
 
 The last real drive is kept on the phone (`js/report.js`): every GPS reading, plus events such as
 reroutes, quicker ways and leaving the app, replaced by the next drive. It can be attached to a
-report as `pintu-drive.json`, so a fault can be replayed exactly. Keeping it can be turned off,
+report as `pintu-drive.txt` (JSON inside, since phones only share text files), so a fault can be replayed exactly. Keeping it can be turned off,
 which deletes it.
 
 ## Fair use of TomTom
@@ -345,7 +388,9 @@ next month, and Pintu carries on without traffic.
   web pages your location then. Pintu says so once a trip, and picks the trip back up when you
   return. Only a proper app could keep going.
 - Map, road names, search, stops and lane data are only as good as OpenStreetMap's.
-- Fuel and range figures are estimates from what you enter.
+- Fuel and range figures are estimates from what you enter. Costs use the official pump price,
+  which is what most stations charge, or the price you type in.
+- Voice search needs the internet and the phone's speech service.
 - Voice depends on the voices installed on each phone.
 
 ## Tests

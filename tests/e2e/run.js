@@ -59,13 +59,13 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom, fuel, init } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
-    const server = appServer || traffic || tomtom ? "'https://pintu.test'" : 'null';
+    const server = appServer || traffic || tomtom || fuel ? "'https://pintu.test'" : 'null';
     const config = original.replace(/server: [^,]+,/, `server: ${server},`).replace(/humanVoices: [^,]+,/, `humanVoices: ${humanVoices},`);
     route.fulfill({ contentType: 'text/javascript', body: config });
   });
@@ -94,6 +94,12 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       const answer = traffic ? await traffic(sent, log.traffic.length) : null;
       if (!answer) return route.fulfill({ status: 503, json: { error: 'no key' }, headers: CORS });
       if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
+      return route.fulfill({ json: answer, headers: CORS });
+    }
+    if (host === 'pintu.test' && new URL(url).pathname === '/fuel') {
+      log.fuel.push(url);
+      const answer = fuel ? await fuel() : null;
+      if (!answer) return route.fulfill({ status: 502, json: { error: 'unavailable' }, headers: CORS });
       return route.fulfill({ json: answer, headers: CORS });
     }
     if (host === 'pintu.test') {
@@ -226,6 +232,7 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
     } });
     if (storage) for (const [k, v] of Object.entries(storage)) localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
   }, { voices, storage: storage || null, realAudio });
+  if (init) await ctx.addInitScript(init);
 
   const page = await ctx.newPage();
   page.on('pageerror', (e) => log.errors.push(`pageerror: ${e.message}`));
@@ -4154,6 +4161,307 @@ await check('a remark waits for a direction to finish, and never talks over one'
   await roll(page, trip, 400, 400 + 25 * 2, 25);
   await settled(page);
   assert.equal((await said(page)).slice(before).filter((s) => /60/.test(s.text)).length, 1, 'and said once it stops');
+  await ctx.close();
+});
+
+/* ---------- 0.9.4: pump prices, shortcuts, voice search, the month, battery saver ---------- */
+
+const thisWeek = () => new Date(Date.now() - 2 * 86400e3).toISOString().slice(0, 10);
+const PUMP = () => ({ date: thisWeek(), prices: { ron95_budi95: 1.99, ron95: 2.6, ron97: 3.18, diesel: 2.87 }, source: 'data.gov.my' });
+const myvi = { car: { name: 'Myvi', kind: 'petrol', consumption: 6, range: 400, level: 60 } };
+
+await check('pump prices: this week\'s official price fills in the cost, on each route and in the plan', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, fuel: PUMP, storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': myvi } });
+  await toPreview(page);
+  await page.waitForFunction(() => /Minyak RM\d+\.\d\d/.test(document.getElementById('route-list').textContent));
+  const tags = await page.locator('.route-opt .route-tags').allInnerTexts();
+  assert.equal(tags.filter((t) => /Minyak RM/.test(t)).length, tags.length, 'every route has its cost');
+  assert.match(await text(page, '#plan-fuel-title'), /RM\d+\.\d\d/);
+  assert.match(await text(page, '#plan-fuel-price'), /RON95 BUDI95.*RM1\.99.*data\.gov\.my/);
+  await noOverflow(page, 'route costs');
+  await page.screenshot({ path: `${shots}/60-route-costs.png` });
+
+  // The form offers the grades with their prices, and the official one when the price is left empty.
+  await page.click('#plan-fuel-edit');
+  assert.deepEqual(await page.locator('#veh-grade option').allInnerTexts(), ['RON95 BUDI95 (bersubsidi), RM1.99', 'RON95 harga penuh, RM2.60', 'RON97, RM3.18']);
+  assert.match(await text(page, '#veh-price-tip'), /RM1\.99/);
+  await page.selectOption('#veh-grade', 'ron97');
+  assert.match(await text(page, '#veh-price-tip'), /RM3\.18/);
+  await page.click('#veh-kind-diesel');
+  assert.deepEqual(await page.locator('#veh-grade option').allInnerTexts(), ['Diesel Semenanjung, RM2.87', 'Diesel Sabah, Sarawak, Labuan']);
+  await page.click('#veh-kind-ev');
+  assert.equal(await vis(page, '#veh-grade-field'), false);
+  assert.match(await text(page, '#veh-price-tip'), /stesen/);
+  await page.click('#veh-kind-petrol');
+  await page.selectOption('#veh-grade', 'ron97');
+  await noOverflow(page, 'vehicle grades');
+  await page.click('#veh-save');
+  await page.waitForFunction(() => document.getElementById('vehicle').hidden);
+  assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.vehicles')).car)).grade, 'ron97');
+  assert.match(await text(page, '#plan-fuel-price'), /RON97.*RM3\.18/);
+
+  // Your own price wins, and then no source is shown.
+  await page.click('#plan-fuel-edit');
+  await page.fill('#veh-price', '2.05');
+  await page.click('#veh-save');
+  await page.waitForFunction(() => document.getElementById('vehicle').hidden);
+  assert.equal(await vis(page, '#plan-fuel-price'), false);
+  assert.match(await text(page, '#plan-fuel-title'), /RM\d/);
+  assert.equal(log.fuel.length, 1, 'asked once, then kept');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('pump prices: Settings lists this week\'s prices, and an old price says how old it is', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, fuel: PUMP });
+  await page.click('#btn-settings');
+  await page.waitForFunction(() => !document.getElementById('fuel-week').hidden);
+  assert.match(await text(page, '#fuel-week'), /RON95 BUDI95 \(bersubsidi\) RM1\.99, RON95 harga penuh RM2\.60, RON97 RM3\.18, Diesel Semenanjung RM2\.87\. Dari data\.gov\.my/);
+  await ctx.close();
+
+  // A month-old price, kept from before, with the server not answering.
+  const old = { date: '2026-09-01', prices: { ron95_budi95: 1.99 }, at: Date.now() - 40 * 86400e3 };
+  const b = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': myvi, 'pintu.fuelPrice': old }, fuel: () => null });
+  await toPreview(b.page);
+  assert.match(await text(b.page, '#plan-fuel-price'), /terakhir yang ada RM1\.99/);
+  await b.page.click('#preview-back');
+  await b.page.click('#btn-settings');
+  assert.equal(await vis(b.page, '#fuel-week'), false, 'not shown as this week\'s');
+  await b.ctx.close();
+});
+
+await check('home-screen shortcuts: home, work, search, your car and petrol stations', async () => {
+  const manifest = JSON.parse(await readFile(path.join(root, 'manifest.webmanifest'), 'utf8'));
+  assert.deepEqual(manifest.shortcuts.map((s) => s.url), ['./?go=home', './?go=work', './?go=search', './?go=car', './?go=fuel']);
+  for (const s of manifest.shortcuts) {
+    const res = await fetch(new URL(s.icons[0].src, ORIGIN));
+    assert.equal(res.status, 200, s.icons[0].src);
+    assert.ok(s.short_name.length <= 12, s.short_name);
+  }
+  const home = { home: { name: 'Rumah Mak', detail: '', lng: P.d[0], lat: P.d[1], country: 'my' } };
+  const a = await newApp(browser, { ...quiet, url: `${ORIGIN}?go=home`, storage: { 'pintu.safetySeen': 'true', 'pintu.saved': home } });
+  await a.page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await a.page.waitForSelector('.route-opt');
+  assert.equal(await text(a.page, '#dest-name'), 'Rumah Mak');
+  assert.equal(await a.page.evaluate(() => location.search), '', 'the address is tidied');
+  await a.ctx.close();
+
+  const b = await newApp(browser, { ...quiet, url: `${ORIGIN}?go=work` });
+  assert.equal(await vis(b.page, '#search'), true, 'work isn\'t set, so it asks for it');
+  assert.match(await b.page.getAttribute('#search-input', 'placeholder'), /kerja/i);
+  await b.ctx.close();
+
+  const c = await newApp(browser, { ...quiet, url: `${ORIGIN}?go=fuel` });
+  await c.page.waitForSelector('#explore:not([hidden])');
+  assert.equal(await c.page.locator('#explore-cats [aria-checked="true"]').innerText(), 'Minyak');
+  await c.ctx.close();
+
+  const d = await newApp(browser, { ...quiet, url: `${ORIGIN}?go=car` });
+  assert.equal(await vis(d.page, '#car'), true);
+  await d.ctx.close();
+
+  const e = await newApp(browser, { ...quiet, url: `${ORIGIN}?go=search` });
+  assert.equal(await vis(e.page, '#search'), true);
+  assert.equal(await e.page.evaluate(() => document.activeElement.id), 'search-input');
+  assert.deepEqual(e.log.errors, []);
+  await e.ctx.close();
+});
+
+// The phone's speech service, played by the test.
+const FAKE_EAR = () => {
+  window.__ear = { said: '', error: null, hold: false, started: 0, lang: null, live: null };
+  window.SpeechRecognition = window.webkitSpeechRecognition = class {
+    start() {
+      const ear = window.__ear;
+      ear.started++;
+      ear.lang = this.lang;
+      ear.live = this;
+      const answer = () => {
+        if (ear.error) this.onerror?.({ error: ear.error });
+        else this.onresult?.({ results: [Object.assign([{ transcript: ear.said }], { isFinal: true })] });
+        this.onend?.();
+      };
+      ear.answer = answer;
+      if (!ear.hold) setTimeout(answer, 60);
+    }
+    stop() { window.__ear.answer?.(); }
+    abort() { window.__ear.aborted = true; }
+  };
+};
+const say = (page, words, extra = {}) => page.evaluate(([w, x]) => Object.assign(window.__ear, { said: w, error: null, hold: false }, x), [words, extra]);
+
+await check('voice search: "bawa saya balik rumah" goes home; a place name is searched; nearby asks open the list', async () => {
+  const home = { home: { name: 'Rumah Mak', detail: '', lng: P.d[0], lat: P.d[1], country: 'my' } };
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, init: FAKE_EAR, storage: { 'pintu.safetySeen': 'true', 'pintu.saved': home } });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  assert.equal(await vis(page, '#where-mic'), true);
+  await smallTargets(page, 'idle mic', ['#where-mic']);
+  await noOverflow(page, 'idle with mic');
+
+  // While it listens, the button shows it, and says what to try.
+  await say(page, '', { hold: true });
+  await page.click('#where-mic');
+  await page.waitForSelector('#search-mic.is-listening');
+  assert.equal(await page.evaluate(() => window.__ear.lang), 'ms-MY');
+  assert.match(await text(page, '#search-status'), /stesen minyak terdekat/);
+  assert.equal(await page.getAttribute('#search-input', 'placeholder'), 'Cakap sekarang…');
+  await page.screenshot({ path: `${shots}/61-voice-listening.png` });
+  await page.evaluate(() => { window.__ear.said = 'bawa saya balik rumah'; window.__ear.answer(); });
+  await page.waitForSelector('.route-opt');
+  assert.equal(await text(page, '#dest-name'), 'Rumah Mak');
+
+  // A place by name is searched for, without the "pergi ke".
+  await page.click('#preview-back');
+  await say(page, 'Pergi ke KLCC');
+  await page.click('#where-mic');
+  await page.waitForSelector('#search-results .place');
+  assert.equal(await page.inputValue('#search-input'), 'KLCC');
+  assert.ok(log.photon.some((u) => new URL(u).searchParams.get('q') === 'KLCC'), log.photon.join('\n'));
+
+  // From the search box's own microphone too, and "nearest petrol station" opens the list.
+  await say(page, 'stesen minyak terdekat');
+  await page.click('#search-mic');
+  await page.waitForSelector('#explore:not([hidden])');
+  assert.equal(await page.locator('#explore-cats [aria-checked="true"]').innerText(), 'Minyak');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('voice search: a refused microphone says how to fix it; silence asks again; a stop is only searched', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, init: FAKE_EAR });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await say(page, '', { error: 'not-allowed' });
+  await page.click('#where-mic');
+  await page.waitForFunction(() => /mikrofon/.test(document.getElementById('search-status').textContent));
+  assert.equal(await page.locator('#search-mic.is-listening').count(), 0);
+  await say(page, '', { error: 'no-speech' });
+  await page.click('#search-mic');
+  await page.waitForFunction(() => /Tak dengar/.test(document.getElementById('search-status').textContent));
+
+  // Asking for "home" while choosing a stop looks for that word, it doesn't leave the plan.
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForSelector('.route-opt');
+  await page.click('#add-stop');
+  await page.locator('#stops-other').click();
+  await page.waitForSelector('#search:not([hidden])');
+  await say(page, 'Petronas Ampang');
+  await page.click('#search-mic');
+  await page.waitForFunction(() => document.getElementById('search-input').value === 'Petronas Ampang');
+  assert.equal(await vis(page, '#search'), true);
+
+  // Closing the search while listening stops listening, and nothing happens after.
+  await say(page, 'rumah', { hold: true });
+  await page.click('#search-mic');
+  await page.waitForSelector('#search-mic.is-listening');
+  await page.click('#search-back');
+  await page.waitForFunction(() => window.__ear.aborted === true);
+  await ctx.close();
+});
+
+await check('no microphone button where the phone can\'t listen', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, init: () => { delete window.webkitSpeechRecognition; delete window.SpeechRecognition; } });
+  assert.equal(await vis(page, '#where-mic'), false);
+  await page.click('#where');
+  assert.equal(await vis(page, '#search-mic'), false);
+  await ctx.close();
+});
+
+await check('monthly summary: a drive is counted with its cost; months move; deleting takes two taps', async () => {
+  const now = new Date();
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 12, 9).getTime();
+  const earlier = [{ at: lastMonth, km: 30, s: 2400, slow: 600, cost: 3.6, mode: 'car', to: 'Rumah' }];
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, fuel: PUMP, storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': myvi, 'pintu.trips': earlier } });
+  await toNav(page);
+  const trip = cityTrip();
+  const t1 = await driveTo(page, trip, { to: 600, kph: 40 });
+  // Stuck in a jam for half a minute.
+  await page.evaluate(({ t, lng, lat }) => { for (let i = 1; i <= 30; i++) window.__gps.push(lng, lat, { speed: 0.5, time: t + i * 1000 }); }, { t: t1, lng: (await puckAt(page))[0], lat: (await puckAt(page))[1] });
+  await driveTo(page, trip, { from: 600, t0: t1 + 31000 });
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.match(await text(page, '#arrival-stats'), /RM\d+\.\d\d/);
+  const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.trips')));
+  assert.equal(kept.length, 2);
+  const last = kept[1];
+  assert.ok(last.km > 1, `km ${last.km}`);
+  assert.ok(last.slow >= 25, `slow ${last.slow}`);
+  assert.ok(last.cost > 0, 'with this week\'s price');
+  assert.equal(last.to, 'Suria KLCC');
+  await page.click('#arrival-done');
+
+  await page.click('#btn-settings');
+  await page.click('#summary-open');
+  assert.equal(await vis(page, '#summary'), true);
+  assert.equal(await text(page, '#month-trips'), '1 perjalanan');
+  assert.match(await text(page, '#month-km'), /km$/);
+  const rows = await page.locator('#month-rows div').allInnerTexts();
+  assert.ok(rows.some((r) => /Kos minyak[\s\S]*RM\d/.test(r)), rows.join(' | '));
+  assert.ok(rows.some((r) => /Tersangkut[\s\S]*%/.test(r)), rows.join(' | '));
+  assert.match(await text(page, '#month-vs'), /kurang daripada bulan lepas/);
+  assert.equal(await page.locator('#month-days span').count(), new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
+  assert.equal(await page.isDisabled('#month-next'), true, 'no months from the future');
+  await noOverflow(page, 'summary');
+  await page.screenshot({ path: `${shots}/62-month.png` });
+
+  await page.click('#month-prev');
+  assert.equal(await text(page, '#month-trips'), '1 perjalanan');
+  assert.match(await text(page, '#month-km'), /^30 km$/);
+  assert.equal(await page.isDisabled('#month-prev'), true, 'nothing before this');
+  await page.click('#month-next');
+
+  await page.click('#month-forget');
+  assert.equal(await text(page, '#month-forget'), 'Tekan sekali lagi untuk padam');
+  assert.ok(await page.evaluate(() => localStorage.getItem('pintu.trips')), 'not yet');
+  await page.click('#month-forget');
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.trips')), null);
+  assert.equal(await vis(page, '#month-empty'), true);
+  assert.equal(await vis(page, '#month-forget'), false);
+
+  // Back goes to Settings, and switching it off keeps nothing new.
+  await page.click('#summary-back');
+  assert.equal(await vis(page, '#settings'), true);
+  await page.click('label:has(#keep-trips)');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).keepTrips), false);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('monthly summary: a practice drive and walking are not counted', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': myvi } });
+  await toNav(page, { simulate: true });
+  await page.click('#btn-end');
+  await page.click('#btn-end').catch(() => {});
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.trips')), null);
+  await ctx.close();
+});
+
+const BATTERY = (level, charging) => `(() => {
+  const b = { level: ${level}, charging: ${charging}, l: {}, addEventListener(k, f) { this.l[k] = f; } };
+  window.__battery = b;
+  navigator.getBattery = async () => b;
+})()`;
+
+await check('battery saver: comes on by itself when low, draws less, and can be turned off', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, init: BATTERY(0.15, false) });
+  await page.waitForFunction(() => window.__map.pixelRatio === 1.5);
+  assert.match(await text(page, '#toast'), /Bateri 15%/);
+  assert.equal(await page.evaluate(() => window.__map.layout['pintu-3d'] ?? window.__map.getLayer('pintu-3d')?.layout?.visibility), 'none', 'no 3D buildings');
+  await page.click('#btn-settings');
+  assert.equal(await page.getAttribute('#saver-auto', 'aria-checked'), 'true');
+  assert.match(await text(page, '#saver-now'), /15%/);
+  await page.click('#saver-off');
+  await page.waitForFunction(() => window.__map.pixelRatio === 2 && window.__map.layout['pintu-3d'] === 'visible');
+  assert.equal(await vis(page, '#saver-now'), false);
+  // Plugged in: auto stays off.
+  await page.click('#saver-auto');
+  await page.evaluate(() => { window.__battery.charging = true; window.__battery.l.chargingchange(); });
+  assert.equal(await vis(page, '#saver-now'), false);
+  await page.click('#saver-on');
+  assert.match(await text(page, '#saver-now'), /Sedang hidup/);
+  await noOverflow(page, 'settings with saver');
+  assert.deepEqual(log.errors, []);
   await ctx.close();
 });
 

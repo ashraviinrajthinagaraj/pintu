@@ -1,5 +1,6 @@
 // A person's car and what a trip will take out of it. Every answer here is an
 // estimate from what they typed in, and the app says so wherever it shows one.
+import { cleanGrade } from './fuel-price.js';
 
 // Starting points only. They can be changed once picked. Sources are in the README.
 export const PRESETS = [
@@ -57,6 +58,8 @@ export function cleanVehicle(v) {
     consumption: num(v.consumption),
     range: num(v.range),
     price: num(v.price),
+    // Which pump price applies when no price is typed in.
+    grade: cleanGrade(kind, v.grade),
     level: Math.min(100, Math.max(0, Number.isFinite(Number(v.level)) ? Number(v.level) : 100)),
   };
   return clean.consumption || clean.range ? clean : null;

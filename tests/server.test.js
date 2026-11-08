@@ -1341,3 +1341,24 @@ test('fair use: each connection gets so many TomTom requests a minute', async ()
   assert.equal(allowed('9.9.9.9', 'tile', t + 60000), true);
   forgetCounts();
 });
+
+test('passes on this week\'s official pump prices, checked', async () => {
+  const { FUEL_URL, readFuelPrices } = await import('../server/fuel.js');
+  const week = [{ series_type: 'level', date: '2026-11-06', ron95: 2.6, ron97: 3.18, diesel: 2.87, diesel_eastmsia: null, ron95_budi95: 1.99, ron95_skps: '' }];
+  const asked = internet({ [FUEL_URL]: () => new Response(JSON.stringify(week)) });
+  const res = await ask('/fuel?id=somethingelse');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { date: '2026-11-06', prices: { ron95: 2.6, ron97: 3.18, diesel: 2.87, ron95_budi95: 1.99 }, source: 'data.gov.my' });
+  assert.deepEqual(asked, [FUEL_URL], 'only ever the one address');
+  assert.match(res.headers.get('cache-control'), /max-age=\d{4,}/, 'kept for hours');
+
+  // The weekly change and nonsense figures are never passed on as a price.
+  assert.equal(readFuelPrices([{ series_type: 'change_weekly', date: '2026-11-06', ron95: 0.05 }]), null);
+  assert.equal(readFuelPrices([{ series_type: 'level', ron95: 'free', ron97: -1, diesel: 900 }]), null);
+  assert.deepEqual(readFuelPrices({ data: [{ series_type: 'level', date: '2026-11-06T00:00:00', ron95: 2.6 }] }), { date: '2026-11-06', prices: { ron95: 2.6 } });
+
+  internet({ [FUEL_URL]: () => new Response('', { status: 429 }) });
+  assert.equal((await ask('/fuel')).status, 502);
+  internet({ [FUEL_URL]: () => new Response('not json') });
+  assert.equal((await ask('/fuel')).status, 502);
+});

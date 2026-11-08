@@ -58,10 +58,13 @@
     <button id="saved-home" class="saved-btn" type="button"><span id="saved-home-icon" class="saved-icon"></span><span class="saved-text"><strong id="saved-home-name"></strong><span id="saved-home-detail"></span></span></button>
     <button id="saved-work" class="saved-btn" type="button"><span id="saved-work-icon" class="saved-icon"></span><span class="saved-text"><strong id="saved-work-name"></strong><span id="saved-work-detail"></span></span></button>
   </div>
-  <button id="where" class="plate plate-where" type="button">
-    <span class="plate-glyph" id="where-glyph"></span>
-    <span id="where-text"></span>
-  </button>
+  <div class="where-row">
+    <button id="where" class="plate plate-where" type="button">
+      <span class="plate-glyph" id="where-glyph"></span>
+      <span id="where-text"></span>
+    </button>
+    <button id="where-mic" class="plate plate-mic" type="button" hidden></button>
+  </div>
 </main>
 
 <!-- Search -->
@@ -69,6 +72,7 @@
   <div class="panel-head">
     <button id="search-back" class="icon-btn" type="button"></button>
     <input id="search-input" type="search" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="search">
+    <button id="search-mic" class="icon-btn mic-btn" type="button" aria-pressed="false" hidden></button>
   </div>
   <div id="search-body" class="panel-body">
     <button id="search-paste" class="paste-row" type="button" hidden><span id="search-paste-icon"></span><span id="search-paste-label"></span></button>
@@ -129,6 +133,7 @@
       <div class="plan-main">
         <strong id="plan-fuel-title"></strong>
         <span id="plan-fuel-detail"></span>
+        <span id="plan-fuel-price" class="plan-price" hidden></span>
         <button id="plan-charge" class="plate plate-btn plate-small plan-charge" type="button" hidden></button>
         <div id="plan-level-row" class="level-row" hidden>
           <input id="plan-level" type="range" min="0" max="100" step="5">
@@ -381,9 +386,14 @@
         <output id="veh-level-value"></output>
       </div>
     </div>
+    <div id="veh-grade-field" class="field">
+      <label for="veh-grade" id="veh-grade-label"></label>
+      <select id="veh-grade"></select>
+    </div>
     <div class="field">
       <label for="veh-price" id="veh-price-label"></label>
       <input id="veh-price" type="number" inputmode="decimal" min="0" step="0.01">
+      <p id="veh-price-tip" class="tip field-tip"></p>
     </div>
     <p id="veh-note" class="tip"></p>
     <button id="veh-save" class="plate plate-btn" type="button"></button>
@@ -504,6 +514,17 @@
       <h3 id="set-vehicle-title"></h3>
       <p id="set-vehicle-text" class="tip"></p>
       <button id="set-vehicle-open" class="outline-btn" type="button"></button>
+      <p id="fuel-week" class="tip" hidden></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-summary-title"></h3>
+      <p id="summary-text" class="tip"></p>
+      <button id="summary-open" class="outline-btn" type="button"></button>
+      <label class="switch switch-block">
+        <input id="keep-trips" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="keep-trips-label"></span>
+      </label>
     </div>
     <div class="setting">
       <h3 id="set-saved-title"></h3>
@@ -596,6 +617,16 @@
       </label>
     </div>
     <div class="setting">
+      <h3 id="set-saver-title"></h3>
+      <p id="saver-text" class="tip"></p>
+      <div class="segmented" role="radiogroup">
+        <button id="saver-auto" type="button" role="radio"></button>
+        <button id="saver-on" type="button" role="radio"></button>
+        <button id="saver-off" type="button" role="radio"></button>
+      </div>
+      <p id="saver-now" class="tip" hidden></p>
+    </div>
+    <div class="setting">
       <h3 id="set-theme-title"></h3>
       <div class="segmented" role="radiogroup">
         <button id="theme-auto" type="button" role="radio"></button>
@@ -651,10 +682,41 @@
         (JAKIM e-Solat),
         <a href="https://open-meteo.com/" target="_blank" rel="noopener">weather data by Open-Meteo.com</a>,
         <a href="https://www.tomtom.com/" target="_blank" rel="noopener">traffic, speed limits, addresses and EV charging by TomTom</a>,
-        <a href="https://developer.data.gov.my/" target="_blank" rel="noopener">MET Malaysia via data.gov.my</a>.
+        <a href="https://developer.data.gov.my/" target="_blank" rel="noopener">MET Malaysia via data.gov.my</a>,
+        <a href="https://data.gov.my/data-catalogue/fuelprice" target="_blank" rel="noopener">fuel prices from data.gov.my</a>.
       </p>
       <p id="version" class="tip"></p>
     </div>
+  </div>
+</section>
+
+<!-- The month in trips -->
+<section id="summary" class="fullpanel" hidden>
+  <div class="panel-head">
+    <button id="summary-back" class="icon-btn" type="button"></button>
+    <h2 id="summary-title" class="panel-title"></h2>
+  </div>
+  <div class="panel-body panel-pad">
+    <div class="month-nav">
+      <button id="month-prev" class="icon-btn" type="button"></button>
+      <h3 id="month-name" aria-live="polite"></h3>
+      <button id="month-next" class="icon-btn" type="button"></button>
+    </div>
+    <p id="month-empty" class="tip" hidden></p>
+    <div id="month-body">
+      <div class="plate month-plate">
+        <strong id="month-km"></strong>
+        <span id="month-trips"></span>
+      </div>
+      <p id="month-vs" class="month-vs"></p>
+      <div class="month-days-wrap">
+        <p id="month-days-label" class="field-label"></p>
+        <div id="month-days" class="month-days" aria-hidden="true"></div>
+        <div class="month-days-ends"><span>1</span><span id="month-days-last"></span></div>
+      </div>
+      <dl id="month-rows" class="month-rows"></dl>
+    </div>
+    <button id="month-forget" class="link-btn center" type="button"></button>
   </div>
 </section>
 
