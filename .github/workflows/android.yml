@@ -32,11 +32,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
+      # The runner already has the Android SDK; Gradle fetches anything missing.
 
       - name: Make the Android project
         working-directory: android-app
