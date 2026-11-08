@@ -1,0 +1,97 @@
+# Builds Pintu's Android app and puts it on the "android" release, at
+# https://github.com/ashraviinrajthinagaraj/pintu/releases/download/android/pintu.apk
+#
+# The app opens the live site, so ordinary updates reach it without a new build.
+# A build is only needed when android-app/ changes. Signing needs a repository
+# secret called ANDROID_SIGNING_SEED: any long sentence, kept the same for ever,
+# so each new app installs over the last one without losing anything.
+name: Android app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android-app/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SEED: ${{ secrets.ANDROID_SIGNING_SEED }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for the signing secret
+        if: env.SEED == ''
+        run: echo "::warning title=No signing secret::Without a repository secret called ANDROID_SIGNING_SEED (any long sentence), the app is only test-built, not published."
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+
+      - name: Make the Android project
+        working-directory: android-app
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          npm install --no-audit --no-fund
+          npx cap add android
+          npx @capacitor/assets generate --android --iconBackgroundColor '#00794A' --iconBackgroundColorDark '#00794A' --splashBackgroundColor '#0E1416' --splashBackgroundColorDark '#0E1416' || echo "::warning title=Icons::The app's icons couldn't be made, so it has Capacitor's."
+          PINTU_SIGN="$([ -n "$SEED" ] && echo 1 || echo 0)" VERSION_NAME="$(sed -n "s/.*version: '\([0-9.]*\)'.*/\1/p" ../js/config.js | head -1)" node prepare.mjs
+          npx cap sync android
+
+      - name: Signing key
+        if: env.SEED != ''
+        env:
+          ANDROID_SIGNING_SEED: ${{ env.SEED }}
+        working-directory: android-app
+        run: |
+          node signing-key.mjs "$RUNNER_TEMP/key.pem"
+          # The certificate is made once and kept here, so every build signs the same way.
+          if [ ! -f signing-cert.pem ]; then
+            openssl req -new -x509 -key "$RUNNER_TEMP/key.pem" -sha256 -days 36500 -subj "/CN=Pintu/O=Pintu" -out signing-cert.pem
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add signing-cert.pem
+            git commit -m "Keep the Android app's signing certificate"
+            git push
+          fi
+          PASS="$(openssl rand -hex 16)"
+          echo "::add-mask::$PASS"
+          openssl pkcs12 -export -inkey "$RUNNER_TEMP/key.pem" -in signing-cert.pem -name pintu -passout "pass:$PASS" -out "$RUNNER_TEMP/pintu.p12"
+          rm -f "$RUNNER_TEMP/key.pem"
+          echo "PINTU_KEYSTORE=$RUNNER_TEMP/pintu.p12" >> "$GITHUB_ENV"
+          echo "PINTU_KEYSTORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: android-app/android
+        run: |
+          chmod +x gradlew
+          if [ -n "$PINTU_KEYSTORE" ]; then
+            ./gradlew --no-daemon assembleRelease
+            cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/pintu.apk"
+            rm -f "$PINTU_KEYSTORE"
+          else
+            ./gradlew --no-daemon assembleDebug
+            ls -la app/build/outputs/apk/debug/
+          fi
+
+      - name: Publish
+        if: env.SEED != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view android >/dev/null 2>&1; then
+            gh release create android --title "Pintu for Android" --notes "Download pintu.apk on your Android phone and open it to install. Guidance and voice carry on with the screen off. The app opens the live Pintu, so it updates by itself." --latest
+          fi
+          gh release upload android "$RUNNER_TEMP/pintu.apk" --clobber
+          echo "::notice title=Built::https://github.com/${{ github.repository }}/releases/download/android/pintu.apk"

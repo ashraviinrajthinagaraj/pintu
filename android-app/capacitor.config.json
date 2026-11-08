@@ -1,0 +1,14 @@
+{
+  "appId": "io.github.ashraviinrajthinagaraj.pintu",
+  "appName": "Pintu",
+  "webDir": "www",
+  "server": {
+    "url": "https://ashraviinrajthinagaraj.github.io/pintu/",
+    "cleartext": false,
+    "allowNavigation": ["ashraviinrajthinagaraj.github.io"]
+  },
+  "android": {
+    "useLegacyBridge": true,
+    "backgroundColor": "#0E1416"
+  }
+}
