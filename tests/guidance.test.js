@@ -352,3 +352,33 @@ test('no plan to announce a turn from further away than it is', () => {
   g.lastState = { nextIndex: 1 };
   assert.ok(!g.upcoming(12).some((p) => p.kind === 'far' && p.index === 1));
 });
+
+test('GPS drifting beside the route, going the same way, is given longer (flyovers, tall buildings)', () => {
+  const route = city();
+  const { g, time } = drive(route, { stopAt: 400 });
+  let t = time, last;
+  // 70 m to the side of the first road, still heading east at 40 km/h.
+  const along = (k) => [P.a[0] + (400 + k * 11) / 111000, P.a[1] + 70 / 111000];
+  for (let k = 1; k <= 12; k++) {
+    const [lng, lat] = along(k);
+    last = g.update({ lng, lat, accuracy: 10, speed: 11, heading: 90, time: t += 1000 });
+    assert.equal(last.offRoute, false, `second ${k}`);
+  }
+  // Still beside it after a quarter of a minute: that's a different road after all.
+  for (let k = 13; k <= 17; k++) {
+    const [lng, lat] = along(k);
+    last = g.update({ lng, lat, accuracy: 10, speed: 11, heading: 90, time: t += 1000 });
+  }
+  assert.equal(last.offRoute, true);
+});
+
+test('drifting beside it but heading off another way is still noticed quickly', () => {
+  const route = city();
+  const { g, time } = drive(route, { stopAt: 400 });
+  let t = time, flagged = null;
+  for (let k = 1; k <= 12; k++) {
+    const st = g.update({ lng: P.a[0] + 400 / 111000, lat: P.a[1] + (40 + k * 5) / 111000, accuracy: 10, speed: 8, heading: 0, time: t += 1000 });
+    if (st.offRoute && flagged == null) flagged = k;
+  }
+  assert.ok(flagged != null && flagged <= 8, `flagged at ${flagged}`);
+});

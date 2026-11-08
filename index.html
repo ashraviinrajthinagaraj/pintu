@@ -574,6 +574,17 @@
         <span class="switch-track" aria-hidden="true"></span>
         <span id="traffic-map-on-label"></span>
       </label>
+      <p id="tomtom-use" class="tip"></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-offline-title"></h3>
+      <p id="offline-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="offline-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="offline-on-label"></span>
+      </label>
+      <p id="offline-last" class="tip" hidden></p>
     </div>
     <div class="setting">
       <h3 id="set-weather-title"></h3>
@@ -607,8 +618,24 @@
       <button id="install-btn" class="outline-btn" type="button" hidden></button>
     </div>
     <div class="setting">
+      <h3 id="set-report-title"></h3>
+      <p id="report-text" class="tip"></p>
+      <textarea id="report-note" class="report-note" rows="3"></textarea>
+      <label class="switch switch-block" id="report-drive-row">
+        <input id="report-drive" type="checkbox" checked>
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="report-drive-label"></span>
+      </label>
+      <button id="report-btn" class="outline-btn" type="button"></button>
+    </div>
+    <div class="setting">
       <h3 id="set-privacy-title"></h3>
       <p id="privacy-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="keep-drive" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="keep-drive-label"></span>
+      </label>
     </div>
     <div class="setting">
       <h3 id="set-credits-title"></h3>
@@ -623,6 +650,7 @@
         <a href="https://api.waktusolat.app/" target="_blank" rel="noopener">Waktu Solat API</a>
         (JAKIM e-Solat),
         <a href="https://open-meteo.com/" target="_blank" rel="noopener">weather data by Open-Meteo.com</a>,
+        <a href="https://www.tomtom.com/" target="_blank" rel="noopener">traffic, speed limits, addresses and EV charging by TomTom</a>,
         <a href="https://developer.data.gov.my/" target="_blank" rel="noopener">MET Malaysia via data.gov.my</a>.
       </p>
       <p id="version" class="tip"></p>

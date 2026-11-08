@@ -3,6 +3,7 @@
 // stretch on it and how many minutes it adds.
 import { CONFIG } from './config.js';
 import { bearing, haversine } from './geo.js';
+import { countUse, overCap } from './usage.js';
 import { pointAt } from './motion.js';
 import { placeOnRoute } from './places.js';
 
@@ -98,6 +99,8 @@ export const isoTime = (date) => `${date.toISOString().slice(0, 19)}Z`;
 
 export async function fetchTraffic(route, s, { better = false, arriveAt = null, signal, fetchImpl = fetch, server = CONFIG.server } = {}) {
   if (!server) throw new TrafficError('no server', 0);
+  if (overCap()) throw new TrafficError('daily limit', 0);
+  countUse();
   const ask = { points: tracePoints(route, s) };
   if (better) ask.better = true;
   if (arriveAt) ask.arriveAt = isoTime(arriveAt);

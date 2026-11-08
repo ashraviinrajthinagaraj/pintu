@@ -79,7 +79,7 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
     }
     if (/maplibre-gl\.css$/.test(url)) return route.fulfill({ contentType: 'text/css', headers: CORS, body: '' });
     const tomtomPath = host === 'pintu.test' ? new URL(url).pathname : '';
-    if (/^\/(limits|geocode|ev|tiles\/)/.test(tomtomPath)) {
+    if (/^\/(limits|geocode|ev|route|tiles\/)/.test(tomtomPath)) {
       const raw = route.request().postData();
       const asked = { path: tomtomPath, url, body: raw ? JSON.parse(raw) : null };
       log.tomtom.push(asked);
@@ -3517,6 +3517,105 @@ await check('electric car: charging stops planned by TomTom become stops on the 
   assert.equal(await vis(page, '#plan-charge'), false, 'planned once');
   await page.screenshot({ path: `${shots}/61-ev-plan.png` });
   assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+/* ---------- Problems fixed: no signal, a backup, reports ---------- */
+
+await check('no signal: the map along the route is saved when a trip starts', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, tiles: [] });
+  await toNav(page);
+  const before = log.tiles.length;
+  await page.waitForFunction((n) => true, before);
+  await page.waitForTimeout(5500);
+  const saved = log.tiles.slice(before);
+  const z = (n) => saved.filter((u) => new RegExp(`/${n}/\\d+/\\d+\\.pbf$`).test(u)).length;
+  assert.ok(z(14) >= 2 && z(12) >= 1 && z(10) >= 1, JSON.stringify([z(14), z(12), z(10)]));
+  assert.ok(saved.length <= 900);
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('#where');
+  await page.click('#btn-settings');
+  assert.match(await text(page, '#offline-last'), /^Kali terakhir: \d+ keping peta/);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+
+  // Switched off: nothing extra.
+  const off = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { offlineMap: false } }, tiles: [] });
+  await toNav(off.page);
+  const n = off.log.tiles.length;
+  await off.page.waitForTimeout(5500);
+  assert.equal(off.log.tiles.length, n);
+  await off.ctx.close();
+});
+
+await check('the usual route server down: TomTom answers instead', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    tomtom: (asked) => (asked.path === '/route' ? { trip: cityTrip(), alternates: [] } : null),
+  });
+  log.routeFail = true;
+  await toPreview(page);
+  const asked = log.tomtom.find((x) => x.path === '/route');
+  assert.ok(asked, 'asked the backup');
+  assert.equal(asked.body.locations.length, 2);
+  assert.equal(asked.body.costing, 'auto');
+  assert.equal(await page.locator('.route-opt').count(), 1);
+  await page.click('#start');
+  if (await page.locator('#safety').isVisible()) await page.click('#safety-ok');
+  await page.waitForSelector('#nav-bar');
+  assert.match(await text(page, '#sign-road'), /Jalan/);
+  // It counts against the shared TomTom allowance.
+  const used = await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.tomtomUse')));
+  assert.ok(used.today >= 1);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('report a problem: shared through the phone, with the last drive attached', async () => {
+  const trip = prepareTrip(cityTrip());
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  await page.evaluate(() => {
+    window.__shared = [];
+    navigator.share = async (d) => { window.__shared.push({ text: d.text, files: (d.files || []).map((f) => f.name) }); };
+    navigator.canShare = () => true;
+  });
+  await toNav(page);
+  await roll(page, trip, 0, 600, 12);
+  // Leaving the app mid-trip: said once.
+  const leave = () => page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await leave();
+  await leave();
+  const away = (await said(page)).filter((x) => /berhenti seketika/.test(x.text));
+  assert.equal(away.length, 1);
+  await page.evaluate(() => { throw new Error('a test fault'); }).catch(() => {});
+  await page.evaluate(() => setTimeout(() => { throw new Error('a test fault'); }));
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForSelector('#where');
+  await page.click('#btn-settings');
+  assert.equal(await vis(page, '#report-drive-row'), true);
+  await page.fill('#report-note', 'Belok kiri terlambat');
+  await page.screenshot({ path: `${shots}/62-report.png` });
+  await page.click('#report-btn');
+  const [shared] = await page.evaluate(() => window.__shared);
+  assert.match(shared.text, /^Pintu [\d.]+: problem report/);
+  assert.match(shared.text, /What happened: Belok kiri terlambat/);
+  assert.match(shared.text, /Last drive: .*GPS readings, events: .*left the app ×2.*\(file attached\)/);
+  assert.match(shared.text, /a test fault/);
+  assert.deepEqual(shared.files, ['pintu-drive.json']);
+  const drive = await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.lastDrive')));
+  assert.ok(drive.fixes.length >= 40);
+  // Turning the keeping off forgets it.
+  await page.click('label:has(#keep-drive)');
+  assert.equal(await page.evaluate(() => localStorage.getItem('pintu.lastDrive')), null);
+  assert.equal(await vis(page, '#report-drive-row'), false);
+  assert.match(await text(page, '#tomtom-use'), /^Telefon ini tanya TomTom \d+ kali hari ini/);
   await ctx.close();
 });
 

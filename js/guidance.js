@@ -7,6 +7,12 @@ const BACK_SLACK = 25;      // metres progress may slip back from GPS jitter
 const DEST_RADIUS = 25;     // metres from the destination that count as arrived
 const OFF_SECONDS = 6;      // how long you must be away before re-routing
 const WRONG_WAY_SECONDS = 8;
+// GPS drifting beside the route while you carry on the same way, as it does
+// among tall buildings and on roads stacked over one another (DUKE, flyovers,
+// the SMART tunnel), gets longer before it counts as leaving the route.
+const DRIFT_M = 120;
+const DRIFT_SECONDS = 15;
+const DRIFT_ANGLE = 25;
 
 export function promptDistances(speed, walking = false) {
   if (walking) return { far: 60, now: 20 };
@@ -168,7 +174,10 @@ export class Guidance {
     // until you've actually moved away from where you began.
     if (!this.everOn && haversine(p, this.firstFix) < 150) { this.offSince = null; return false; }
     if (this.offSince == null) this.offSince = t;
-    return t - this.offSince >= this.offSeconds * 1000;
+    const alongside = !this.walking && match.dist < DRIFT_M && (fix.speed ?? 0) >= 3
+      && fix.heading != null && angleDiff(fix.heading, match.bearing) < DRIFT_ANGLE;
+    const wait = alongside ? Math.max(this.offSeconds, DRIFT_SECONDS) : this.offSeconds;
+    return t - this.offSince >= wait * 1000;
   }
 
   _state(p, fix, onRoute, match, offRoute, weak, accuracy) {

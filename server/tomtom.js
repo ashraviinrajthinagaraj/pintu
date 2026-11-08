@@ -7,6 +7,9 @@
 //   POST /limits    a route's points: speed limits along it
 //   GET  /geocode?q=   addresses
 //   POST /ev        an electric car's trip: where to charge, and for how long
+//   POST /route     directions, when the usual route server can't answer
+
+import { encodePolyline } from '../js/geo.js';
 
 const TT = 'https://api.tomtom.com';
 export const MAX_POINTS = 2000;
@@ -328,9 +331,209 @@ export async function askEv({ points, battery, level, use, dc, avoidTolls }, key
   };
 }
 
+/* ---------- Directions, as a backup ---------- */
+
+// Pintu reads routes in the form the Valhalla route planner gives them, so
+// TomTom's answer is reshaped into that: one line per leg, with numbered turns.
+const TURN = {
+  DEPART: 1,
+  ARRIVE: 4, ARRIVE_AHEAD: 4, ARRIVE_RIGHT: 5, ARRIVE_LEFT: 6,
+  WAYPOINT_REACHED: 4, WAYPOINT_AHEAD: 4, WAYPOINT_RIGHT: 5, WAYPOINT_LEFT: 6,
+  STRAIGHT: 8, FOLLOW: 8, TOLLGATE: 8, CROSS_BORDER: 8,
+  BEAR_RIGHT: 9, SLIGHT_RIGHT: 9, TURN_RIGHT: 10, SHARP_RIGHT: 11,
+  BEAR_LEFT: 16, SLIGHT_LEFT: 16, TURN_LEFT: 15, SHARP_LEFT: 14,
+  MAKE_UTURN: 12, TRY_MAKE_UTURN: 12,
+  KEEP_RIGHT: 23, KEEP_LEFT: 24, SWITCH_MAIN_ROAD: 22, SWITCH_PARALLEL_ROAD: 22,
+  SWITCH_MOTORWAY_RIGHT: 23, SWITCH_MOTORWAY_LEFT: 24,
+  MOTORWAY_EXIT_RIGHT: 20, EXIT_MOTORWAY_RIGHT: 20, MOTORWAY_EXIT_LEFT: 21, EXIT_MOTORWAY_LEFT: 21,
+  MERGE_RIGHT_LANE: 37, MERGE_LEFT_LANE: 38,
+  EXIT_ROUNDABOUT: 27,
+  TAKE_FERRY: 28, TAKE_SHIP_FERRY: 28, LEAVE_SHIP_FERRY: 29,
+};
+
+export function turnType(ins) {
+  const m = ins.maneuver || '';
+  const angle = Number(ins.turnAngleInDecimalDegrees) || 0;
+  if (m.startsWith('ROUNDABOUT_')) return 26;
+  if (['ENTER_MOTORWAY', 'ENTER_FREEWAY', 'ENTER_HIGHWAY', 'ENTRANCE_RAMP'].includes(m)) return angle > 15 ? 18 : angle < -15 ? 19 : 17;
+  if (m === 'TAKE_EXIT') return angle < 0 ? 21 : 20;
+  return TURN[m] ?? 8;
+}
+
+const isWaypoint = (ins) => /^WAYPOINT_/.test(ins.maneuver || '');
+
+const MODES = { auto: 'car', motorcycle: 'motorcycle', pedestrian: 'pedestrian' };
+
+export function routeRequest(raw) {
+  const locs = Array.isArray(raw?.locations) ? raw.locations : null;
+  if (!locs || locs.length < 2 || locs.length > 25) return null;
+  const ok = (l) => l && Number.isFinite(l.lat) && Number.isFinite(l.lon) && Math.abs(l.lat) <= 90 && Math.abs(l.lon) <= 180;
+  if (!locs.every(ok)) return null;
+  const mode = MODES[raw.costing] || 'car';
+  // Points to pass without stopping can't be given to TomTom as such; its own
+  // way between the stops is a fine backup.
+  const stops = locs.filter((l, i) => i === 0 || i === locs.length - 1 || l.type !== 'through');
+  const heading = Number.isFinite(locs[0].heading) ? Math.round(((locs[0].heading % 360) + 360) % 360) : null;
+  return {
+    stops: stops.map((l) => [l.lon, l.lat]),
+    mode,
+    heading,
+    alternates: stops.length === 2 ? Math.min(2, Math.max(0, Number(raw.alternates) || 0)) : 0,
+    avoidTolls: raw.costing_options?.auto?.use_tolls === 0,
+  };
+}
+
+// The index along the line nearest a turn's point, never going backwards.
+function indexOf(points, at, from) {
+  let best = from, bestD = Infinity;
+  for (let i = from; i < points.length; i++) {
+    const d = (points[i][0] - at[0]) ** 2 + (points[i][1] - at[1]) ** 2;
+    if (d < bestD) { best = i; bestD = d; }
+    if (bestD < 1e-12) break;
+  }
+  return best;
+}
+
+export function toValhalla(route) {
+  // One line for the whole route; a later leg starts where the last one ended.
+  const points = [];
+  for (const leg of route.legs || []) {
+    for (const p of leg.points || []) {
+      const pt = [p.longitude, p.latitude];
+      const last = points[points.length - 1];
+      if (last && last[0] === pt[0] && last[1] === pt[1]) continue;
+      points.push(pt);
+    }
+  }
+  if (points.length < 2) return null;
+  const flagged = (type) => (route.sections || []).filter((x) => x.sectionType === type).map((x) => [x.startPointIndex, x.endPointIndex]);
+  const tolls = flagged('TOLL_ROAD'), motorways = flagged('MOTORWAY'), ferries = flagged('FERRY');
+  const overlaps = (spans, a, b) => spans.some(([s, e]) => s < Math.max(b, a + 1) && e > a);
+
+  const raw = route.guidance?.instructions || [];
+  let after = 0;
+  const turns = raw.map((ins) => {
+    const at = [ins.point?.longitude, ins.point?.latitude];
+    const i = Number.isInteger(ins.pointIndex) && points[ins.pointIndex] && Math.abs(points[ins.pointIndex][0] - at[0]) < 1e-5
+      ? ins.pointIndex
+      : indexOf(points, at, after);
+    after = Math.max(after, i);
+    return { ins, i: Math.max(i, after) };
+  });
+  if (!turns.length) return null;
+
+  const legs = [];
+  let leg = { start: 0, turns: [] };
+  for (const t of turns) {
+    leg.turns.push(t);
+    if (isWaypoint(t.ins)) {
+      legs.push(leg);
+      leg = { start: t.i, turns: [{ ins: { maneuver: 'DEPART', routeOffsetInMeters: t.ins.routeOffsetInMeters, travelTimeInSeconds: t.ins.travelTimeInSeconds, street: '' }, i: t.i }] };
+    }
+  }
+  legs.push(leg);
+
+  const out = legs.map((lg, n) => {
+    const end = n < legs.length - 1 ? legs[n + 1].start : points.length - 1;
+    const maneuvers = lg.turns.map((t, k) => {
+      const next = lg.turns[k + 1];
+      const ins = t.ins;
+      const b = t.i, e = next ? next.i : end;
+      const m = {
+        type: turnType(ins),
+        begin_shape_index: b - lg.start,
+        end_shape_index: e - lg.start,
+        length: Math.max(0, ((next?.ins.routeOffsetInMeters ?? ins.routeOffsetInMeters) - ins.routeOffsetInMeters) / 1000),
+        time: Math.max(0, (next?.ins.travelTimeInSeconds ?? ins.travelTimeInSeconds) - ins.travelTimeInSeconds),
+      };
+      const names = [ins.street, ...(ins.roadNumbers || [])].filter(Boolean).filter((v, j, all) => all.indexOf(v) === j);
+      if (names.length) m.street_names = names;
+      if (Number.isInteger(ins.roundaboutExitNumber)) m.roundabout_exit_count = ins.roundaboutExitNumber;
+      const sign = {};
+      if (ins.exitNumber) sign.exit_number_elements = [{ text: String(ins.exitNumber) }];
+      if (ins.signpostText) sign.exit_toward_elements = [{ text: ins.signpostText }];
+      if (Object.keys(sign).length) m.sign = sign;
+      if (overlaps(tolls, b, e)) m.toll = true;
+      if (overlaps(motorways, b, e)) m.highway = true;
+      if (overlaps(ferries, b, e)) m.ferry = true;
+      if (ins.message) m.instruction = ins.message;
+      return m;
+    });
+    // Each leg ends with arriving, as Valhalla's do.
+    const last = maneuvers[maneuvers.length - 1];
+    if (![4, 5, 6].includes(last.type)) maneuvers.push({ type: 4, begin_shape_index: end - lg.start, end_shape_index: end - lg.start, length: 0, time: 0 });
+    const line = points.slice(lg.start, end + 1);
+    return {
+      shape: encodePolyline(line, 6),
+      maneuvers,
+      summary: { length: maneuvers.reduce((km, m) => km + m.length, 0), time: maneuvers.reduce((t, m) => t + m.time, 0) },
+    };
+  });
+  const sum = route.summary || {};
+  return {
+    legs: out,
+    summary: {
+      length: (sum.lengthInMeters ?? 0) / 1000,
+      time: sum.travelTimeInSeconds ?? 0,
+      has_toll: tolls.length > 0,
+      has_highway: motorways.length > 0,
+      has_ferry: ferries.length > 0,
+    },
+    units: 'kilometers',
+    status: 0,
+  };
+}
+
+export async function askRoute(req, key, fetchImpl = fetch) {
+  const query = new URLSearchParams({
+    key,
+    instructionsType: 'coded',
+    language: 'en-GB',
+    routeRepresentation: 'polyline',
+    traffic: 'true',
+    travelMode: req.mode,
+  });
+  for (const t of ['tollRoad', 'motorway', 'ferry']) query.append('sectionType', t);
+  if (req.alternates) query.set('maxAlternatives', String(req.alternates));
+  if (req.heading != null && req.mode !== 'pedestrian') query.set('vehicleHeading', String(req.heading));
+  if (req.avoidTolls) query.append('avoid', 'tollRoads');
+  const url = `${TT}/routing/1/calculateRoute/${req.stops.map(loc).join(':')}/json?${query}`;
+  const { json, fail } = await ask(url, { method: 'GET' }, fetchImpl, 'no route');
+  if (fail) return fail;
+  const trips = (json.routes || []).map(toValhalla).filter(Boolean);
+  if (!trips.length) return { status: 422, body: { error: 'no route' } };
+  return { status: 200, body: { trip: trips[0], alternates: trips.slice(1).map((trip) => ({ trip })) } };
+}
+
+/* ---------- Fair use ---------- */
+
+// The TomTom allowance is shared, and this server's address isn't secret, so
+// each connection gets a generous number of requests a minute and no more.
+// Counts are kept per server instance: enough to stop a runaway loop or
+// someone helping themselves. If a Cloudflare rate limiting binding called
+// TOMTOM_LIMITER is set up, it's used as well.
+export const PER_MINUTE = { api: 40, tile: 400 };
+const counts = new Map();
+
+export function allowed(who, kind, now = Date.now()) {
+  const key = `${kind}|${who}`;
+  let c = counts.get(key);
+  if (!c || now - c.start >= 60000) {
+    c = { start: now, n: 0 };
+    counts.set(key, c);
+  }
+  c.n++;
+  if (counts.size > 5000) {
+    for (const [k, v] of counts) if (now - v.start >= 60000) counts.delete(k);
+  }
+  return c.n <= PER_MINUTE[kind];
+}
+
+export const forgetCounts = () => counts.clear();
+
 /* ---------- The routes ---------- */
 
-export const TOMTOM_POSTS = ['/traffic', '/limits', '/ev'];
+export const TOMTOM_POSTS = ['/traffic', '/limits', '/ev', '/route'];
 
 async function readJson(request) {
   try {
@@ -345,13 +548,23 @@ async function readJson(request) {
 export async function tomtomRoute(request, url, origin, env, ctx, reply) {
   const key = env?.TOMTOM_API_KEY;
   const tile = tileRequest(url.pathname);
-  const known = tile || ['/traffic', '/limits', '/geocode', '/ev'].includes(url.pathname);
+  const known = tile || ['/traffic', '/limits', '/geocode', '/ev', '/route'].includes(url.pathname);
   if (!known) return null;
   if (!key) {
     if (tile) return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, vary: 'Origin' } });
     return reply({ error: 'no key' }, origin, 503);
   }
   const done = (result) => reply(result.body, origin, result.status, { 'cache-control': 'no-store' });
+
+  const who = request.headers.get('cf-connecting-ip') || 'unknown';
+  let ok = allowed(who, tile ? 'tile' : 'api');
+  if (ok && !tile && env.TOMTOM_LIMITER?.limit) {
+    try { ok = (await env.TOMTOM_LIMITER.limit({ key: who })).success; } catch { /* the count above stands */ }
+  }
+  if (!ok) {
+    if (tile) return new Response(null, { status: 429, headers: { 'access-control-allow-origin': origin, vary: 'Origin', 'retry-after': '60' } });
+    return reply({ error: 'busy' }, origin, 429, { 'retry-after': '60' });
+  }
 
   if (tile) return tomtomTile(tile, key, origin, { ctx });
 
@@ -365,6 +578,12 @@ export async function tomtomRoute(request, url, origin, env, ctx, reply) {
 
   if (request.method !== 'POST') return reply({ error: 'send the route' }, origin, 405);
   const sent = await readJson(request);
+
+  if (url.pathname === '/route') {
+    const req = routeRequest(sent);
+    if (!req) return reply({ error: 'not a trip' }, origin, 400);
+    return done(await askRoute(req, key));
+  }
 
   if (url.pathname === '/ev') {
     const ev = evRequest(sent);

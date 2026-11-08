@@ -1,4 +1,5 @@
 import { CONFIG } from './config.js';
+import { countUse, overCap } from './usage.js';
 import { cumulative, decodePolyline, encodePolyline } from './geo.js';
 import { roadNames } from './instructions.js';
 
@@ -58,7 +59,8 @@ async function call(provider, body, outerSignal, fetchImpl, url = provider.url) 
     }
     return await fetchImpl(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // Pintu's own server takes plain text, which a page can send without asking first.
+      headers: { 'Content-Type': provider.plain ? 'text/plain' : 'application/json' },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
@@ -68,12 +70,24 @@ async function call(provider, body, outerSignal, fetchImpl, url = provider.url) 
   }
 }
 
-export async function fetchRoutes(opts, { fetchImpl = (...a) => fetch(...a), providers = CONFIG.routing } = {}) {
+// The usual route planners, then TomTom through Pintu's server as a backup
+// for when they're down or busy.
+export function routeProviders() {
+  const backup = CONFIG.server ? [{ name: 'tomtom', url: `${CONFIG.server}/route`, method: 'POST', plain: true }] : [];
+  return [...CONFIG.routing, ...backup];
+}
+
+export async function fetchRoutes(opts, { fetchImpl = (...a) => fetch(...a), providers = routeProviders() } = {}) {
   const body = buildBody(opts);
   let lastError = new RouteError('offline');
 
   for (const provider of providers) {
     if (skipped.has(provider.name)) continue;
+    // The backup counts against the shared TomTom allowance.
+    if (provider.plain) {
+      if (overCap()) continue;
+      countUse();
+    }
     let res;
     try {
       res = await call(provider, body, opts.signal, fetchImpl);

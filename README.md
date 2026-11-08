@@ -38,6 +38,12 @@ services, so treat it as a way to try Pintu, and move to Stadia for regular use:
 
 Pintu needs no change: Stadia starts answering and is used from then on.
 
+If both are down or busy, TomTom answers through the server's `/route`, which turns TomTom's
+directions into the same shape as Valhalla's (`server/tomtom.js`): one line per leg, and each of
+TomTom's turns as Valhalla's numbered kind, with street names, road numbers, exit numbers, signs,
+roundabout exits, and toll and motorway stretches. Lane arrows and the speed limits Valhalla adds
+aren't there, and points to pass through without stopping are left to TomTom.
+
 ### Stops
 
 Public Overpass servers are often overloaded, so Pintu doesn't wait on them. It reads places
@@ -297,11 +303,47 @@ The models in the "my car" panel are starting points, not measurements of anyone
   and [Motorist](https://www.motorist.my/article/6007/proton-e-mas-5-vs-byd-atto-3-2026-which-ev-should-you-buy-in-malaysia).
   Energy use is battery size divided by that range.
 
+## No signal
+
+When a trip starts, Pintu quietly fetches the map along the route, three pieces at a time, and
+the app's offline store keeps them (`js/offline.js`): zoom 14 within 350 m of the road, 12 within
+1.5 km, and 10 within 6 km, at most 900 pieces, nearest first. A long trip is about 5 to 20 MB,
+once; pieces already kept cost nothing. It waits a few seconds so the first directions come first,
+gives up quietly after a run of failures, skips simulated drives and Data Saver, and can be turned
+off in Settings. The offline store keeps up to 4,000 pieces.
+
+## Losing the route in the city
+
+Among tall buildings and where roads run over and under each other, GPS often puts you beside the
+route. If you're still heading the same way (within 25°) and within 120 m of it, Pintu waits 15
+seconds rather than 6 before deciding you've left it (`js/guidance.js`).
+
+## Reports
+
+Settings has "Laporkan masalah": it puts together the app version, the phone and browser, screen,
+settings, location permission, TomTom use, which route server answered, the last 20 errors the app
+hit, and a note, and opens the phone's share sheet (or copies it). Nothing is sent by itself.
+
+The last real drive is kept on the phone (`js/report.js`): every GPS reading, plus events such as
+reroutes, quicker ways and leaving the app, replaced by the next drive. It can be attached to a
+report as `pintu-drive.json`, so a fault can be replayed exactly. Keeping it can be turned off,
+which deletes it.
+
+## Fair use of TomTom
+
+The TomTom allowance is shared by everyone using Pintu. The server allows each connection 40
+requests and 400 map tiles a minute (`PER_MINUTE` in `server/tomtom.js`), and uses a Cloudflare
+rate limiting binding called `TOMTOM_LIMITER` too if one is set up. Each phone stops asking for the
+day after 500 requests (`js/usage.js`), and Settings shows how many it has made today and this
+month. TomTom's own dashboard at [my.tomtom.com](https://my.tomtom.com) shows the total. With no
+card on the TomTom account, running out costs nothing: TomTom simply stops answering until the
+next month, and Pintu carries on without traffic.
+
 ## Limits
 
-- No live traffic, so times are estimates.
-- Guidance can stop when the phone locks or another app is on screen, because browsers
-  pause web pages. Pintu picks the trip back up when you return.
+- Guidance stops when the phone locks or another app is on screen, because browsers don't give
+  web pages your location then. Pintu says so once a trip, and picks the trip back up when you
+  return. Only a proper app could keep going.
 - Map, road names, search, stops and lane data are only as good as OpenStreetMap's.
 - Fuel and range figures are estimates from what you enter.
 - Voice depends on the voices installed on each phone.

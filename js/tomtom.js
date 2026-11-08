@@ -3,11 +3,14 @@
 import { CONFIG } from './config.js';
 import { placeOnRoute } from './places.js';
 import { TrafficError, tracePoints } from './traffic.js';
+import { countUse, overCap } from './usage.js';
 
 const LIMIT_OFF_M = 60;
 
 async function askServer(path, { body, signal, fetchImpl = fetch, server = CONFIG.server } = {}) {
   if (!server) throw new TrafficError('no server', 0);
+  if (overCap()) throw new TrafficError('daily limit', 0);
+  countUse();
   const init = body === undefined
     ? { signal }
     : { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(body), signal };

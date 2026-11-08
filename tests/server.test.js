@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import worker from '../server/worker.js';
+import { forgetCounts } from '../server/tomtom.js';
 import { CHARACTER_IDS } from '../js/characters.js';
 
 const PINTU = 'https://ashraviinrajthinagaraj.github.io';
@@ -962,6 +963,7 @@ const sendRoute = (body, { env = TT_KEY, origin = PINTU, method = 'POST', path =
 }), env);
 
 function tomtom(answer) {
+  forgetCounts();
   const calls = [];
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
@@ -1228,4 +1230,114 @@ test('everything TomTom needs a key, and says so without one', async () => {
     assert.equal(res.status, 503, path);
     assert.deepEqual(await res.json(), { error: 'no key' });
   }
+});
+
+/* ---------- Directions from TomTom, as a backup ---------- */
+
+const ttPoint = (lng, lat) => ({ latitude: lat, longitude: lng });
+function tomtomDirections({ waypoint = false } = {}) {
+  // East along one road, a left turn north, and (maybe) a stop on the way.
+  const leg1 = [ttPoint(101.700, 3.150), ttPoint(101.705, 3.150), ttPoint(101.710, 3.150)];
+  const leg2 = [ttPoint(101.710, 3.150), ttPoint(101.710, 3.155), ttPoint(101.710, 3.160)];
+  const legs = waypoint ? [{ points: leg1 }, { points: leg2 }] : [{ points: [...leg1, ...leg2.slice(1)] }];
+  const ins = [
+    { routeOffsetInMeters: 0, travelTimeInSeconds: 0, point: leg1[0], pointIndex: 0, maneuver: 'DEPART', street: 'Jalan Ampang', message: 'Leave from Jalan Ampang' },
+    waypoint
+      ? { routeOffsetInMeters: 1112, travelTimeInSeconds: 90, point: leg1[2], pointIndex: 2, maneuver: 'WAYPOINT_LEFT', message: 'You have reached your waypoint' }
+      : { routeOffsetInMeters: 1112, travelTimeInSeconds: 90, point: leg1[2], pointIndex: 2, maneuver: 'TURN_LEFT', street: 'Jalan Tun Razak', roadNumbers: ['FT 1'], turnAngleInDecimalDegrees: -90, message: 'Turn left onto Jalan Tun Razak' },
+    { routeOffsetInMeters: 2224, travelTimeInSeconds: 200, point: leg2[2], pointIndex: 4, maneuver: 'ARRIVE_LEFT', message: 'You have arrived' },
+  ];
+  return new Response(JSON.stringify({ routes: [{
+    summary: { lengthInMeters: 2224, travelTimeInSeconds: 200 },
+    legs,
+    sections: [{ startPointIndex: 2, endPointIndex: 4, sectionType: 'TOLL_ROAD' }],
+    guidance: { instructions: ins },
+  }] }), { status: 200 });
+}
+
+test('directions: a route planner request answered by TomTom, in the same shape', async () => {
+  const { prepareTrip, parseResponse } = await import('../js/routing.js');
+  const calls = tomtom(() => tomtomDirections());
+  const body = { locations: [{ lat: 3.15, lon: 101.7, type: 'break', heading: 92 }, { lat: 3.16, lon: 101.71, type: 'break' }], costing: 'auto', alternates: 2, costing_options: { auto: { use_tolls: 0 } } };
+  const res = await askPintu('/route', { method: 'POST', body });
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  const q = new URL(calls[0].url).searchParams;
+  assert.match(new URL(calls[0].url).pathname, /calculateRoute\/3\.15000,101\.70000:3\.16000,101\.71000\/json$/);
+  assert.equal(q.get('instructionsType'), 'coded');
+  assert.equal(q.get('travelMode'), 'car');
+  assert.equal(q.get('maxAlternatives'), '2');
+  assert.equal(q.get('vehicleHeading'), '92');
+  assert.equal(q.get('avoid'), 'tollRoads');
+  assert.deepEqual(q.getAll('sectionType'), ['tollRoad', 'motorway', 'ferry']);
+
+  const [route] = parseResponse(data);
+  assert.equal(route.coords.length, 5);
+  assert.deepEqual(route.maneuvers.map((m) => m.type), [1, 15, 6]);
+  const turn = route.maneuvers[1];
+  assert.deepEqual(turn.street_names, ['Jalan Tun Razak', 'FT 1']);
+  assert.equal(turn.begin_shape_index, 2);
+  assert.ok(Math.abs(turn.beginDist - 1110) < 15, String(turn.beginDist));
+  assert.equal(turn.toll, true);
+  assert.equal(route.maneuvers[0].toll, undefined);
+  assert.equal(route.hasToll, true);
+  assert.equal(route.time, 200);
+  assert.ok(prepareTrip(data.trip));
+});
+
+test('directions: a stop on the way splits the route the way Pintu expects', async () => {
+  const { parseResponse } = await import('../js/routing.js');
+  const calls = tomtom(() => tomtomDirections({ waypoint: true }));
+  const body = { locations: [{ lat: 3.15, lon: 101.7 }, { lat: 3.15, lon: 101.71, type: 'break' }, { lat: 3.155, lon: 101.712, type: 'through' }, { lat: 3.16, lon: 101.71 }], costing: 'motorcycle', alternates: 2 };
+  const data = await (await askPintu('/route', { method: 'POST', body })).json();
+  const q = new URL(calls[0].url).searchParams;
+  assert.equal(new URL(calls[0].url).pathname.split('/')[4].split(':').length, 3, 'points to pass through are left to TomTom');
+  assert.equal(q.get('maxAlternatives'), null, 'no alternatives with stops');
+  assert.equal(q.get('travelMode'), 'motorcycle');
+  assert.equal(data.trip.legs.length, 2);
+  const [route] = parseResponse(data);
+  assert.deepEqual(route.maneuvers.map((m) => [m.type, !!m.isStop]), [[1, false], [6, true], [1, false], [6, false]]);
+  assert.equal(route.coords.length, 5);
+});
+
+test('directions: nonsense is refused, and TomTom finding nothing says so', async () => {
+  tomtom(() => tomtomDirections());
+  assert.equal((await askPintu('/route', { method: 'POST', body: { locations: [{ lat: 3, lon: 101 }] } })).status, 400);
+  assert.equal((await askPintu('/route', { method: 'POST', body: { locations: [{ lat: 'x', lon: 101 }, { lat: 3, lon: 101 }] } })).status, 400);
+  tomtom(() => new Response('{"detailedError":{"message":"NO_ROUTE_FOUND"}}', { status: 400 }));
+  const res = await askPintu('/route', { method: 'POST', body: { locations: [{ lat: 3.15, lon: 101.7 }, { lat: 1.3, lon: 103.8 }] } });
+  assert.equal(res.status, 422);
+  assert.equal((await res.json()).error, 'no route');
+});
+
+test('directions: what each of TomTom\'s turns becomes', async () => {
+  const { turnType } = await import('../server/tomtom.js');
+  const t = (maneuver, turnAngleInDecimalDegrees = 0) => turnType({ maneuver, turnAngleInDecimalDegrees });
+  assert.equal(t('TURN_RIGHT'), 10);
+  assert.equal(t('KEEP_LEFT'), 24);
+  assert.equal(t('ROUNDABOUT_LEFT'), 26);
+  assert.equal(t('MOTORWAY_EXIT_LEFT'), 21);
+  assert.equal(t('TAKE_EXIT', -30), 21);
+  assert.equal(t('ENTER_MOTORWAY', 40), 18);
+  assert.equal(t('ENTRANCE_RAMP'), 17);
+  assert.equal(t('MAKE_UTURN'), 12);
+  assert.equal(t('SOMETHING_NEW'), 8);
+});
+
+test('fair use: each connection gets so many TomTom requests a minute', async () => {
+  const { PER_MINUTE, allowed, forgetCounts } = await import('../server/tomtom.js');
+  forgetCounts();
+  tomtom(tomtomRoute);
+  const from = (ip) => worker.fetch(new Request(`${HOME}/traffic`, { method: 'POST', headers: { origin: PINTU, 'cf-connecting-ip': ip }, body: JSON.stringify({ points: ROUTE }) }), TT_KEY);
+  for (let i = 0; i < PER_MINUTE.api; i++) assert.equal((await from('1.2.3.4')).status, 200);
+  const over = await from('1.2.3.4');
+  assert.equal(over.status, 429);
+  assert.equal(over.headers.get('retry-after'), '60');
+  assert.equal((await from('5.6.7.8')).status, 200, 'someone else is fine');
+  // A minute later it starts again.
+  const t = Date.now();
+  for (let i = 0; i < PER_MINUTE.tile; i++) allowed('9.9.9.9', 'tile', t);
+  assert.equal(allowed('9.9.9.9', 'tile', t), false);
+  assert.equal(allowed('9.9.9.9', 'tile', t + 60000), true);
+  forgetCounts();
 });

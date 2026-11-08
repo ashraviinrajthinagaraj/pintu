@@ -22,7 +22,7 @@
 // Shown when the server's address is opened, so it's clear which code is running.
 import { TOMTOM_POSTS, tomtomRoute, trafficCheck } from './tomtom.js';
 
-const SERVER_VERSION = '2026-11-08.1';
+const SERVER_VERSION = '2026-11-08.2';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];

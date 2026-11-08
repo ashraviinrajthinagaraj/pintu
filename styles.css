@@ -217,6 +217,19 @@ a { color: inherit; }
 .link-btn { color: var(--ink); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--mute); padding: 10px 2px; min-height: 44px; }
 .link-btn.center { display: block; margin: 4px auto 0; }
 .outline-btn { min-height: 48px; padding: 8px 18px; border: 1px solid var(--mute); border-radius: 11px; font-weight: 600; margin-top: 8px; background: var(--panel-2); }
+.report-note {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+#report-drive-row[hidden] { display: none; }
 .icon-btn { width: 48px; height: 48px; display: grid; place-items: center; flex: none; border-radius: 50%; }
 .icon-btn svg { width: 26px; height: 26px; }
 
@@ -1302,3 +1315,4 @@ a { color: inherit; }
 .arrival-car .text-input { background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .35); color: #fff; }
 .arrival-car .text-input::placeholder { color: rgba(255, 255, 255, .7); }
 .arrival-car[hidden] { display: none; }
+#report-drive-row { margin-top: 12px; }

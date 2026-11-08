@@ -20,6 +20,9 @@ import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
 import { ALWAYS_SAY, JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fasterSaving, fetchTraffic, jamAhead, throughPoints } from './traffic.js';
 import { evCar, fetchLimits, mergeResults, planCharging, searchAddresses } from './tomtom.js';
+import { canSaveMap, saveRouteMap } from './offline.js';
+import { DAILY_CAP, usage } from './usage.js';
+import { DriveLog, forgetDrive, lastDrive, recentErrors, rememberError, reportText, shareReport } from './report.js';
 import { findParking } from './parking.js';
 import { leaveBy } from './leaveby.js';
 import { JUNCTION_RANGE, junctionFor, junctionSvg } from './junction.js';
@@ -84,7 +87,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -260,6 +263,15 @@ function applyStaticText() {
   $('traffic-text').textContent = t('trafficText');
   $('traffic-on-label').textContent = t('trafficOn');
   $('traffic-map-on-label').textContent = t('trafficMapOn');
+  $('set-report-title').textContent = t('setReport');
+  $('report-text').textContent = t('reportText');
+  $('report-note').placeholder = t('reportNote');
+  $('report-drive-label').textContent = t('reportDrive');
+  $('report-btn').textContent = t('reportBtn');
+  $('keep-drive-label').textContent = t('keepDrive');
+  $('set-offline-title').textContent = t('setOffline');
+  $('offline-text').textContent = t('offlineText');
+  $('offline-on-label').textContent = t('offlineOn');
   label($('btn-traffic'), t('trafficMapBtn'), UI.trafficLight);
   $('faster-yes').textContent = t('fasterYes');
   $('faster-no').textContent = t('fasterNo');
@@ -402,6 +414,14 @@ function renderSegments() {
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
   $('traffic-on').checked = S.settings.traffic;
+  $('keep-drive').checked = S.settings.keepDrive;
+  $('report-drive-row').hidden = !lastDrive();
+  const used = usage();
+  $('tomtom-use').textContent = t('tomtomUse', { today: used.today, month: used.month, cap: DAILY_CAP });
+  $('offline-on').checked = S.settings.offlineMap;
+  const kept = load('mapSaved', null);
+  $('offline-last').hidden = !kept;
+  if (kept) $('offline-last').textContent = t('offlineLast', { n: kept.tiles, mb: Math.max(1, Math.round(kept.bytes / 1e6)) });
   $('traffic-map-on').checked = S.settings.trafficMap;
   $('traffic-map-on').disabled = !S.settings.traffic;
   $('weather-on').checked = S.settings.weather;
@@ -626,6 +646,7 @@ function receiveFix(fix) {
   S.fix = fix;
   // When the fix was taken, which is a little before it got here.
   const takenAt = performance.now() - (fix.lag || 0);
+  if (S.view === 'nav' && !S.sim) S.driveLog?.add(fix);
   if (S.view === 'nav' && S.guidance) {
     onNavFix(fix, takenAt);
   } else {
@@ -2343,6 +2364,9 @@ function startGuidance({ simulate }) {
   loadTraffic();
   S.limitAsks = 0;
   loadLimits(S.route);
+  saveMapAhead(S.route);
+  S.driveLog = !simulate && S.settings.keepDrive ? new DriveLog({ dest: S.dest, mode: S.mode, version: CONFIG.version }) : null;
+  S.awayWarned = false;
   $('camera-alert').hidden = true;
   $('junction').hidden = true;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
@@ -2706,7 +2730,7 @@ function loadTraffic() {
     considerFaster();
   }).catch((e) => {
     // No key, or a key TomTom won't take: stop asking for this trip.
-    if (e?.kind === 'no key' || e?.kind === 'key refused') S.trafficStopped = true;
+    if (e?.kind === 'no key' || e?.kind === 'key refused' || e?.kind === 'daily limit') S.trafficStopped = true;
   }).finally(() => {
     clearTimeout(timer);
     if (S.trafficCtrl === ctrl) S.trafficCtrl = null;
@@ -2735,6 +2759,7 @@ async function considerFaster() {
     const expected = traffic.better.length;
     if (expected && Math.abs(route.length - expected) > Math.max(1500, expected * 0.12)) return;
     S.faster = { route, saving };
+    S.driveLog?.event('quicker way offered');
     renderFaster();
     clearTimeout(S.fasterTimer);
     S.fasterTimer = setTimeout(() => dismissFaster(), FASTER_OFFER_MS);
@@ -2765,6 +2790,7 @@ function acceptFaster() {
   const offer = S.faster;
   if (!offer) return;
   dismissFaster();
+  S.driveLog?.event('quicker way taken');
   useRoute(offer.route);
   toast(t('fasterTaken', { time: fmtDuration(offer.saving, getLang()) }));
 }
@@ -2922,6 +2948,7 @@ async function reroute(fix, { added = false } = {}) {
   S.lastReroute = now;
   S.rerouting = true;
   const before = S.lastState ? S.lastState.remainingTime : null;
+  S.driveLog?.event(added ? 'stop added' : 'reroute');
   if (!S.rerouteFailed && !added) speakText(dress(S.settings.voiceCharacter, 'reroute', t('rerouteSay'), getLang()));
   renderChips();
   try {
@@ -2978,7 +3005,69 @@ function useRoute(route) {
   $('nav-strip').dataset.key = '';
   dismissFaster();
   loadLimits(route);
+  saveMapAhead(route, S.lastState?.onRoute ? S.lastState.s : 0);
   if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
+}
+
+/* ---------- Problem reports ---------- */
+
+function reportInfo() {
+  const s = S.settings;
+  const used = usage();
+  const drive = lastDrive();
+  const attach = !!drive && $('report-drive').checked && !$('report-drive-row').hidden;
+  const on = (k) => (s[k] ? 'on' : 'off');
+  return {
+    version: CONFIG.version,
+    note: $('report-note').value.trim(),
+    agent: navigator.userAgent,
+    screen: `${innerWidth}×${innerHeight} @${window.devicePixelRatio || 1}x`,
+    installed: matchMedia('(display-mode: standalone)').matches,
+    online: navigator.onLine !== false,
+    lang: getLang(),
+    theme: s.theme,
+    voice: `${s.voiceLevel}, ${s.voiceCharacter || 'standard'}`,
+    gps: S.gpsDenied ? 'refused' : S.fix ? `last accuracy ${Math.round(S.fix.accuracy ?? 0)} m` : 'no reading yet',
+    settings: `3D ${on('view3d')}, traffic ${on('traffic')}, traffic map ${on('trafficMap')}, cameras ${on('speedCameras')}, limits ${on('speedLimit')}, offline map ${on('offlineMap')}`,
+    tomtom: `${used.today} today, ${used.month} this month`,
+    map: mapView ? 'loaded' : 'failed to load',
+    provider: S.route?.provider || S.routes?.[S.selected]?.provider || '',
+    drive,
+    attached: attach,
+    errors: recentErrors(),
+  };
+}
+
+async function sendReport() {
+  const info = reportInfo();
+  try {
+    const how = await shareReport({ text: reportText(info), drive: info.attached ? info.drive : null });
+    if (how === 'copied') toast(t('reportCopied'));
+    $('report-note').value = '';
+  } catch (e) {
+    // Closing the share sheet isn't a failure.
+    if (e?.name !== 'AbortError') toast(t('reportFailed'));
+  }
+}
+
+/* ---------- The route's map, kept for no signal ---------- */
+
+const MAP_SAVE_WAIT_MS = 4000;
+
+function saveMapAhead(route, from = 0) {
+  S.mapSaveCtrl?.abort();
+  if (!S.settings.offlineMap || S.sim || !canSaveMap()) return;
+  const template = mapView?.tileUrl() || CONFIG.poiTiles;
+  if (!template) return;
+  const ctrl = new AbortController();
+  S.mapSaveCtrl = ctrl;
+  // The map and the first directions come first; this can wait a moment.
+  setTimeout(() => {
+    if (ctrl.signal.aborted) return;
+    saveRouteMap(route, template, { from, signal: ctrl.signal }).then((r) => {
+      if (r.saved) save('mapSaved', { at: Date.now(), tiles: r.saved, bytes: r.bytes });
+    }).catch(() => { /* the map works as before */ });
+  }, MAP_SAVE_WAIT_MS);
 }
 
 function keepVehicleLevel() {
@@ -3002,6 +3091,9 @@ function stopGuidance() {
   dismissFaster();
   S.limitsCtrl?.abort();
   S.ttLimits = [];
+  S.mapSaveCtrl?.abort();
+  S.driveLog?.save();
+  S.driveLog = null;
   saveDriveTime();
   keepVehicleLevel();
   leaveFullscreen();
@@ -3045,6 +3137,7 @@ function arrivalStats() {
 }
 
 function finishTrip() {
+  S.driveLog?.event('arrived');
   const place = S.dest;
   const onFoot = S.mode === 'walk';
   const simulated = !!S.sim;
@@ -3745,9 +3838,26 @@ function releaseWake() {
   S.wake = null;
 }
 
+window.addEventListener('error', (e) => rememberError(e.message, e.filename ? `${e.filename.split('/').pop()}:${e.lineno}` : ''));
+window.addEventListener('unhandledrejection', (e) => rememberError(e.reason?.message || String(e.reason), 'promise'));
+
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     S.hiddenAt = Date.now();
+    if (S.view === 'nav' && !S.sim) {
+      S.driveLog?.event('left the app');
+      S.driveLog?.save();
+      // A web page gets no location while another app is in front, so say so,
+      // once a trip, while there's still a moment to speak.
+      if (!S.awayWarned && S.settings.voiceLevel !== 'off' && window.speechSynthesis) {
+        S.awayWarned = true;
+        try {
+          const u = new SpeechSynthesisUtterance(t('awaySay'));
+          u.lang = getLang() === 'ms' ? 'ms-MY' : 'en-GB';
+          window.speechSynthesis.speak(u);
+        } catch { /* nothing to be done */ }
+      }
+    }
     return;
   }
   if (S.settings.theme === 'auto') applyTheme();
@@ -3831,6 +3941,16 @@ function wire() {
     setSetting('speedCameras', e.target.checked);
     if (!e.target.checked) $('camera-alert').hidden = true;
   });
+  $('offline-on').addEventListener('change', (e) => setSetting('offlineMap', e.target.checked));
+  $('keep-drive').addEventListener('change', (e) => {
+    setSetting('keepDrive', e.target.checked);
+    if (!e.target.checked) {
+      forgetDrive();
+      S.driveLog = null;
+      $('report-drive-row').hidden = true;
+    }
+  });
+  $('report-btn').addEventListener('click', sendReport);
   $('traffic-map-on').addEventListener('change', (e) => {
     setSetting('trafficMap', e.target.checked);
     syncTrafficMap();

@@ -1,18 +1,18 @@
 // Keeps Pintu opening with poor signal. The app's own files come from the
 // network when possible so updates arrive by themselves. Searches, routes and
 // stops are never stored here.
-const VERSION = 'pintu-0.9.0';
+const VERSION = 'pintu-0.9.1';
 const SHELL = `${VERSION}-shell`;
 const LIBS = `${VERSION}-libs`;
 const TILES = 'pintu-tiles-1';
 const VOICE = 'pintu-voice-2';   // recordings of spoken lines, kept by voice.js
-const MAX_TILES = 2500;
+const MAX_TILES = 4000;   // room for a long trip's map, kept for when there's no signal
 
 const FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/car-gl.js', 'js/car-mesh.js', 'js/config.js', 'js/format.js', 'js/geo.js', 'js/guidance.js', 'js/i18n.js',
   'js/icons.js', 'js/instructions.js', 'js/lanes.js', 'js/location.js', 'js/map.js', 'js/motion.js', 'js/places.js',
-  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/tiles.js', 'js/vehicle.js', 'js/characters.js', 'js/audio.js', 'js/cameras.js', 'js/delivery.js', 'js/junction.js', 'js/kinds.js', 'js/leaveby.js', 'js/nearby.js', 'js/parking.js', 'js/drive-watch.js', 'js/tolls.js', 'js/traffic.js', 'js/traffic-map.js', 'js/tomtom.js',
+  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/tiles.js', 'js/vehicle.js', 'js/characters.js', 'js/audio.js', 'js/cameras.js', 'js/delivery.js', 'js/junction.js', 'js/kinds.js', 'js/leaveby.js', 'js/nearby.js', 'js/parking.js', 'js/drive-watch.js', 'js/tolls.js', 'js/traffic.js', 'js/traffic-map.js', 'js/tomtom.js', 'js/offline.js', 'js/usage.js', 'js/report.js',
   'js/cast/adik.js', 'js/cast/agent.js', 'js/cast/captain.js', 'js/cast/cikgu.js', 'js/cast/commentator.js', 'js/cast/makcik.js', 'js/cast/trailer.js', 'js/cast/uncle.js', 'js/links.js', 'js/malls.js', 'js/net.js', 'js/weather.js', 'js/vehicle-ui.js',
   'js/voice.js',
   'fonts/Barlow-Medium.woff', 'fonts/Barlow-SemiBold.woff', 'fonts/Barlow-Bold.woff',
