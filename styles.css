@@ -1507,3 +1507,6 @@ a { color: inherit; }
 /* Four languages, each named in its own script. */
 .lang-row { display: flex; flex-wrap: wrap; }
 .lang-row button { flex: 1 0 auto; }
+
+/* The Android app's download, looking like the other buttons. */
+.app-link { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }

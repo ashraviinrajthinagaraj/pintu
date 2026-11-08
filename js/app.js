@@ -42,6 +42,7 @@ import { REPORT_KINDS, REPORTS_EVERY_MS, fetchReports, justPassed, reportAhead, 
 import { Convoy, TripShare, convoyOrder, watchTrip } from './together.js';
 import { COMMUTE_DEFAULTS, DAY_ORDER, CommuteError, commuteOff, commuteOn, commuteTest } from './commute.js';
 import { isCode } from './hub.js';
+import { inApp, nativePlugin } from './native.js';
 import * as voice from './voice.js';
 
 const $ = (id) => document.getElementById(id);
@@ -410,6 +411,8 @@ function applyStaticText() {
   $('solat-text').textContent = t('solatText');
   $('solat-on-label').textContent = t('solatOn');
   $('set-install-title').textContent = t('setInstall');
+  $('app-link').textContent = t('appBtn');
+  $('app-note').textContent = t('appNote');
   $('install-btn').textContent = t('installBtn');
   $('set-privacy-title').textContent = t('setPrivacy');
   $('privacy-text').textContent = t('privacy');
@@ -482,7 +485,14 @@ function renderInstall() {
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   $('install-text').textContent = t(standalone ? 'installDone' : ios ? 'installIos' : 'installAndroid');
-  $('install-btn').hidden = standalone || !S.installEvent;
+  $('install-btn').hidden = standalone || !S.installEvent || inApp();
+  // The Android app keeps guiding with the screen off, which a web page can't.
+  const android = /android/i.test(navigator.userAgent);
+  $('app-text').textContent = t(inApp() ? 'appIn' : 'appText');
+  $('app-text').hidden = !android && !inApp();
+  $('app-link').hidden = !android || inApp();
+  $('app-note').hidden = !android || inApp();
+  if (inApp()) $('install-text').textContent = '';
 }
 
 function renderSegments() {
@@ -2518,6 +2528,8 @@ function startGuidance({ simulate }) {
   answerReport(null);
   $('report-alert').hidden = true;
   loadRoadReports();
+  // In the Android app, location carries on with the screen off for the whole drive.
+  if (!simulate && inApp()) gps.useBackground(nativePlugin('BackgroundGeolocation'), t('bgMessage'));
   // A trip shared before Pintu was closed carries on when the trip does.
   if (!simulate && S.pendingShare) S.share = S.pendingShare;
   S.pendingShare = null;
@@ -3255,6 +3267,7 @@ function keepTripSummary() {
 // The trip's over one way or another: put everything back.
 function stopGuidance() {
   keepTripSummary();
+  gps.useBackground(null);
   S.crawl = null;
   S.roadCtrl?.abort();
   S.roadCtrl = null;
@@ -4022,6 +4035,12 @@ function onEndTap() {
 
 async function acquireWake() {
   if (S.view !== 'nav') return;
+  const awake = nativePlugin('KeepAwake');
+  if (awake) {
+    S.wake = { release: () => Promise.resolve(awake.allowSleep()).catch(() => {}) };
+    Promise.resolve(awake.keepAwake()).catch(() => {});
+    return;
+  }
   try {
     S.wake = await navigator.wakeLock.request('screen');
     S.wake.addEventListener('release', () => { S.wake = null; });
@@ -4046,7 +4065,7 @@ document.addEventListener('visibilitychange', () => {
       S.driveLog?.save();
       // A web page gets no location while another app is in front, so say so,
       // once a trip, while there's still a moment to speak.
-      if (!S.awayWarned && S.settings.voiceLevel !== 'off' && window.speechSynthesis) {
+      if (!S.awayWarned && !gps.bg && S.settings.voiceLevel !== 'off' && window.speechSynthesis) {
         S.awayWarned = true;
         try {
           const u = new SpeechSynthesisUtterance(t('awaySay'));
@@ -4062,7 +4081,7 @@ document.addEventListener('visibilitychange', () => {
   renderPrayer();
   if (S.view !== 'nav') return;
   acquireWake();
-  if (!S.sim) gps.restart();
+  if (!S.sim && !gps.bg) gps.restart();
   const away = Date.now() - S.hiddenAt;
   if (away > 5000 && S.guidance) {
     toast(t('resumed'));
@@ -4452,6 +4471,16 @@ function saveName() {
 
 // The phone's share sheet, or the clipboard where there isn't one.
 async function shareLink(url, text, title) {
+  // The Android app's own share sheet: its web view has none.
+  const appShare = nativePlugin('Share');
+  if (appShare) {
+    try {
+      await appShare.share({ title, text, url, dialogTitle: title });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (navigator.share) {
     try {
       await navigator.share({ title, text, url });
@@ -4898,7 +4927,8 @@ function renderCommute(status) {
   const c = commuteSettings();
   const places = homeAndWork();
   const ready = togetherReady() && !!places;
-  $('set-commute').hidden = !togetherReady();
+  // Notifications need a browser: the Android app's web view has none.
+  $('set-commute').hidden = !togetherReady() || inApp();
   $('commute-on').checked = c.on;
   $('commute-on').disabled = !ready && !c.on;
   $('commute-more').hidden = !c.on;

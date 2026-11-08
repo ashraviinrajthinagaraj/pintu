@@ -1,5 +1,10 @@
 const STRINGS = {
   ms: {
+    bgMessage: "Pintu sedang memandu bersama anda.",
+    appText: "Aplikasi Android Pintu terus memberi arahan dan bercakap bila skrin tutup atau aplikasi lain dibuka. Ia membuka Pintu yang sama, jadi kemas kini sampai dengan sendirinya.",
+    appBtn: "Muat turun aplikasi Android",
+    appNote: "Bila dibuka, telefon akan tanya sama ada mahu benarkan pemasangan dari Chrome. Benarkan, kemudian pasang. Benarkan juga lokasi dan pemberitahuan.",
+    appIn: "Anda sedang guna aplikasi Android. Arahan diteruskan bila skrin tutup.",
     mapLabel: 'Peta',
     where: 'Nak ke mana?',
     settings: 'Tetapan',
@@ -595,6 +600,11 @@ const STRINGS = {
     towardSign: "Menuju {to}",
   },
   en: {
+    bgMessage: "Pintu is guiding your drive.",
+    appText: "The Pintu Android app keeps guiding and talking with the screen off or another app open. It opens the same Pintu, so updates arrive by themselves.",
+    appBtn: "Download the Android app",
+    appNote: "When it opens, the phone asks whether to allow installing from Chrome. Allow it, then install. Allow location and notifications too.",
+    appIn: "You’re using the Android app. Guidance carries on with the screen off.",
     mapLabel: 'Map',
     where: 'Where to?',
     settings: 'Settings',
@@ -1190,6 +1200,11 @@ const STRINGS = {
     towardSign: "Towards {to}",
   },
   zh: {
+    bgMessage: "Pintu 正在为您导航。",
+    appText: "Pintu 安卓应用在屏幕关闭或打开其他应用时，仍会继续导航和说话。它打开的是同一个 Pintu，所以会自动更新。",
+    appBtn: "下载安卓应用",
+    appNote: "打开时，手机会问是否允许从 Chrome 安装。请允许，然后安装。也请允许位置和通知。",
+    appIn: "您正在使用安卓应用。屏幕关闭时导航仍会继续。",
     mapLabel: "地图",
     where: "要去哪里？",
     settings: "设置",
@@ -1797,6 +1812,11 @@ const STRINGS = {
     langNote: "路名照地图上的写法显示。人声只有马来语和英语，中文用手机的声音。",
   },
   ta: {
+    bgMessage: "Pintu உங்கள் பயணத்திற்கு வழிகாட்டுகிறது.",
+    appText: "திரை அணைந்திருந்தாலும் வேறு செயலி திறந்திருந்தாலும் Pintu Android செயலி தொடர்ந்து வழிகாட்டிப் பேசும். அது அதே Pintu-வைத் திறக்கும், அதனால் புதுப்பிப்புகள் தானாக வரும்.",
+    appBtn: "Android செயலியைப் பதிவிறக்கு",
+    appNote: "திறக்கும்போது, Chrome-இலிருந்து நிறுவ அனுமதிக்கவா என்று தொலைபேசி கேட்கும். அனுமதித்து நிறுவுங்கள். இருப்பிடத்தையும் அறிவிப்புகளையும் அனுமதியுங்கள்.",
+    appIn: "நீங்கள் Android செயலியைப் பயன்படுத்துகிறீர்கள். திரை அணைந்தாலும் வழிகாட்டல் தொடரும்.",
     mapLabel: "வரைபடம்",
     where: "எங்கே போகணும்?",
     settings: "அமைப்புகள்",

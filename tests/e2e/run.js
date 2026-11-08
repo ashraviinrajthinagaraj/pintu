@@ -4840,6 +4840,79 @@ await check('a phone with no Chinese voice still says it in Chinese, and asks fo
   await ctx.close();
 });
 
+/* ---------- 0.9.7: inside the Android app ---------- */
+
+// The Android app's parts, played by the test, on a phone with no speechSynthesis.
+const IN_APP = () => {
+  window.__app = { tts: [], awake: null, removed: null, bg: null };
+  Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: undefined });
+  window.Capacitor = {
+    isNativePlatform: () => true,
+    isPluginAvailable: (n) => ['BackgroundGeolocation', 'TextToSpeech', 'KeepAwake'].includes(n),
+    Plugins: {
+      BackgroundGeolocation: {
+        addWatcher: async (opts, cb) => { window.__app.bg = { opts, cb }; return 'w1'; },
+        removeWatcher: async ({ id }) => { window.__app.removed = id; },
+      },
+      TextToSpeech: { speak: async (o) => { window.__app.tts.push(o); }, stop: async () => {} },
+      KeepAwake: { keepAwake: async () => { window.__app.awake = true; }, allowSleep: async () => { window.__app.awake = false; } },
+    },
+  };
+};
+
+await check('in the Android app: location from the app all drive, Android\'s voice, screen kept on', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, init: IN_APP });
+  await toNav(page);
+  await page.waitForFunction(() => window.__app.bg);
+  const opts = await page.evaluate(() => window.__app.bg.opts);
+  assert.equal(opts.backgroundMessage, 'Pintu sedang memandu bersama anda.');
+  assert.equal(opts.requestPermissions, true);
+  assert.equal(await page.evaluate(() => window.__app.awake), true);
+  // The app's location moves the car along.
+  const trip = prepareTrip(cityTrip());
+  const before = await text(page, '#sign-distance');
+  await page.evaluate((pts) => {
+    let t = Date.now();
+    for (const [lng, lat] of pts) window.__app.bg.cb({ latitude: lat, longitude: lng, accuracy: 5, speed: 12, bearing: 90, time: (t += 1000) });
+  }, [0, 100, 200, 300, 400].map((s) => pointAt(trip, s)));
+  await page.waitForFunction((b) => document.getElementById('sign-distance').textContent !== b, before);
+  await page.waitForFunction(() => window.__app.tts.length > 0);
+  const said1 = (await page.evaluate(() => window.__app.tts))[0];
+  assert.equal(said1.lang, 'ms-MY');
+  assert.match(said1.text, /[a-z]/);
+  // Not "Pintu pauses while another app is open": in the app it doesn't.
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+  assert.ok(!(await page.evaluate(() => window.__app.tts)).some((x) => /berhenti seketika|pauses/.test(x.text)));
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  await page.waitForFunction(() => window.__app.removed === 'w1');
+  assert.equal(await page.evaluate(() => window.__app.awake), false);
+  await page.click('#btn-settings');
+  assert.match(await text(page, '#app-text'), /aplikasi Android/);
+  assert.equal(await vis(page, '#app-link'), false, 'no download inside the app');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('in a browser on a computer, no Android download is offered', async () => {
+  const { ctx, page } = await newApp(browser, quiet);
+  await page.click('#btn-settings');
+  assert.equal(await vis(page, '#app-link'), false);
+  assert.equal(await vis(page, '#app-text'), false);
+  await ctx.close();
+});
+
+await check('in a browser on an Android phone, the app is offered', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet, init: () => { Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36' }); } });
+  await page.click('#btn-settings');
+  assert.equal(await vis(page, '#app-link'), true);
+  assert.equal(await page.getAttribute('#app-link', 'href'), 'https://github.com/ashraviinrajthinagaraj/pintu/releases/download/android/pintu.apk');
+  await smallTargets(page, 'app link', ['#app-link']);
+  await noOverflow(page, 'settings with the app link');
+  await ctx.close();
+});
+
 await browser.close();
 server.close();
 

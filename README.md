@@ -433,11 +433,28 @@ month. TomTom's own dashboard at [my.tomtom.com](https://my.tomtom.com) shows th
 card on the TomTom account, running out costs nothing: TomTom simply stops answering until the
 next month, and Pintu carries on without traffic.
 
+## The Android app
+
+`android-app/` wraps Pintu in a small Android app (Capacitor 8), built by
+`.github/workflows/android.yml` and put at
+[releases/download/android/pintu.apk](https://github.com/ashraviinrajthinagaraj/pintu/releases/download/android/pintu.apk).
+It opens the live site, so it updates with every change here; it only needs building again
+when `android-app/` changes. What it adds (`js/native.js`): during a drive, location comes from
+the app with a notification ("Pintu sedang memandu bersama anda"), so guidance carries on with
+the screen off or another app in front; directions are spoken by Android's own voice, because
+Android's web view has none; and the screen is kept on while driving. In the app, voice search
+and the morning alert aren't available (the web view has neither); the browser version has both.
+
+Signing: the workflow needs a repository secret called `ANDROID_SIGNING_SEED`, any long sentence
+that never changes. The key is worked out from it on each build, and the first build keeps the
+matching public certificate as `android-app/signing-cert.pem`, so every new app installs over the
+last one without losing saved places or settings.
+
 ## Limits
 
-- Guidance stops when the phone locks or another app is on screen, because browsers don't give
-  web pages your location then. Pintu says so once a trip, and picks the trip back up when you
-  return. Only a proper app could keep going.
+- In a browser, guidance stops when the phone locks or another app is on screen, because
+  browsers don't give web pages your location then. Pintu says so once a trip, and picks the trip
+  back up when you return. The Android app keeps going.
 - Map, road names, search, stops and lane data are only as good as OpenStreetMap's.
 - Fuel and range figures are estimates from what you enter. Costs use the official pump price,
   which is what most stations charge, or the price you type in.

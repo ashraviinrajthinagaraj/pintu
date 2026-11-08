@@ -3,6 +3,7 @@
 //
 // A direction must never be lost or late, so a recording only gets a moment to
 // arrive. If it isn't here in time, the phone speaks straight away.
+import { nativePlugin } from './native.js';
 import { CONFIG } from './config.js';
 import { decodeAudio } from './audio.js';
 import { plainSpeech } from './delivery.js';
@@ -58,6 +59,10 @@ function voices() {
 
 const norm = (s) => (s || '').toLowerCase().replace('_', '-');
 
+// The Android app has no speechSynthesis, so its own voice speaks instead.
+const appVoice = () => nativePlugin('TextToSpeech');
+let appSpeaking = false;
+
 // Malay if the phone has it. Indonesian is the closest stand-in and reads
 // Malay road names far better than an English voice would.
 export function chooseVoice(list, language) {
@@ -85,7 +90,7 @@ export function chooseVoice(list, language) {
 }
 
 export function voiceStatus(language = lang) {
-  if (!synth()) return 'none';
+  if (!synth()) return appVoice() ? 'exact' : 'none';
   return chooseVoice(voices(), language).match;
 }
 
@@ -93,6 +98,14 @@ export function voiceStatus(language = lang) {
 
 function phoneSpeak(text) {
   const s = synth();
+  if (!s && text && appVoice()) {
+    const { tag } = chooseVoice([], lang);
+    appSpeaking = true;
+    Promise.resolve(appVoice().speak({ text, lang: tag, rate: style.rate, pitch: style.pitch, queueStrategy: 0 }))
+      .catch(() => {})
+      .finally(() => { appSpeaking = false; });
+    return;
+  }
   if (!s || !text) return;
   const { voice, tag } = chooseVoice(voices(), lang);
   const u = new SpeechSynthesisUtterance(text);
@@ -125,6 +138,7 @@ let cutOff = null;           // ends the clip now playing
 function stopTalking() {
   ticket++;
   synth()?.cancel();
+  if (!synth()) Promise.resolve(appVoice()?.stop()).catch(() => {});
   cutOff?.();
   if (player) {
     try { player.pause(); } catch { /* wasn't playing */ }
@@ -298,7 +312,7 @@ export function speak(text, { evenIfMuted = false, wait = WAIT_NORMAL_MS, onStar
 
 // Is something being said, or about to be? A joke waits its turn; a direction doesn't.
 export function busy() {
-  if (talking > 0) return true;
+  if (talking > 0 || appSpeaking) return true;
   if (synth()?.speaking) return true;
   return !!player && !player.paused && !player.ended;
 }

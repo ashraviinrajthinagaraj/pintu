@@ -1,4 +1,5 @@
 import { bearing, haversine } from './geo.js';
+import { asPosition } from './native.js';
 
 // A fix arrives a little after it was taken. Knowing how much lets the arrow
 // show where you are now rather than where you were. A phone whose clock
@@ -14,12 +15,47 @@ export class Gps {
     this.watch = null;
     this.prev = null;
     this.heading = null;
+    this.bg = null;        // the Android app's location, which carries on with the screen off
+    this.bgId = null;
   }
 
   get running() { return this.watch != null; }
 
+  // In the Android app, a drive uses the app's own location, shown by a
+  // notification, so guidance doesn't stop when the screen does. Null goes back.
+  useBackground(plugin, message) {
+    if ((this.bg?.plugin || null) === (plugin || null)) return;
+    const was = this.running;
+    this.stop();
+    this.bg = plugin ? { plugin, message } : null;
+    if (was || plugin) this.start();
+  }
+
   start() {
     if (this.watch != null) return;
+    if (this.bg) {
+      const { plugin, message } = this.bg;
+      const mine = {};
+      this.watch = mine;
+      Promise.resolve(plugin.addWatcher(
+        { backgroundMessage: message, backgroundTitle: 'Pintu', requestPermissions: true, stale: false, distanceFilter: 0 },
+        (loc, err) => {
+          if (this.watch !== mine) return;
+          if (err) { this.onError({ code: err.code === 'NOT_AUTHORIZED' ? 1 : 2 }); return; }
+          if (loc) this._handle(asPosition(loc));
+        },
+      )).then((id) => {
+        if (this.watch === mine) this.bgId = id;
+        else plugin.removeWatcher({ id }).catch?.(() => {});
+      }).catch(() => {
+        // The app's location wouldn't start: the browser's will do.
+        if (this.watch !== mine) return;
+        this.watch = null;
+        this.bg = null;
+        this.start();
+      });
+      return;
+    }
     if (!('geolocation' in navigator)) { this.onError({ code: 2 }); return; }
     this.watch = navigator.geolocation.watchPosition(
       (pos) => this._handle(pos),
@@ -29,6 +65,12 @@ export class Gps {
   }
 
   stop() {
+    if (this.bg && this.watch != null) {
+      if (this.bgId != null) Promise.resolve(this.bg.plugin.removeWatcher({ id: this.bgId })).catch(() => {});
+      this.bgId = null;
+      this.watch = null;
+      return;
+    }
     if (this.watch != null) navigator.geolocation.clearWatch(this.watch);
     this.watch = null;
   }
