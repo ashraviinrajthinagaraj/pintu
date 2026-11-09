@@ -9,11 +9,10 @@ jobs:
     steps:
       - name: Ask LLM
         run: |
-          G=https://gis02.llm.gov.my/llmsmpt/rest/services
-          echo "== GIS root"; curl -sS -m 30 "$G?f=json" | head -c 2000; echo
-          echo "== GIS folder"; curl -sS -m 30 "$G/GIS_LLM?f=json" | head -c 4000; echo
-          echo "== Site"; curl -sSL -m 30 -A "Mozilla/5.0" "https://www.llm.gov.my/" -o site.html; wc -c site.html
-          grep -oiE 'href="[^"]*"' site.html | grep -iE 'tol|kadar|rate|fare' | sort -u | head -60
-          for p in "/awam/kadartol" "/awam/kadar-tol" "/en/kadar-tol" "/kadar-tol" "/tol"; do
-            echo "== $p"; curl -sSL -m 20 -A "Mozilla/5.0" -o /dev/null -w "%{http_code} %{url_effective}\n" "https://www.llm.gov.my$p"
-          done
+          curl -sSL -m 30 -A "Mozilla/5.0" "https://www.llm.gov.my/" -o site.html
+          echo "== links"; grep -oiE 'href="https?://www\.llm\.gov\.my/[^"]*"|href="/[^"]*"' site.html | sort -u | grep -viE '\.(pdf|jpg|png|css|js)"' | head -120
+          R=https://gis02.llm.gov.my/llmsmpt/rest/services/GIS_LLM/KAW_REHAT_RAWAT/MapServer
+          echo "== RnR"; curl -sS -m 30 "$R?f=json" | head -c 1500; echo
+          curl -sS -m 30 "$R/0?f=json" | grep -oE '"name":"[A-Z_0-9]+"' | tr '\n' ' '; echo
+          curl -sS -m 30 "$R/0/query?where=1%3D1&returnCountOnly=true&f=json"; echo
+          curl -sS -m 30 "$R/0/query?where=1%3D1&outFields=*&resultRecordCount=3&f=json" | head -c 2500; echo
