@@ -11,5 +11,5 @@ jobs:
         run: |
           for out in "out tags 2;" "out center tags 2;" "out center 2;"; do
             echo "== $out"
-            curl -sS -m 60 --data-urlencode "data=[out:json][timeout:25];node[\"highway\"=\"speed_camera\"](2.9,101.4,3.4,101.9);$out" https://overpass-api.de/api/interpreter | head -c 700; echo
+            curl -sS -m 60 -A "PintuProbe/1.0 (github.com/ashraviinrajthinagaraj/pintu)" --data-urlencode "data=[out:json][timeout:25];node[\"highway\"=\"speed_camera\"](2.9,101.4,3.4,101.9);$out" https://overpass.private.coffee/api/interpreter | head -c 700; echo
           done
