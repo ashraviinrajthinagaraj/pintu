@@ -31,7 +31,7 @@ export function samplePoints(route) {
 
 export function cameraQuery(points) {
   const line = points.map(([lng, lat]) => `${lat.toFixed(5)},${lng.toFixed(5)}`).join(',');
-  return `[out:json][timeout:20];node["highway"="speed_camera"](around:${NEAR_M},${line});out tags 400;`;
+  return `[out:json][timeout:20];node["highway"="speed_camera"](around:${NEAR_M},${line});out center tags 400;`;
 }
 
 export function parseCameras(json) {

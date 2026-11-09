@@ -21,6 +21,7 @@ folder as it is.
 | Official warnings | [MET Malaysia via data.gov.my](https://developer.data.gov.my/realtime-api/weather) | 4 requests a minute |
 | Pump prices | [data.gov.my fuel prices](https://data.gov.my/data-catalogue/fuelprice), through the small server | Set weekly. 4 requests a minute, so the server keeps the answer 6 hours |
 | Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
+| Toll plazas, cameras and R&Rs before you set off | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), one request for all routes | Toll fares are a short list in the app, see Tolls |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
 ### Routing
@@ -150,8 +151,35 @@ highways and main city roads; it has accidents and roadworks, but not driver rep
 ## Tolls
 
 Each route option shows roughly how far it runs on toll roads, from the toll mark on each of
-Valhalla's manoeuvres. Prices aren't shown: there's no reliable free source for Malaysia's rates,
-which on PLUS depend on where you enter and leave.
+Valhalla's manoeuvres. Once the route is shown, one request to Overpass finds the toll plazas,
+speed cameras and R&Rs along every route on offer (`js/along.js`), and the plan lists the plazas
+in the order you reach them.
+
+There's no open source for Malaysia's toll rates, and on PLUS and other closed-system highways
+the fare depends on where you get on and off. So Pintu only prices a plaza on a highway that
+charges a car (Class 1) the same fixed fare at every plaza, in both directions, and knows which
+highway a plaza is on from the route number of the road the route takes there. Every other
+plaza is counted but left unpriced: the plan then says "at least RM X" and how many plazas it
+couldn't price, and never treats an unknown fare as free. The fares are in `js/toll-fares.js`:
+
+| Highway | Route | Car fare | Since | Announced |
+| --- | --- | --- | --- | --- |
+| DASH | E31 | RM2.30 at each plaza | 1 Dec 2022 | [paultan.org](https://paultan.org/2022/11/30/dash-highway-toll-rates-announced-rm2-30-for-class-1-vehicles-at-all-toll-plazas-from-dec-1-2022) |
+| LDP | E11 | RM2.10 at each plaza | 15 Oct 2015 | [paultan.org](https://paultan.org/2015/10/13/ldp-toll-rates-up-oct-15) |
+| KESAS | E5 | RM2.00 | 14 Jan 2013 | [paultan.org](https://paultan.org/2013/01/14/kesas-highway-toll-charges-down-by-20-sen-to-rm2/) |
+| BESRAYA | E9 | RM1.85 at each plaza | 1 Jan 2023 | [paultan.org](https://paultan.org/2022/12/31/kadar-tol-besraya-dan-lekas-diturunkan-berkuatkuasa-12-01-t-malam-1-jan-2023-menteri-kkr/) |
+
+LDP and KESAS fares stay as they are until their concessions end
+([paultan.org, April 2024](https://paultan.org/2024/04/04/toll-rates-for-kesas-sprint-smart-ldp-highways-to-remain-unchanged-for-the-next-10-years)).
+When a fare changes, update its row in `js/toll-fares.js` and here. A highway can be added when
+an official announcement gives one fixed car fare for all its plazas.
+
+## Along the way
+
+The plan shows a line of the R&Rs (`highway=services`) and lay-bys (`highway=rest_area`) you can
+pull into, with speed cameras if their warning is on. Malaysia drives on the left, so one mapped
+on the right of the route is taken to be for the other direction and left out, unless it sits
+right on the road. Tapping one shows when you'd reach it, and an R&R can be added as a stop.
 
 ## Home and work
 
@@ -456,6 +484,8 @@ last one without losing saved places or settings.
   browsers don't give web pages your location then. Pintu says so once a trip, and picks the trip
   back up when you return. The Android app keeps going.
 - Map, road names, search, stops and lane data are only as good as OpenStreetMap's.
+- Toll prices cover only the few highways with one fixed car fare, and only plazas mapped in
+  OpenStreetMap. A fare that changes stays wrong until `js/toll-fares.js` is updated.
 - Fuel and range figures are estimates from what you enter. Costs use the official pump price,
   which is what most stations charge, or the price you type in.
 - Voice search needs the internet and the phone's speech service.

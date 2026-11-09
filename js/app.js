@@ -18,6 +18,9 @@ import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
+import { alongRoute, fetchAlong } from './along.js';
+import { priceTolls, tollTotal } from './toll-fares.js';
+import { vehiclePicture } from './car-art.js';
 import { ALWAYS_SAY, JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fasterSaving, fetchTraffic, jamAhead, throughPoints } from './traffic.js';
 import { evCar, fetchLimits, mergeResults, planCharging, searchAddresses } from './tomtom.js';
 import { canSaveMap, saveRouteMap } from './offline.js';
@@ -362,6 +365,8 @@ function applyStaticText() {
   $('saved-work-icon').innerHTML = UI.work;
   $('plan-arrive-icon').innerHTML = UI.clock;
   $('plan-parking-icon').innerHTML = UI.parking;
+  $('plan-toll-icon').innerHTML = UI.toll;
+  $('plan-toll-chev').innerHTML = UI.chevron;
   label($('plan-parking-clear'), t('parkingRemove'), UI.close);
   renderSaved();
   $('set-limit-title').textContent = t('setLimit');
@@ -1323,6 +1328,8 @@ function fitRoutes() {
 function openPreview(place, { keepParking = false } = {}) {
   if (!keepParking) S.parkAt = null;
   S.parkingOpen = false;
+  S.tollOpen = false;
+  S.alongPick = null;
   S.dest = place;
   S.routes = [];
   S.selected = 0;
@@ -1362,6 +1369,9 @@ async function nameDestination(place) {
 
 function leaveDestination() {
   S.routeCtrl?.abort();
+  S.alongCtrl?.abort();
+  clearTimeout(S.alongTimer);
+  S.along = null;
   S.dest = null;
   S.start = null;
   S.routes = [];
@@ -1527,7 +1537,7 @@ function renderRoutes() {
     const tags = document.createElement('span');
     tags.className = 'route-tags';
     // Motorcycles don't pay tolls in Malaysia, so the tag would only mislead.
-    if (r.hasToll && S.mode !== 'motorcycle') tags.append(tag(r.tollKm >= 1 ? t('tollKm', { km: kmText(r.tollKm) }) : t('tollStill')));
+    if (r.hasToll && S.mode !== 'motorcycle') tags.append(tag(tollTag(r)));
     if (r.hasFerry) tags.append(tag(t('ferry')));
     const cost = pv ? tripPlan(pv, r.distanceKm)?.cost : null;
     if (cost != null) tags.append(tag(t(pv.kind === 'ev' ? 'costEv' : 'costFuel', { cost: money(cost) }), 'tag-cost'));
@@ -1543,6 +1553,7 @@ function renderRoutes() {
   }));
 
   const ready = S.routeState === 'ready' && S.routes.length > 0;
+  if (ready) loadAlong();
   $('start').disabled = !ready;
   $('add-stop').disabled = !ready;
   renderActions();
@@ -1613,7 +1624,9 @@ function renderPlan() {
     return row;
   }));
 
+  renderPlanAlong(route);
   renderPlanFuel(route);
+  renderPlanToll(route);
   renderPlanArrive(route);
   renderPlanConvoy();
   renderPlanParking();
@@ -1629,13 +1642,19 @@ function renderPlanFuel(route) {
   const v = pricedVehicle();
   const row = $('plan-fuel');
   row.hidden = S.mode === 'walk';
-  const kind = v?.kind || 'petrol';
-  $('plan-fuel-icon').innerHTML = kind === 'ev' ? UI.ev : UI.fuel;
+  const look = S.looks[driveMode()] || DEFAULT_LOOKS.car;
+  const lookKey = `${look.body}|${look.color}`;
+  if ($('plan-car-pic').dataset.look !== lookKey) {
+    $('plan-car-pic').dataset.look = lookKey;
+    $('plan-car-pic').innerHTML = vehiclePicture(look);
+  }
+  $('plan-car-name').textContent = v?.name || t(S.mode === 'motorcycle' ? 'motoYours' : 'carYours');
   $('plan-fuel-edit').textContent = t(v ? 'vehEditBtn' : 'vehAddBtn');
   $('plan-level-row').hidden = !v?.range;
   $('plan-charge').hidden = true;
   $('plan-fuel-price').hidden = true;
-  row.classList.remove('is-short');
+  $('plan-car-gauges').hidden = true;
+  row.classList.remove('is-short', 'is-tight');
   if (!v) {
     $('plan-fuel-title').textContent = t('vehAdd');
     $('plan-fuel-detail').textContent = t('vehAddDetail');
@@ -1655,6 +1674,14 @@ function renderPlanFuel(route) {
   } else {
     $('plan-fuel-title').textContent = t('planRangeNow', { km: kmText(plan.rangeNow) });
   }
+  // How full the tank or battery will be on arrival, and how far it goes now.
+  if (v.range && plan.rangeAtEnd != null) {
+    const pct = Math.max(0, Math.round((plan.rangeAtEnd / v.range) * 100));
+    $('plan-car-gauges').hidden = false;
+    $('plan-car-arrive-fill').style.transform = `scaleX(${Math.min(1, pct / 100)})`;
+    $('plan-car-arrive-text').textContent = t(v.kind === 'ev' ? 'carArriveEv' : 'carArrive', { pct });
+    $('plan-car-range').textContent = t('carRange', { km: kmText(plan.rangeNow) });
+  }
   let detail;
   if (plan.status === 'enough') detail = t('planEnough', { km: kmText(plan.rangeAtEnd) });
   else if (plan.status === 'tight') {
@@ -1672,9 +1699,201 @@ function renderPlanFuel(route) {
   $('plan-charge').textContent = t(S.evPlanning ? 'evPlanning' : 'evPlan');
   $('plan-charge').disabled = !!S.evPlanning;
   $('plan-fuel-detail').textContent = detail;
-  row.classList.toggle('is-short', !charging && (plan.status === 'short' || plan.status === 'tight'));
+  row.classList.toggle('is-short', !charging && plan.status === 'short');
+  row.classList.toggle('is-tight', !charging && plan.status === 'tight');
   $('plan-level').value = String(v.level);
   $('plan-level-value').textContent = `${v.level}%`;
+}
+
+/* ---------- Tolls, R&Rs and cameras along each route ---------- */
+
+const ALONG_RAIL_MAX = 40;
+const ALONG_WAIT_MS = 500;
+const SHOW_LOADING_KM = 30;
+
+// One request for every route on offer, a moment after they arrive.
+function loadAlong() {
+  if (S.view !== 'preview') return;
+  const routes = S.mode === 'walk' ? [] : S.routes.slice(0, 3);
+  const opts = {
+    tolls: S.mode !== 'motorcycle' && routes.some((r) => r.hasToll),
+    cameras: !!S.settings.speedCameras,
+    rests: true,
+  };
+  const key = `${routes.map((r) => r.id).join(',')}|${opts.tolls}|${opts.cameras}`;
+  if (S.along?.key === key) return;
+  S.alongCtrl?.abort();
+  clearTimeout(S.alongTimer);
+  if (!routes.length) { S.along = null; return; }
+  const ctrl = new AbortController();
+  S.alongCtrl = ctrl;
+  S.along = { key, state: 'loading', byRoute: new Map() };
+  S.alongPick = null;
+  S.alongTimer = setTimeout(() => {
+    fetchAlong(routes, { signal: ctrl.signal, ...opts }).then((found) => {
+      if (S.along?.key !== key) return;
+      const byRoute = new Map(routes.map((r) => {
+        const on = alongRoute(r, found);
+        return [r.id, { ...on, tolls: priceTolls(r, on.tolls) }];
+      }));
+      S.along = { key, state: 'ready', byRoute };
+    }).catch(() => {
+      if (S.along?.key === key && !ctrl.signal.aborted) S.along = { key, state: 'error', byRoute: new Map() };
+    }).finally(() => {
+      if (S.along?.key === key && S.view === 'preview') renderRoutes();
+    });
+  }, ALONG_WAIT_MS);
+}
+
+function retryAlong() {
+  if (S.along) S.along.key = '';
+  loadAlong();
+  renderRoutes();
+}
+
+const alongOf = (route) => (S.along?.state === 'ready' ? S.along.byRoute.get(route.id) || null : null);
+
+// The toll tag on a route option: its price when the plazas are known.
+function tollTag(route) {
+  const on = alongOf(route);
+  const sum = on ? tollTotal(on.tolls) : null;
+  if (sum?.total != null) return t(sum.unknown ? 'tollRmSome' : 'tollRm', { total: money(sum.total) });
+  return route.tollKm >= 1 ? t('tollKm', { km: kmText(route.tollKm) }) : t('tollStill');
+}
+
+function renderPlanToll(route) {
+  const wrap = $('plan-toll-wrap');
+  const state = S.along?.state;
+  const on = alongOf(route);
+  const tolls = on?.tolls || [];
+  const show = S.mode === 'car' && (route.hasToll || tolls.length > 0) && !!state;
+  wrap.hidden = !show;
+  if (!show) return;
+  const sum = tollTotal(tolls);
+  const title = $('plan-toll-title');
+  const detail = $('plan-toll-detail');
+  const canOpen = state === 'ready' && tolls.length > 0;
+  if (state === 'loading') {
+    title.textContent = t('tollCardTitle');
+    detail.textContent = t('tollCardLoading');
+  } else if (state === 'error') {
+    title.textContent = t('tollCardTitle');
+    detail.textContent = t('tollCardFailed');
+  } else if (!tolls.length) {
+    title.textContent = t('tollCardRoad');
+    detail.textContent = t('tollCardUnmapped');
+  } else {
+    title.textContent = sum.total == null ? t('tollCardNone', { n: sum.plazas })
+      : t(sum.unknown ? 'tollCardSome' : 'tollCardAll', { total: money(sum.total) });
+    const parts = [t('tollPlazaCount', { n: sum.plazas })];
+    if (sum.priced) parts.push(t('tollFareFrom', { roads: sum.roads.join(', ') }));
+    parts.push(sum.priced ? (sum.unknown ? t('tollUnknownSome', { n: sum.unknown }) : '') : t('tollUnknownAll'));
+    detail.textContent = parts.filter(Boolean).join(' · ');
+  }
+  const open = canOpen && !!S.tollOpen;
+  $('plan-toll').setAttribute('aria-expanded', String(open));
+  $('plan-toll').classList.toggle('is-open', open);
+  $('plan-toll-chev').hidden = !canOpen;
+  const list = $('toll-list');
+  list.hidden = !open;
+  if (!open) return;
+  list.replaceChildren(...tolls.map((toll) => {
+    const li = document.createElement('li');
+    const km = document.createElement('span');
+    km.className = 'toll-km';
+    km.textContent = kmText(toll.along / 1000);
+    const name = document.createElement('span');
+    name.className = 'toll-name';
+    const strong = document.createElement('strong');
+    strong.textContent = toll.name || t(toll.gantry ? 'tollGantry' : 'tollPlazaUnnamed');
+    name.append(strong);
+    if (toll.road) {
+      const road = document.createElement('span');
+      road.textContent = toll.road;
+      name.append(road);
+    }
+    const fare = document.createElement('span');
+    fare.className = toll.fare == null ? 'toll-fare is-unknown' : 'toll-fare';
+    fare.textContent = toll.fare == null ? t('tollFareUnknown') : `RM${money(toll.fare)}`;
+    li.append(km, name, fare);
+    return li;
+  }));
+}
+
+// What goes on the rail: every R&R, and cameras too while there's room.
+function railItems(on) {
+  const rests = on.rests.map((r) => ({ ...r, type: r.kind }));
+  let cameras = on.cameras.map((c) => ({ ...c, type: 'camera' }));
+  const room = ALONG_RAIL_MAX - rests.length;
+  if (cameras.length > room) {
+    const step = cameras.length / Math.max(1, room);
+    cameras = room > 0 ? Array.from({ length: room }, (_, i) => cameras[Math.floor(i * step)]) : [];
+  }
+  return [...rests, ...cameras].sort((a, b) => a.along - b.along);
+}
+
+const railName = (item) => {
+  if (item.type === 'camera') return item.limit ? t('alongCameraLimit', { limit: item.limit }) : t('alongCamera');
+  return item.name || t(item.type === 'rnr' ? 'nameRest' : 'nameLayby');
+};
+const railIcon = (item) => (item.type === 'camera' ? UI.camera : item.type === 'rnr' ? UI.coffee : UI.rest);
+
+function renderPlanAlong(route) {
+  const wrap = $('plan-along');
+  const state = S.along?.state;
+  const on = alongOf(route);
+  const items = on ? railItems(on) : [];
+  const loadingLong = state === 'loading' && route.distanceKm >= SHOW_LOADING_KM;
+  wrap.hidden = S.mode === 'walk' || !(items.length || loadingLong);
+  if (wrap.hidden) return;
+  $('plan-along-title').textContent = t('alongTitle');
+  $('plan-along-status').textContent = state === 'loading' ? t('alongLoading') : '';
+  const pick = items.find((x) => x.id === S.alongPick) || null;
+  const rail = $('along-rail');
+  const key = JSON.stringify([route.id, getLang(), items.map((x) => x.id), pick?.id]);
+  if (rail.dataset.key !== key) {
+    rail.dataset.key = key;
+    rail.replaceChildren(...items.map((item) => {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `along-stop along-${item.type}`;
+      btn.setAttribute('aria-pressed', String(item === pick));
+      const sign = document.createElement('span');
+      sign.className = 'along-sign';
+      sign.innerHTML = railIcon(item);
+      const km = document.createElement('span');
+      km.className = 'along-km';
+      km.textContent = kmText(item.along / 1000);
+      const name = document.createElement('span');
+      name.className = 'along-name';
+      name.textContent = railName(item);
+      btn.append(sign, km, name);
+      btn.addEventListener('click', () => {
+        S.alongPick = S.alongPick === item.id ? null : item.id;
+        renderPlanAlong(S.routes[S.selected]);
+      });
+      li.append(btn);
+      return li;
+    }));
+  }
+  const card = $('along-card');
+  card.hidden = !pick;
+  if (!pick) return;
+  const clock = fmtClock(new Date(Date.now() + timeBetween(route, 0, pick.along) * 1000), getLang());
+  const icon = $('along-card-icon');
+  icon.className = `along-sign along-${pick.type}`;
+  icon.innerHTML = railIcon(pick);
+  $('along-card-name').textContent = railName(pick);
+  $('along-card-when').textContent = t('alongReach', { clock, km: kmText(pick.along / 1000) });
+  const add = $('along-card-add');
+  add.hidden = pick.type === 'camera';
+  add.textContent = t('alongAddStop');
+  add.onclick = () => {
+    S.alongPick = null;
+    addStop({ id: pick.id, name: railName(pick), lat: pick.lat, lng: pick.lng, category: 'rest' });
+    toast(t('stopAdded'));
+  };
 }
 
 /* ---------- Charging stops for an electric car ---------- */
@@ -2468,6 +2687,12 @@ function saveTrip() {
 }
 
 function startGuidance({ simulate }) {
+  // Still waiting on what's along the routes: not needed once you're driving.
+  if (S.along?.state === 'loading') {
+    S.alongCtrl?.abort();
+    clearTimeout(S.alongTimer);
+    S.along = null;
+  }
   S.guidance = new Guidance(S.route, { walking: S.mode === 'walk' });
   S.greeted = false;
   // Driving time carries on into the next trip unless there was a proper rest.
@@ -4207,6 +4432,12 @@ function wire() {
     renderPlanParking();
   });
   $('plan-parking-clear').addEventListener('click', clearParking);
+  $('plan-toll').addEventListener('click', () => {
+    if (S.along?.state === 'error') { retryAlong(); return; }
+    if (S.along?.state !== 'ready') return;
+    S.tollOpen = !S.tollOpen;
+    renderPlanToll(S.routes[S.selected]);
+  });
   $('btn-settings').addEventListener('click', () => {
     openOverlay('settings');
     renderVoiceStatus();

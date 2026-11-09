@@ -146,7 +146,7 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       return warnings ? route.fulfill({ json: warnings(), headers: CORS }) : route.abort();
     }
     // Everything a stop search asks goes silent, and stays silent.
-    if (hangAll && (url.endsWith('.pbf') || host.includes('overpass') || host === 'ovp.dresel.systems' || url.includes('include='))) return undefined;
+    if (hangAll && (url.endsWith('.pbf') || host.includes('overpass') || url.includes('include='))) return undefined;
     const tile = url.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
     if (tile && tiles) {
       log.tiles.push(url);
@@ -157,7 +157,7 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       });
       return route.fulfill({ body: Buffer.from(encodeTile({ z, x, y }, { poi })), headers: CORS, contentType: 'application/x-protobuf' });
     }
-    if (host === 'overpass-api.de' || host === 'overpass.private.coffee' || host === 'ovp.dresel.systems') {
+    if (host === 'overpass-api.de' || host === 'overpass.private.coffee' || host === 'overpass.kumi.systems') {
       log.overpass.push(route.request().postData());
       if (log.overpassFail) return route.abort();
       const asked = decodeURIComponent((route.request().postData() || '').replace(/\+/g, ' '));
@@ -269,6 +269,8 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
 }
 
 const vis = (page, sel) => page.locator(sel).isVisible();
+// Overpass requests other than the one for tolls, cameras and R&Rs along the routes on offer.
+const notAlong = (log) => log.overpass.filter((b) => !/tags\+1500|tags 1500/.test(b));
 const text = (page, sel) => page.locator(sel).innerText();
 const said = (page) => page.evaluate(() => window.__said);
 
@@ -1263,8 +1265,8 @@ await check('stops: searches along the route, adds one, routes through it', asyn
   assert.equal(await page.locator('.route-opt').count(), 2);
   await page.click('#add-stop');
   await page.waitForSelector('#stops-list .place');
-  assert.match(decodeURIComponent(log.overpass[0]), /"amenity"="fuel"/);
-  assert.match(decodeURIComponent(log.overpass[0].replace(/\+/g, ' ')), /around:1500,3\.15000,101\.70000/);
+  assert.match(decodeURIComponent(notAlong(log)[0]), /"amenity"="fuel"/);
+  assert.match(decodeURIComponent(notAlong(log)[0].replace(/\+/g, ' ')), /around:1500,3\.15000,101\.70000/);
   assert.equal(await page.locator('.cat').count(), 5);
   const first = await page.locator('#stops-list .place').first().innerText();
   assert.match(first, /Petronas Ampang/);
@@ -1334,12 +1336,15 @@ await check('stops: nothing found, and failure, are both explained', async () =>
   await empty.page.waitForFunction(() => /Tiada dijumpai/.test(document.getElementById('stops-status').textContent));
   await empty.ctx.close();
   const bad = await newApp(browser, quiet);
+  await toPreview(bad.page);
+  // Once the routes' own request is answered, everything stops answering.
+  for (let i = 0; i < 60 && !bad.log.overpass.length; i++) await bad.page.waitForTimeout(50);
+  await bad.page.waitForTimeout(200);
   bad.log.overpassFail = true;
   bad.log.photonStopsFail = true;
-  await toPreview(bad.page);
   await bad.page.click('#add-stop');
   await bad.page.waitForFunction(() => /tak dapat dimuatkan/.test(document.getElementById('stops-status').textContent));
-  assert.equal(bad.log.overpass.length, 3, 'tried each server');
+  assert.equal(notAlong(bad.log).length, 3, 'tried each server');
   assert.ok(bad.log.photonStops >= 1, 'and the search service');
   // Things recover, and the retry button finds them.
   bad.log.photonStopsFail = false;
@@ -1567,7 +1572,7 @@ await check('solat: shown when close, nowhere otherwise, and offers a surau', as
   await chip.click();
   await page.waitForSelector('#stops:not([hidden])');
   assert.equal(await page.locator('.cat[aria-checked="true"]').innerText(), 'Surau');
-  assert.match(decodeURIComponent(log.overpass.at(-1)), /"religion"="muslim"/);
+  assert.match(decodeURIComponent(notAlong(log).at(-1)), /"religion"="muslim"/);
   assert.equal(log.solat.length, 1, 'one request for the whole session');
   assert.deepEqual(log.errors, []);
   await ctx.close();
@@ -1649,7 +1654,7 @@ await check('stops: found in the map tiles, with no other server needed', async 
   await page.waitForFunction(() => document.getElementById('stops-status').textContent === '');
   assert.match(await text(page, '#stops-list'), /Petronas Dari Peta/);
   assert.match(await text(page, '#stops-list'), /Shell Dari Peta/);
-  assert.equal(log.overpass.length, 0);
+  assert.equal(notAlong(log).length, 0);
   assert.match(log.tiles[0], /\/planet\/latest\/14\/\d+\/\d+\.pbf$/);
   assert.ok(log.tiles.length <= 30, String(log.tiles.length));
   const pins = await page.evaluate(() => document.querySelectorAll('.map-pin').length);
@@ -4910,6 +4915,102 @@ await check('in a browser on an Android phone, the app is offered', async () => 
   assert.equal(await page.getAttribute('#app-link', 'href'), 'https://github.com/ashraviinrajthinagaraj/pintu/releases/download/android/pintu.apk');
   await smallTargets(page, 'app link', ['#app-link']);
   await noOverflow(page, 'settings with the app link');
+  await ctx.close();
+});
+
+// A drive on three highways: two with fixed car fares, one where it depends on where you got on.
+const plannedTrip = () => buildTrip(P.a, [
+  { to: P.b, type: 1, street: ['E11', 'Lebuhraya Damansara–Puchong'], kph: 90, toll: true, highway: true },
+  { to: P.c, type: 10, street: ['E5', 'Lebuhraya Shah Alam'], kph: 90, toll: true, highway: true },
+  { to: P.d, type: 15, street: ['E1', 'Lebuhraya Utara–Selatan'], kph: 100, toll: true, highway: true },
+], { has_toll: true, has_highway: true });
+// Answers only what was asked, as Overpass would.
+const onTheWay = () => (asked) => {
+  const node = (id, [lng, lat], tags) => ({ type: 'node', id, lat, lon: lng, tags });
+  const rnr = along(P.b, P.c, 0.4);
+  const wanted = (el) => (el.tags.barrier ? asked.includes('toll_booth') : el.tags.highway === 'speed_camera' ? asked.includes('speed_camera') : true);
+  return { elements: [
+    node(81, along(P.a, P.b, 0.5), { barrier: 'toll_booth', name: 'Plaza Tol Penchala' }),
+    node(82, along(P.b, P.c, 0.6), { barrier: 'toll_booth' }),
+    node(83, along(P.c, P.d, 0.6), { barrier: 'toll_booth', name: 'Plaza Tol Sungai Besi' }),
+    { type: 'way', id: 84, center: { lat: rnr[1], lon: rnr[0] - 0.002 }, tags: { highway: 'services', name: 'R&R Ujian' } },
+    node(85, [rnr[0] + 0.002, rnr[1]], { highway: 'rest_area', name: 'Untuk arah lain' }),
+    node(86, along(P.c, P.d, 0.3), { highway: 'speed_camera', maxspeed: '110' }),
+  ].filter(wanted) };
+};
+
+await check('route plan: your car, the tolls with known fares, and R&Rs along the way', async () => {
+  const storage = {
+    'pintu.safetySeen': 'true',
+    'pintu.vehicles': { car: { name: 'Myvi', kind: 'petrol', consumption: 6, range: 400, level: 60, price: 2.05 } },
+    'pintu.looks': { car: { body: 'sedan', color: '#C4202A' } },
+  };
+  const { ctx, page, log } = await newApp(browser, { scale: 2, storage, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toPreview(page);
+  await page.waitForFunction(() => /RM4\.10/.test(document.getElementById('plan-toll-title').textContent));
+  assert.equal(new Set(log.overpass).size, 1, 'one request for tolls, cameras and R&Rs together');
+  assert.equal(await text(page, '#plan-toll-title'), 'Tol sekurang-kurangnya RM4.10');
+  assert.match(await text(page, '#plan-toll-detail'), /3 plaza · harga kereta untuk LDP, KESAS · harga 1 plaza lagi tak diketahui/);
+  assert.match(await text(page, '.route-opt .route-tags'), /Tol RM4\.10\+/);
+
+  await page.click('#plan-toll');
+  const plazas = await page.locator('#toll-list li').allInnerTexts();
+  assert.equal(plazas.length, 3);
+  assert.match(plazas[0], /Plaza Tol Penchala[\s\S]*LDP[\s\S]*RM2\.10/);
+  assert.match(plazas[1], /Plaza tol[\s\S]*KESAS[\s\S]*RM2\.00/);
+  assert.match(plazas[2], /Plaza Tol Sungai Besi[\s\S]*RM \?/);
+
+  assert.equal(await text(page, '#plan-car-name'), 'Myvi');
+  assert.equal(await page.locator('#plan-car-pic svg path[fill="#C4202A"]').count() > 0, true, 'the car in its own colour');
+  assert.match(await text(page, '#plan-car-arrive-text'), /^Tangki 59% bila sampai$/);
+  assert.match(await text(page, '#plan-car-range'), /Sekarang cukup untuk 240 km/);
+
+  const rail = await page.locator('#along-rail li').allInnerTexts();
+  assert.equal(rail.length, 2, 'the R&R on your side and the camera, not the one across the road');
+  assert.match(rail[0], /R&R Ujian/);
+  assert.match(rail[1], /Kamera laju, had 110/);
+  await page.locator('#along-rail .along-stop').first().click();
+  assert.match(await text(page, '#along-card-when'), /km dari mula · sampai lebih kurang \d/);
+  await noOverflow(page, 'route plan');
+  await smallTargets(page, 'route plan', ['#plan-toll', '#along-rail .along-stop', '#along-card-add']);
+  await page.screenshot({ path: `${shots}/70-route-plan.png`, fullPage: false });
+  await page.evaluate(() => document.getElementById('plan-fuel').scrollIntoView({ block: 'start' }));
+  await page.screenshot({ path: `${shots}/71-route-plan-tolls.png` });
+
+  await page.locator('#along-rail .along-stop').nth(1).click();
+  assert.equal(await vis(page, '#along-card-add'), false, 'a camera is not a place to stop');
+  await page.locator('#along-rail .along-stop').first().click();
+  await page.click('#along-card-add');
+  await page.waitForFunction(() => /R&R Ujian/.test(document.getElementById('plan-stops').textContent));
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('route plan: on a motorcycle, no tolls; with camera warnings off, no cameras; in Tamil on a small phone, it all fits', async () => {
+  const storage = { 'pintu.safetySeen': 'true', 'pintu.mode': '"motorcycle"', 'pintu.settings': { speedCameras: false, lang: 'ta' } };
+  const { ctx, page, log } = await newApp(browser, { scale: 2, storage, viewport: { width: 320, height: 568 }, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toPreview(page);
+  await page.waitForFunction(() => document.querySelectorAll('#along-rail li').length > 0);
+  const asked = decodeURIComponent(log.overpass[0]);
+  assert.doesNotMatch(asked, /toll_booth|speed_camera/);
+  assert.equal(await vis(page, '#plan-toll-wrap'), false);
+  assert.doesNotMatch(await text(page, '.route-opt'), /RM\d/);
+  assert.equal(await page.locator('#along-rail li').count(), 1);
+  assert.match(await text(page, '#plan-car-name'), /மோட்டார் சைக்கிள்/);
+  await noOverflow(page, 'route plan, Tamil, 320');
+  await page.evaluate(() => document.getElementById('plan-along').scrollIntoView({ block: 'start' }));
+  await page.screenshot({ path: `${shots}/72-route-plan-small.png` });
+  await ctx.close();
+});
+
+await check('route plan: when the plazas can\'t be found, it says so and never shows RM0', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: plannedTrip() }) });
+  log.overpassFail = true;
+  await toPreview(page);
+  await page.waitForFunction(() => /tak dapat dicari/.test(document.getElementById('plan-toll-detail').textContent));
+  assert.doesNotMatch(await text(page, '#route-list'), /RM0/);
+  assert.match(await text(page, '.route-opt .route-tags'), /Tol, /);
+  assert.equal(await vis(page, '#plan-along'), false);
   await ctx.close();
 });
 

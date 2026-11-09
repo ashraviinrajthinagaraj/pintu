@@ -21,7 +21,8 @@ test('cameras are asked for along the whole route, in one request', () => {
   assert.ok(points.length <= 401);
   const q = cameraQuery(points);
   assert.match(q, /node\["highway"="speed_camera"\]\(around:150,3\.15000,101\.70000,/);
-  assert.match(q, /out tags/);
+  // Plain "out tags" leaves out where each camera is; "center" puts it back.
+  assert.match(q, /out center tags/);
 });
 
 test('a camera\'s limit is read when it\'s mapped, and only a sensible one', () => {

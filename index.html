@@ -128,10 +128,25 @@
 
   <div id="plan" class="plan" hidden>
     <div id="plan-stops" class="plan-stops"></div>
+    <!-- R&Rs and cameras along the way, like the services signs on an expressway -->
+    <div id="plan-along" class="plan-along" hidden>
+      <p class="along-head"><strong id="plan-along-title"></strong><span id="plan-along-status"></span></p>
+      <ol id="along-rail" class="along-rail"></ol>
+      <div id="along-card" class="along-card" hidden>
+        <span id="along-card-icon" class="along-sign" aria-hidden="true"></span>
+        <p class="plan-main"><strong id="along-card-name"></strong><span id="along-card-when"></span></p>
+        <button id="along-card-add" class="plate plate-btn plate-small" type="button"></button>
+      </div>
+    </div>
     <div id="plan-fuel" class="plan-row plan-fuel">
-      <span class="plan-icon" id="plan-fuel-icon"></span>
+      <span id="plan-car-pic" class="car-pic" aria-hidden="true"></span>
       <div class="plan-main">
+        <span id="plan-car-name" class="car-name"></span>
         <strong id="plan-fuel-title"></strong>
+        <span id="plan-car-gauges" class="car-gauges" hidden>
+          <span id="plan-car-arrive" class="gauge"><span class="gauge-bar"><span id="plan-car-arrive-fill" class="gauge-fill"></span></span><span id="plan-car-arrive-text"></span></span>
+          <span id="plan-car-range" class="gauge-km"></span>
+        </span>
         <span id="plan-fuel-detail"></span>
         <span id="plan-fuel-price" class="plan-price" hidden></span>
         <button id="plan-charge" class="plate plate-btn plate-small plan-charge" type="button" hidden></button>
@@ -141,6 +156,14 @@
         </div>
       </div>
       <button id="plan-fuel-edit" class="link-btn" type="button"></button>
+    </div>
+    <div id="plan-toll-wrap" hidden>
+      <button id="plan-toll" class="plan-row" type="button" aria-expanded="false" aria-controls="toll-list">
+        <span id="plan-toll-icon" class="plan-icon toll-plate"></span>
+        <span class="plan-main"><strong id="plan-toll-title"></strong><span id="plan-toll-detail"></span></span>
+        <span id="plan-toll-chev" class="plan-chev"></span>
+      </button>
+      <ol id="toll-list" class="toll-list" hidden></ol>
     </div>
     <div id="plan-arrive" class="plan-row">
       <span class="plan-icon" id="plan-arrive-icon"></span>

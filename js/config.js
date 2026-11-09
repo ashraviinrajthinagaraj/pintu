@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.9.7',
+  version: '0.9.8',
 
   maplibre: {
     version: '5.24.0',
@@ -42,11 +42,13 @@ export const CONFIG = {
   },
   // The map's own tiles, for finding stops when the map hasn't said where it gets them.
   poiTiles: 'https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf',
-  // The main server is often overloaded, so it isn't asked first.
+  // Asked two at a time, and the first answer wins, so every one of these must
+  // hold the whole world: a server with only part of it answers "nothing here"
+  // fastest of all.
   overpass: [
     'https://overpass.private.coffee/api/interpreter',
-    'https://ovp.dresel.systems/api/interpreter',
     'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
   ],
 
   // JAKIM's prayer times, by zone worked out from where you are.
