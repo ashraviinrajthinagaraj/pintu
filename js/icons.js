@@ -114,6 +114,12 @@ export const UI = {
   mic: line('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>'),
   battery: line('<rect x="3" y="7.5" width="16" height="9" rx="2"/><path d="M21.5 10.5v3"/><path d="M6 10.5h5v3H6Z" fill="currentColor" stroke-width="1.4"/>'),
   month: line('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M7.5 17v-3M12 17v-4.5M16.5 17v-2"/>'),
+  // A traffic light with its lamps lit, so it isn't mistaken for the jam report.
+  signal: line('<rect x="7.5" y="2.5" width="9" height="19" rx="3.2"/><circle cx="12" cy="7" r="1.9" fill="#E53935" stroke="none"/><circle cx="12" cy="12" r="1.9" fill="#FBC02D" stroke="none"/><circle cx="12" cy="17" r="1.9" fill="#43A047" stroke="none"/>'),
+  bump: line('<path d="M2.5 18.5h19"/><path d="M5 18.5c2-6 12-6 14 0"/><path d="M9.5 14.2l1-1.6M13.5 14.2l-1-1.6"/>'),
+  // The crossed boards that stand at a level crossing.
+  railCross: line('<path d="M4.5 5.5l15 13M19.5 5.5l-15 13"/><path d="M12 12v9.5"/>'),
+  route: line('<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 17V12a4 4 0 0 1 4-4h6M8 19h6a4 4 0 0 0 4-4V7"/>'),
 };
 
 export const CATEGORY_ICONS = { sights: UI.star, hotel: UI.bed, parking: UI.parking, fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };

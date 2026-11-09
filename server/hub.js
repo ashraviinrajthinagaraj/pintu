@@ -4,6 +4,8 @@
 //   road reports: police, accidents, hazards    (each gone after an hour or a few)
 //   convoys: friends driving to the same place  (gone 12 hours after the last move)
 //   morning alerts: home, work and a time       (until switched off)
+//   a parking reminder: when the time paid ends (gone an hour after it ends)
+//   toll fares drivers say they paid, at a plaza and after which plaza (a year)
 //
 // One Durable Object holds it all in its own small SQLite database. Nothing here
 // says who anyone is: names are whatever people type, and a phone is a random code.
@@ -23,6 +25,13 @@ export const REPORTS_PER_HOUR = 12;
 export const COMMUTE_PER_RUN = 15;
 export const TESTS_PER_DAY = 5;
 const MESSAGE_MS = 3 * 3600e3;
+export const PARKING_WARN_MS = 10 * 60e3;     // the reminder comes this long before the time is up
+export const PARKING_MAX_MS = 24 * 3600e3;
+export const REMINDERS_PER_RUN = 30;
+export const FARES_PER_DAY = 60;              // one phone, in a day
+export const FARES_KEEP_MS = 400 * 86400e3;
+export const FARES_SHOWN = 20;                // the newest, per plaza
+const PLAZA = /^(node|way)\/\d{1,12}$/;
 const PUSH_SUB = 'https://ashraviinrajthinagaraj.github.io/pintu/';
 
 // Push services the server will send to, and nothing else.
@@ -36,6 +45,9 @@ CREATE TABLE IF NOT EXISTS convoys (id TEXT PRIMARY KEY, dest TEXT, started INTE
 CREATE TABLE IF NOT EXISTS members (convoy TEXT, member TEXT, key TEXT, name TEXT, pos TEXT, eta INTEGER, remaining INTEGER, at INTEGER, left INTEGER, PRIMARY KEY (convoy, member));
 CREATE TABLE IF NOT EXISTS commuters (id TEXT PRIMARY KEY, key TEXT, endpoint TEXT UNIQUE, home TEXT, work TEXT, time TEXT, days TEXT, slow_only INTEGER, lang TEXT, sent_day TEXT, message TEXT, message_at INTEGER, tests_day TEXT, tests INTEGER);
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS fares (id INTEGER PRIMARY KEY AUTOINCREMENT, plaza TEXT, prev TEXT, rm REAL, at INTEGER, device TEXT);
+CREATE INDEX IF NOT EXISTS fares_plaza ON fares (plaza, at);
+CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY, key TEXT, endpoint TEXT UNIQUE, at INTEGER, until INTEGER, lang TEXT, sent INTEGER, message TEXT, message_at INTEGER);
 `;
 
 /* ---------- Checking what phones send ---------- */
@@ -165,6 +177,22 @@ const MORNING = {
 };
 export const MORNING_LANGS = Object.keys(MORNING);
 
+const PARKING = {
+  ms: { title: 'Masa parkir hampir tamat', body: (n, c) => `Parkir anda tamat dalam ${n} minit, jam ${c}.`, over: (c) => `Parkir anda tamat jam ${c}.` },
+  en: { title: 'Parking nearly up', body: (n, c) => `Your parking ends in ${n} minutes, at ${c}.`, over: (c) => `Your parking ended at ${c}.` },
+  zh: { title: '停车时间快到了', body: (n, c) => `您的停车时间将在 ${n} 分钟后（${c}）结束。`, over: (c) => `您的停车时间已在 ${c} 结束。` },
+  ta: { title: 'பார்க்கிங் நேரம் முடியப்போகிறது', body: (n, c) => `உங்கள் பார்க்கிங் ${n} நிமிடங்களில், ${c} மணிக்கு முடியும்.`, over: (c) => `உங்கள் பார்க்கிங் ${c} மணிக்கு முடிந்தது.` },
+};
+
+// What a parking reminder says, worked out when it's sent: cron runs every
+// five minutes, so the minutes left are counted then, not when it was set.
+export function parkingMessage(until, now, lang = 'ms') {
+  const l = PARKING[lang] ? lang : 'ms';
+  const w = PARKING[l];
+  const left = Math.round((until - now) / 60e3);
+  return { title: w.title, body: left >= 1 ? w.body(left, clock(until, l)) : w.over(clock(until, l)), url: './?go=car', tag: 'parking' };
+}
+
 // What to say, from TomTom's live and usual times for the trip.
 export function commuteMessage({ travel, usual }, now, lang = 'ms') {
   const w = MORNING[lang] || MORNING.ms;
@@ -260,6 +288,10 @@ export class Hub {
       case '/commute/off': return this.commuteOff(body);
       case '/commute/test': return this.commuteTest(body);
       case '/commute/message': return this.commuteMessageFor(body);
+      case '/remind/set': return this.remindSet(body);
+      case '/fares/add': return this.faresAdd(body);
+      case '/fares': return this.faresGet(q.get('ids'));
+      case '/remind/off': return this.remindOff(body);
       case '/cron': return json(await this.cron());
       default: return nope('not found', 404);
     }
@@ -491,11 +523,90 @@ export class Hub {
   }
 
   // The service worker asks what to show, giving the endpoint it was woken on.
+  // A phone has one endpoint for both, so whichever was sent last is the one it was woken for.
   commuteMessageFor(b) {
     const sub = cleanSubscription(b);
-    const c = sub ? this.row('SELECT message, message_at FROM commuters WHERE endpoint = ?', sub.endpoint) : null;
-    if (!c?.message || this.now() - c.message_at > MESSAGE_MS) return nope('nothing', 404);
-    return json(JSON.parse(c.message));
+    if (!sub) return nope('nothing', 404);
+    const found = [
+      this.row('SELECT message, message_at FROM commuters WHERE endpoint = ?', sub.endpoint),
+      this.row('SELECT message, message_at FROM reminders WHERE endpoint = ?', sub.endpoint),
+    ].filter((r) => r?.message && this.now() - r.message_at <= MESSAGE_MS).sort((a, b) => b.message_at - a.message_at);
+    if (!found.length) return nope('nothing', 404);
+    return json(JSON.parse(found[0].message));
+  }
+
+  /* ----- Toll fares drivers paid ----- */
+
+  // What a car paid at each plaza on one trip. `prev` is the plaza before it on
+  // that trip: on a closed highway the fare at the exit depends on the entry.
+  faresAdd(b) {
+    const device = isId(b?.device, 16) ? b.device : null;
+    const paid = Array.isArray(b?.paid) ? b.paid.slice(0, 20) : null;
+    if (!device || !paid?.length) return nope('not fares');
+    const clean = paid.map((p) => ({
+      plaza: typeof p?.plaza === 'string' && PLAZA.test(p.plaza) ? p.plaza : null,
+      prev: typeof p?.prev === 'string' && PLAZA.test(p.prev) ? p.prev : null,
+      rm: finite(p?.rm, 0, 300),
+    }));
+    if (clean.some((p) => !p.plaza || p.rm == null)) return nope('not fares');
+    const now = this.now();
+    const today = this.row('SELECT COUNT(*) AS n FROM fares WHERE device = ? AND at > ?', device, now - 86400e3).n;
+    if (today + clean.length > FARES_PER_DAY) return nope('too many', 429);
+    for (const p of clean) {
+      this.run('INSERT INTO fares (plaza, prev, rm, at, device) VALUES (?, ?, ?, ?, ?)', p.plaza, p.prev, Math.round(p.rm * 100) / 100, now, device);
+    }
+    return json({ ok: true, added: clean.length });
+  }
+
+  faresGet(ids) {
+    const list = [...new Set(String(ids || '').split(',').filter((id) => PLAZA.test(id)))].slice(0, 80);
+    if (!list.length) return nope('which plazas?');
+    const out = {};
+    for (const plaza of list) {
+      const rows = this.rows('SELECT prev, rm, at FROM fares WHERE plaza = ? ORDER BY at DESC LIMIT ?', plaza, FARES_SHOWN);
+      if (rows.length) out[plaza] = rows.map((r) => ({ prev: r.prev, rm: r.rm, at: r.at }));
+    }
+    return json({ fares: out });
+  }
+
+  /* ----- Parking reminders ----- */
+
+  remindSet(b) {
+    const sub = cleanSubscription(b?.sub);
+    if (!sub) return nope('notifications not supported here');
+    const now = this.now();
+    const until = finite(b?.until, now + 60e3, now + PARKING_MAX_MS);
+    if (until == null) return nope('not a time');
+    const lang = MORNING_LANGS.includes(b.lang) ? b.lang : 'ms';
+    const known = isId(b.id, 10) && isId(b.key, 22) ? this.row('SELECT * FROM reminders WHERE id = ?', b.id) : null;
+    const mine = known && known.key === b.key;
+    const id = mine ? known.id : randomId(10);
+    const key = mine ? known.key : randomId(22);
+    this.run('DELETE FROM reminders WHERE endpoint = ? AND id != ?', sub.endpoint, id);
+    this.run(`INSERT INTO reminders (id, key, endpoint, at, until, lang, sent, message, message_at) VALUES (?, ?, ?, ?, ?, ?, 0, NULL, 0)
+      ON CONFLICT(id) DO UPDATE SET endpoint = excluded.endpoint, at = excluded.at, until = excluded.until, lang = excluded.lang, sent = 0`,
+    id, key, sub.endpoint, Math.round(Math.max(now, until - PARKING_WARN_MS)), Math.round(until), lang);
+    return json({ id, key, at: Math.round(Math.max(now, until - PARKING_WARN_MS)) });
+  }
+
+  remindOff(b) {
+    if (!isId(b?.id, 10) || !isId(b?.key, 22)) return json({ ok: true });
+    const r = this.row('SELECT * FROM reminders WHERE id = ?', b.id);
+    if (r && r.key === b.key) this.run('DELETE FROM reminders WHERE id = ?', r.id);
+    return json({ ok: true });
+  }
+
+  // Wakes a phone. It then asks what to show.
+  async wake(endpoint, now, ttl) {
+    const keys = await this.vapid();
+    try {
+      return await this.fetchImpl(endpoint, {
+        method: 'POST',
+        headers: { TTL: String(ttl), Urgency: 'high', Authorization: await vapidHeader(endpoint, keys, now), 'Content-Length': '0' },
+      });
+    } catch {
+      return null;
+    }
   }
 
   async commuteTest(b) {
@@ -519,16 +630,8 @@ export class Hub {
     const message = commuteMessage(times, now, c.lang);
     if (c.slow_only && !message.slow && !force) return { ok: true, quiet: true };
     this.run('UPDATE commuters SET message = ?, message_at = ? WHERE id = ?', JSON.stringify(message), now, c.id);
-    const keys = await this.vapid();
-    let res;
-    try {
-      res = await this.fetchImpl(c.endpoint, {
-        method: 'POST',
-        headers: { TTL: '1800', Urgency: 'high', Authorization: await vapidHeader(c.endpoint, keys, now), 'Content-Length': '0' },
-      });
-    } catch {
-      return { ok: false, why: 'could not reach the phone' };
-    }
+    const res = await this.wake(c.endpoint, now, 1800);
+    if (!res) return { ok: false, why: 'could not reach the phone' };
     // The phone has turned notifications off or uninstalled: forget the alert.
     if (res.status === 404 || res.status === 410) {
       this.run('DELETE FROM commuters WHERE id = ?', c.id);
@@ -547,6 +650,8 @@ export class Hub {
       this.run('DELETE FROM members WHERE convoy = ?', id);
       this.run('DELETE FROM convoys WHERE id = ?', id);
     }
+    this.run('DELETE FROM reminders WHERE until < ?', now - 3600e3);
+    this.run('DELETE FROM fares WHERE at < ?', now - FARES_KEEP_MS);
     const due = this.rows('SELECT * FROM commuters').filter((c) => commuteDue(c, now)).slice(0, COMMUTE_PER_RUN);
     let sent = 0;
     for (const c of due) {
@@ -554,6 +659,13 @@ export class Hub {
       const r = await this.alert(c, now);
       if (r.ok && !r.quiet) sent++;
     }
-    return { due: due.length, sent };
+    const reminders = this.rows('SELECT * FROM reminders WHERE sent = 0 AND at <= ? ORDER BY at LIMIT ?', now, REMINDERS_PER_RUN);
+    for (const r of reminders) {
+      this.run('UPDATE reminders SET sent = 1, message = ?, message_at = ? WHERE id = ?', JSON.stringify(parkingMessage(r.until, now, r.lang)), now, r.id);
+      const res = await this.wake(r.endpoint, now, Math.max(60, Math.round((r.until - now) / 1000)));
+      if (res && (res.status === 404 || res.status === 410)) this.run('DELETE FROM reminders WHERE id = ?', r.id);
+      else if (res?.ok) sent++;
+    }
+    return { due: due.length + reminders.length, sent };
   }
 }

@@ -165,6 +165,11 @@
       </button>
       <ol id="toll-list" class="toll-list" hidden></ol>
     </div>
+    <div id="plan-other" class="plan-row plan-other" hidden>
+      <span id="plan-other-icon" class="plan-icon"></span>
+      <div class="plan-main"><strong id="plan-other-title"></strong><span id="plan-other-detail"></span></div>
+      <button id="plan-other-go" class="link-btn" type="button"></button>
+    </div>
     <div id="plan-arrive" class="plan-row">
       <span class="plan-icon" id="plan-arrive-icon"></span>
       <label class="plan-main" for="plan-arrive-time"><strong id="plan-arrive-title"></strong><span id="plan-arrive-detail"></span></label>
@@ -253,6 +258,7 @@
     <div id="speed-limit" class="limit-sign" hidden></div>
     <div id="speed" class="speed" hidden><strong id="speed-value"></strong><span id="speed-unit"></span></div>
     <div id="camera-alert" class="camera-alert" role="status" hidden><span id="camera-icon" class="camera-icon"></span><span id="camera-distance"></span><span id="camera-limit" class="camera-limit" hidden></span></div>
+    <div id="road-alert" class="road-alert" role="status" hidden><span id="road-alert-icon" class="road-alert-icon"></span><span id="road-alert-distance"></span></div>
     <div id="jam-alert" class="jam-alert" role="status" hidden><span id="jam-icon" class="jam-icon"></span><span id="jam-distance"></span><span id="jam-delay" class="jam-delay"></span></div>
     <div id="report-alert" class="jam-alert report-alert" role="status" hidden><span id="report-icon" class="jam-icon"></span><span id="report-distance"></span></div>
     <div id="nav-range" class="range-pill" hidden></div>
@@ -651,6 +657,20 @@
         <input id="camera-on" type="checkbox">
         <span class="switch-track" aria-hidden="true"></span>
         <span id="camera-on-label"></span>
+      </label>
+    </div>
+    <div class="setting">
+      <h3 id="set-road-title"></h3>
+      <p id="road-text" class="tip"></p>
+      <label class="switch switch-block">
+        <input id="road-on" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="road-on-label"></span>
+      </label>
+      <label class="switch switch-block">
+        <input id="lights-say" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span id="lights-say-label"></span>
       </label>
     </div>
     <div class="setting">

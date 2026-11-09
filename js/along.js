@@ -5,6 +5,7 @@ import { CONFIG } from './config.js';
 import { camerasOnRoute } from './cameras.js';
 import { overpass, placeOnRoute } from './places.js';
 import { tollsOnRoute } from './tolls.js';
+import { featureStatements, featuresOnRoute, parseFeature } from './road-features.js';
 
 const MAX_POINTS = 220;       // per route, to keep one request a sensible size
 const TOLL_NEAR_M = 120;
@@ -33,21 +34,25 @@ export function linePoints(route, max = MAX_POINTS) {
 }
 
 // Only what's wanted: no tolls for a motorcycle, no cameras if their warning is off.
-export function alongQuery(routes, { tolls = true, cameras = true, rests = true } = {}) {
+// Traffic lights, bumps and railway crossings come too, for counting and for the drive.
+export function alongQuery(routes, { tolls = true, cameras = true, rests = true, features = true } = {}) {
   const parts = routes.map((route) => {
     const line = linePoints(route).map(([lng, lat]) => `${lat.toFixed(5)},${lng.toFixed(5)}`).join(',');
     return (tolls ? `nwr["barrier"="toll_booth"](around:${TOLL_NEAR_M},${line});`
         + `node["highway"="toll_gantry"](around:${TOLL_NEAR_M},${line});` : '')
       + (cameras ? `node["highway"="speed_camera"](around:${CAMERA_NEAR_M},${line});` : '')
-      + (rests ? `nwr["highway"~"^(services|rest_area)$"](around:${REST_NEAR_M},${line});` : '');
+      + (rests ? `nwr["highway"~"^(services|rest_area)$"](around:${REST_NEAR_M},${line});` : '')
+      + (features ? featureStatements(line) : '');
   });
-  return `[out:json][timeout:25];(${parts.join('')});out center tags 1500;`;
+  return `[out:json][timeout:25];(${parts.join('')});out center tags 4000;`;
 }
 
 export function parseAlong(json) {
-  const tolls = [], cameras = [], rests = [];
+  const tolls = [], cameras = [], rests = [], features = [];
   for (const el of json?.elements || []) {
     const tags = el.tags || {};
+    const feature = parseFeature(el);
+    if (feature) { features.push(feature); continue; }
     const lat = el.lat ?? el.center?.lat, lng = el.lon ?? el.center?.lon;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
     const id = `${el.type}/${el.id}`;
@@ -64,7 +69,7 @@ export function parseAlong(json) {
       });
     }
   }
-  return { tolls, cameras, rests };
+  return { tolls, cameras, rests, features };
 }
 
 // R&Rs you can drive into from this route. Malaysia drives on the left, so the
@@ -94,16 +99,17 @@ export function alongRoute(route, found) {
     tolls: tollsOnRoute(route, found.tolls),
     cameras: camerasOnRoute(route, found.cameras),
     rests: restsOnRoute(route, found.rests),
+    features: featuresOnRoute(route, found.features || []),
   };
 }
 
 const cache = new Map();
 export const clearAlongCache = () => cache.clear();
 
-export async function fetchAlong(routes, { signal, fetchImpl, servers = CONFIG.overpass, waits = WAITS, tolls = true, cameras = true, rests = true } = {}) {
-  const key = `${routes.map((r) => r.id).join(',')}|${tolls}|${cameras}|${rests}`;
+export async function fetchAlong(routes, { signal, fetchImpl, servers = CONFIG.overpass, waits = WAITS, tolls = true, cameras = true, rests = true, features = true } = {}) {
+  const key = `${routes.map((r) => r.id).join(',')}|${tolls}|${cameras}|${rests}|${features}`;
   if (cache.has(key)) return cache.get(key);
-  const json = await overpass(alongQuery(routes, { tolls, cameras, rests }), { signal, fetchImpl, servers, waits });
+  const json = await overpass(alongQuery(routes, { tolls, cameras, rests, features }), { signal, fetchImpl, servers, waits });
   if (!json) throw new Error('no server answered');
   const found = parseAlong(json);
   cache.set(key, found);

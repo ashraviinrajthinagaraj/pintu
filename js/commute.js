@@ -20,7 +20,8 @@ const sameKey = (a, b) => {
   return x.length === y.length && x.every((v, i) => v === y[i]);
 };
 
-async function subscription(reg) {
+// One subscription per phone, shared by the morning alert and the parking reminder.
+export async function pushSubscription(reg) {
   const { key } = await get('/push/key');
   const wanted = keyBytes(key);
   const existing = await reg.pushManager.getSubscription();
@@ -37,7 +38,7 @@ export async function commuteOn({ home, work, time, days, slowOnly, lang }, reg)
   if (!canNotify() || !reg) throw new CommuteError('unsupported');
   const allowed = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (allowed !== 'granted') throw new CommuteError('denied');
-  const sub = await subscription(reg);
+  const sub = await pushSubscription(reg);
   const kept = load('commuteId', null);
   const r = await post('/commute/set', {
     id: kept?.id, key: kept?.key,
@@ -54,6 +55,8 @@ export async function commuteOff(reg) {
   const kept = load('commuteId', null);
   remove('commuteId');
   if (kept) await post('/commute/off', kept).catch(() => {});
+  // A parking reminder still to come needs the phone to stay reachable.
+  if (load('parkingRemind', null)) return;
   try { await (await reg?.pushManager.getSubscription())?.unsubscribe(); } catch { /* already gone */ }
 }
 

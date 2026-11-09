@@ -174,6 +174,24 @@ LDP and KESAS fares stay as they are until their concessions end
 When a fare changes, update its row in `js/toll-fares.js` and here. A highway can be added when
 an official announcement gives one fixed car fare for all its plazas.
 
+## Traffic lights, bumps and railway crossings
+
+The routes' one Overpass request also brings back traffic lights (`highway=traffic_signals`),
+speed bumps (`traffic_calming` bump, hump, table or cushion) and level crossings
+(`railway=level_crossing`) near each route. `js/road-features.js` keeps those on your own line,
+counts a junction's lights once, and each route option shows how many lights it has. While you
+drive, the next one ahead shows beside the speed, from a distance that grows with speed. A bump
+is said when you're going faster than 30 km/h, a row of bumps once; a railway crossing is always
+said; lights are only said if you switch that on in Settings. Pintu knows where a light is, not
+whether it's red: Malaysia's signal timings aren't shared openly. A route found while driving
+asks for its own, and only things someone has mapped are known.
+
+## Without tolls
+
+When a route has tolls, Pintu also asks Valhalla for the same trip without them and shows the
+difference: how much longer it takes, how much further it is, and what it saves at the plazas
+whose fare is known. With "Avoid tolls" on, it shows the other way round. One tap switches.
+
 ## Along the way
 
 The plan shows a line of the R&Rs (`highway=services`) and lay-bys (`highway=rest_area`) you can

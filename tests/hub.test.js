@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import {
   CONVOY_MAX, CONVOY_MS, Hub, MEMBER_STALE_MS, REPORTS_PER_HOUR, REPORT_LIFE_MIN, SHARE_AFTER_MS, SHARE_QUIET_MS, TESTS_PER_DAY,
-  cleanPos, cleanSubscription, commuteDue, commuteMessage, localNow, vapidHeader, vapidKeys,
+  PARKING_WARN_MS, cleanPos, cleanSubscription, commuteDue, commuteMessage, localNow, parkingMessage, vapidHeader, vapidKeys,
 } from '../server/hub.js';
 
 function fakeState() {
@@ -328,4 +328,70 @@ test('nonsense is turned away', async () => {
   const res = await h.fetch(new Request('https://hub/share/start', { method: 'POST', body: 'not json' }));
   assert.equal(res.status, 400);
   assert.equal((await h.fetch(new Request('https://hub/nothing'))).status, 404);
+});
+
+test('a parking reminder: sent ten minutes before the time is up, read by the phone, then gone', async () => {
+  const { call, pushes, tick, now } = hub();
+  assert.equal((await call('/remind/set', { sub: { endpoint: 'https://evil.example/x' }, until: now() + 3600e3 })).status, 400);
+  assert.equal((await call('/remind/set', { sub: SUB, until: now() - 60e3 })).status, 400, 'already over');
+  assert.equal((await call('/remind/set', { sub: SUB, until: now() + 3 * 86400e3 })).status, 400, 'too far off');
+  const until = now() + 3600e3;
+  const set = await call('/remind/set', { sub: SUB, until, lang: 'en' });
+  assert.equal(set.status, 200);
+  assert.equal(set.body.at, until - PARKING_WARN_MS);
+
+  assert.deepEqual((await call('/cron')).body, { due: 0, sent: 0 }, 'not yet');
+  tick(52 * 60e3);
+  assert.deepEqual((await call('/cron')).body, { due: 1, sent: 1 });
+  assert.equal(pushes.at(-1).url, SUB.endpoint);
+  const msg = (await call('/commute/message', SUB)).body;
+  assert.equal(msg.title, 'Parking nearly up');
+  assert.match(msg.body, /^Your parking ends in 8 minutes, at 9:00 am\.$/);
+  assert.equal(msg.url, './?go=car');
+  tick(5 * 60e3);
+  assert.deepEqual((await call('/cron')).body, { due: 0, sent: 0 }, 'once');
+
+  // Set again, then switched off before it's due.
+  const again = await call('/remind/set', { sub: SUB, until: now() + 30 * 60e3, id: set.body.id, key: set.body.key });
+  assert.equal(again.body.id, set.body.id);
+  await call('/remind/off', { id: set.body.id, key: set.body.key });
+  tick(25 * 60e3);
+  assert.deepEqual((await call('/cron')).body, { due: 0, sent: 0 });
+});
+
+test('a parking reminder and a morning alert share a phone: it reads whichever woke it', async () => {
+  const { call, tick, now } = hub({ env: { TOMTOM_API_KEY: 'k' } });
+  await call('/commute/set', { sub: SUB, home: HOME, work: WORK, time: '08:00', days: [1], lang: 'ms' });
+  await call('/cron');
+  assert.match((await call('/commute/message', SUB)).body.title, /^Ke tempat kerja/);
+  await call('/remind/set', { sub: SUB, until: now() + 15 * 60e3, lang: 'ms' });
+  tick(6 * 60e3);
+  await call('/cron');
+  assert.equal((await call('/commute/message', SUB)).body.title, 'Masa parkir hampir tamat');
+});
+
+test('a parking message in every language, and after the time has passed', () => {
+  const until = Date.parse('2026-11-09T07:30:00Z'); // 3:30 pm in Malaysia
+  for (const lang of ['ms', 'en', 'zh', 'ta']) {
+    const m = parkingMessage(until, until - 9 * 60e3, lang);
+    assert.ok(m.title && m.body.includes('9'), lang);
+  }
+  assert.match(parkingMessage(until, until + 60e3, 'en').body, /^Your parking ended at 3:30 pm\.$/);
+});
+
+test('toll fares drivers paid: kept with the plaza before, read back newest first, and limited', async () => {
+  const { call, tick } = hub();
+  const device = 'abcdefghjkmnpqrs';
+  assert.equal((await call('/fares/add', { device, paid: [{ plaza: 'node/1', rm: 2.1 }] })).status, 200);
+  tick(1000);
+  assert.equal((await call('/fares/add', { device, paid: [{ plaza: 'node/2', prev: 'node/1', rm: 0 }, { plaza: 'node/3', prev: 'node/2', rm: 12.4 }] })).status, 200);
+  assert.equal((await call('/fares/add', { device, paid: [{ plaza: 'nowhere', rm: 2 }] })).status, 400);
+  assert.equal((await call('/fares/add', { device, paid: [{ plaza: 'node/1', rm: 900 }] })).status, 400, 'no toll costs that');
+  assert.equal((await call('/fares/add', { device: 'x', paid: [{ plaza: 'node/1', rm: 2 }] })).status, 400);
+  const got = (await call('/fares?ids=node/1,node/3,node/9,junk')).body.fares;
+  assert.deepEqual(Object.keys(got).sort(), ['node/1', 'node/3']);
+  assert.deepEqual(got['node/3'].map((r) => [r.prev, r.rm]), [['node/2', 12.4]]);
+  const many = Array.from({ length: 20 }, () => ({ plaza: 'node/5', rm: 1 }));
+  for (let i = 0; i < 2; i++) await call('/fares/add', { device, paid: many });
+  assert.equal((await call('/fares/add', { device, paid: many })).status, 429, 'one phone can only say so much in a day');
 });

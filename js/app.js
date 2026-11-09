@@ -11,7 +11,7 @@ import { MapView } from './map.js';
 import { Motion } from './motion.js';
 import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
-import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, timeBetween } from './routing.js';
+import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, routeProviders, timeBetween } from './routing.js';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
 import { plainSpeech } from './delivery.js';
 import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
@@ -19,6 +19,7 @@ import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
 import { alongRoute, fetchAlong } from './along.js';
+import { countLights, featureAhead, featuresOnRoute, fetchFeatures } from './road-features.js';
 import { priceTolls, tollTotal } from './toll-fares.js';
 import { vehiclePicture } from './car-art.js';
 import { ALWAYS_SAY, JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fasterSaving, fetchTraffic, jamAhead, throughPoints } from './traffic.js';
@@ -103,7 +104,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -342,6 +343,10 @@ function applyStaticText() {
   $('set-camera-title').textContent = t('setCamera');
   $('camera-text').textContent = t('cameraText');
   $('camera-on-label').textContent = t('cameraOn');
+  $('set-road-title').textContent = t('roadTitle');
+  $('road-text').textContent = t('roadText');
+  $('road-on-label').textContent = t('roadOn');
+  $('lights-say-label').textContent = t('lightsSay');
   $('set-traffic-title').textContent = t('setTraffic');
   $('traffic-text').textContent = t('trafficText');
   $('traffic-on-label').textContent = t('trafficOn');
@@ -366,6 +371,7 @@ function applyStaticText() {
   $('plan-arrive-icon').innerHTML = UI.clock;
   $('plan-parking-icon').innerHTML = UI.parking;
   $('plan-toll-icon').innerHTML = UI.toll;
+  $('plan-other-icon').innerHTML = UI.route;
   $('plan-toll-chev').innerHTML = UI.chevron;
   label($('plan-parking-clear'), t('parkingRemove'), UI.close);
   renderSaved();
@@ -509,6 +515,9 @@ function renderSegments() {
   set('voice-turns', S.settings.voiceLevel === 'turns');
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
+  $('road-on').checked = S.settings.roadWarnings;
+  $('lights-say').checked = S.settings.sayLights;
+  $('lights-say').disabled = !S.settings.roadWarnings;
   $('traffic-on').checked = S.settings.traffic;
   renderVersion();
   $('keep-drive').checked = S.settings.keepDrive;
@@ -1369,6 +1378,8 @@ async function nameDestination(place) {
 
 function leaveDestination() {
   S.routeCtrl?.abort();
+  S.otherCtrl?.abort();
+  S.otherWay = null;
   S.alongCtrl?.abort();
   clearTimeout(S.alongTimer);
   S.along = null;
@@ -1412,6 +1423,7 @@ async function loadRoutes() {
   gps.start();
   const from = S.start || await waitForFix();
   if (ctrl.signal.aborted) return;
+  S.routeFrom = from;
   if (!from) {
     S.routeState = 'error';
     S.routeError = S.gpsDenied ? 'gpsDenied' : 'gpsNone';
@@ -1541,6 +1553,8 @@ function renderRoutes() {
     if (r.hasFerry) tags.append(tag(t('ferry')));
     const cost = pv ? tripPlan(pv, r.distanceKm)?.cost : null;
     if (cost != null) tags.append(tag(t(pv.kind === 'ev' ? 'costEv' : 'costFuel', { cost: money(cost) }), 'tag-cost'));
+    const lights = S.mode !== 'walk' && alongOf(r) ? countLights(alongOf(r).features) : 0;
+    if (lights) tags.append(tag(t('lightsCount', { n: lights }), 'tag-cost'));
     if (r.traffic) {
       const slow = r.traffic.delay >= 120;
       tags.append(tag(slow ? t('trafficDelayTag', { time: fmtDuration(r.traffic.delay, getLang()) }) : t('trafficClearTag'), slow ? 'tag-slow' : 'tag-clear'));
@@ -1553,7 +1567,7 @@ function renderRoutes() {
   }));
 
   const ready = S.routeState === 'ready' && S.routes.length > 0;
-  if (ready) loadAlong();
+  if (ready) { loadAlong(); loadOtherWay(); }
   $('start').disabled = !ready;
   $('add-stop').disabled = !ready;
   renderActions();
@@ -1627,6 +1641,7 @@ function renderPlan() {
   renderPlanAlong(route);
   renderPlanFuel(route);
   renderPlanToll(route);
+  renderPlanOtherWay(route);
   renderPlanArrive(route);
   renderPlanConvoy();
   renderPlanParking();
@@ -1736,7 +1751,7 @@ function loadAlong() {
         const on = alongRoute(r, found);
         return [r.id, { ...on, tolls: priceTolls(r, on.tolls) }];
       }));
-      S.along = { key, state: 'ready', byRoute };
+      S.along = { key, state: 'ready', byRoute, found };
     }).catch(() => {
       if (S.along?.key === key && !ctrl.signal.aborted) S.along = { key, state: 'error', byRoute: new Map() };
     }).finally(() => {
@@ -1818,6 +1833,73 @@ function renderPlanToll(route) {
     li.append(km, name, fare);
     return li;
   }));
+}
+
+// The same trip the other way about tolls: what avoiding them costs in time,
+// or what using them saves.
+function loadOtherWay() {
+  if (S.view !== 'preview' || S.mode !== 'car' || !S.routes.length || !S.routeFrom) return;
+  const wantFree = !S.avoidTolls;
+  const key = `${S.routes.map((r) => r.id).join(',')}|${wantFree}`;
+  if (S.otherWay?.key === key) return;
+  S.otherCtrl?.abort();
+  if (wantFree && !S.routes.some((r) => r.hasToll)) { S.otherWay = null; return; }
+  const ctrl = new AbortController();
+  S.otherCtrl = ctrl;
+  S.otherWay = { key, state: 'loading', free: wantFree };
+  const finish = (next) => { if (S.otherWay?.key === key) S.otherWay = next; };
+  // Only the free route servers: a comparison isn't worth TomTom's allowance.
+  const providers = routeProviders().filter((p) => !p.plain);
+  fetchRoutes({ from: S.routeFrom, to: routeEnd(), stops: S.stops, mode: S.mode, avoidTolls: wantFree, alternates: 0, id: 'pintu-compare', signal: ctrl.signal }, { providers })
+    .then(async ([route]) => {
+      if (!route) throw new Error('no route');
+      let tolls = null;
+      if (!wantFree && route.hasToll) {
+        const found = await fetchAlong([route], { signal: ctrl.signal, tolls: true, cameras: false, rests: false, features: false }).catch(() => null);
+        tolls = found ? priceTolls(route, alongRoute(route, found).tolls) : null;
+      }
+      finish({ key, state: 'ready', free: wantFree, route, tolls });
+    })
+    .catch(() => { if (!ctrl.signal.aborted) finish({ key, state: 'error', free: wantFree }); })
+    .finally(() => { if (S.otherWay?.key === key && S.view === 'preview') renderRoutes(); });
+}
+
+// "RM4.10", "at least RM4.10", or nothing when no fare is known.
+function tollMoney(tolls) {
+  const sum = tolls ? tollTotal(tolls) : null;
+  if (sum?.total == null) return null;
+  return sum.unknown ? t('otherAtLeast', { total: money(sum.total) }) : `RM${money(sum.total)}`;
+}
+
+function renderPlanOtherWay(route) {
+  const row = $('plan-other');
+  const other = S.otherWay;
+  const ready = other?.state === 'ready' && S.mode === 'car';
+  // Avoiding tolls may still use one; with tolls may be the same road. Neither is a choice.
+  const differs = ready && (other.free ? !other.route.hasToll && route.hasToll : other.route.hasToll);
+  row.hidden = !differs;
+  if (!differs) return;
+  const lang = getLang();
+  const dt = Math.round((other.route.time - route.time) / 60);
+  const time = fmtDuration(Math.abs(dt) * 60, lang);
+  const sameTime = Math.abs(dt) < 1;
+  const dkm = other.route.distanceKm - route.distanceKm;
+  const parts = [];
+  if (other.free) {
+    $('plan-other-title').textContent = sameTime ? t('otherFreeSame') : t(dt > 0 ? 'otherFreeSlower' : 'otherFreeFaster', { time });
+    const on = alongOf(route);
+    const saved = on ? tollMoney(on.tolls) : null;
+    if (saved) parts.push(t('otherSaves', { amount: saved }));
+    else if (on?.tolls.length) parts.push(t('otherSkips', { n: on.tolls.length }));
+    $('plan-other-go').textContent = t('otherUseFree');
+  } else {
+    $('plan-other-title').textContent = sameTime ? t('otherTollSame') : t(dt < 0 ? 'otherTollFaster' : 'otherTollSlower', { time });
+    const cost = tollMoney(other.tolls);
+    if (cost) parts.push(t('otherCosts', { amount: cost }));
+    $('plan-other-go').textContent = t('otherUseToll');
+  }
+  if (Math.abs(dkm) >= 1) parts.push(t(dkm > 0 ? 'otherFurther' : 'otherShorter', { km: kmText(Math.abs(dkm)) }));
+  $('plan-other-detail').textContent = parts.join(' · ');
 }
 
 // What goes on the rail: every R&R, and cameras too while there's room.
@@ -2730,6 +2812,14 @@ function startGuidance({ simulate }) {
   S.tolls = [];
   S.tollFetchedAt = 0;
   loadTolls(S.route);
+  // Lights, bumps and crossings: the plan already asked, so only ask if it hadn't.
+  S.featuresSaid = new Set();
+  S.bumpSaidAt = -Infinity;
+  const planned = S.along?.state === 'ready' ? S.along.found : null;
+  S.featurePool = planned?.features || [];
+  S.featureFetchedAt = planned ? Date.now() : 0;
+  S.features = featuresOnRoute(S.route, S.featurePool);
+  if (!planned) loadFeatures(S.route);
   // Traffic looked up while choosing the route needn't be asked for again yet.
   S.traffic = S.route.traffic?.from === 0 && S.mode !== 'walk' ? S.route.traffic : null;
   S.trafficAt = S.traffic ? S.traffic.at : 0;
@@ -2760,6 +2850,7 @@ function startGuidance({ simulate }) {
   S.pendingShare = null;
   S.awayWarned = false;
   $('camera-alert').hidden = true;
+  $('road-alert').hidden = true;
   $('junction').hidden = true;
   S.cam = { ...(mapView ? mapView.camera() : { zoom: 16, pitch: 0 }), lane: 0 };
   S.poseStale = true;
@@ -2828,6 +2919,7 @@ function onNavFix(fix, takenAt) {
   S.gathering = [];
   for (const p of st.prompts) say(p);
   renderCamera(st, fix);
+  renderRoadFeature(st, fix);
   renderRoadReport(st, fix);
   if (Date.now() - (S.roadAt || 0) > REPORTS_EVERY_MS) loadRoadReports();
   if (Date.now() - (S.trafficAt || 0) > TRAFFIC_EVERY_MS && !S.sim) loadTraffic();
@@ -3276,6 +3368,51 @@ function renderCamera(st, fix) {
   speakText(t(limit ? 'cameraSayLimit' : 'cameraSay', words), { wait: voice.WAIT_TURN_MS });
 }
 
+/* ---------- Traffic lights, bumps and railway crossings ---------- */
+
+const BUMP_SAY_KMH = 30;      // slower than this, you'll see it in time anyway
+const BUMP_QUIET_M = 150;     // a row of bumps is said once
+const ROAD_ICONS_AHEAD = { light: () => UI.signal, bump: () => UI.bump, rail: () => UI.railCross };
+
+function loadFeatures(route) {
+  S.featureCtrl?.abort();
+  if (!S.settings.roadWarnings || S.mode === 'walk') return;
+  const ctrl = new AbortController();
+  S.featureCtrl = ctrl;
+  S.featureFetchedAt = Date.now();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  fetchFeatures(route, { signal: ctrl.signal }).then((found) => {
+    S.featurePool = found;
+    if (S.view === 'nav' && S.route) S.features = featuresOnRoute(S.route, found);
+  }).catch(() => { /* nothing known is nothing to warn about */ })
+    .finally(() => clearTimeout(timer));
+}
+
+function renderRoadFeature(st, fix) {
+  const box = $('road-alert');
+  const on = S.settings.roadWarnings && st.onRoute && S.mode !== 'walk';
+  const near = on ? featureAhead(S.features, st.s, fix.speed ?? 0) : null;
+  box.hidden = !near;
+  if (!near) return;
+  const { feature, ahead } = near;
+  const lang = getLang();
+  const distance = fmtDistance(Math.max(ahead, 10));
+  box.dataset.kind = feature.kind;
+  $('road-alert-icon').innerHTML = ROAD_ICONS_AHEAD[feature.kind]();
+  $('road-alert-distance').textContent = distance;
+  box.setAttribute('aria-label', t(`roadAria_${feature.kind}`, { distance }));
+  if (S.featuresSaid.has(feature.id)) return;
+  if (!st.prompts.length && voice.busy() && ahead > 80) return;
+  S.featuresSaid.add(feature.id);
+  if (S.settings.voiceLevel !== 'full' || (S.sim && S.sim.factor >= SIM_FAST)) return;
+  if (feature.kind === 'light' && !S.settings.sayLights) return;
+  if (feature.kind === 'bump') {
+    if ((fix.speed ?? 0) * 3.6 < BUMP_SAY_KMH || feature.along - S.bumpSaidAt < BUMP_QUIET_M) return;
+    S.bumpSaidAt = feature.along;
+  }
+  speakText(t(`roadSay_${feature.kind}`, { distance: sayDistance(ahead, lang) }), { wait: voice.WAIT_TURN_MS });
+}
+
 function renderNavRange(st) {
   const v = vehicle();
   const left = v ? rangeLeft(v, S.drivenKm) : null;
@@ -3382,6 +3519,8 @@ function useRoute(route) {
   if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
   S.tolls = tollsOnRoute(route, S.tollPool || []);
   if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
+  S.features = featuresOnRoute(route, S.featurePool || []);
+  if (Date.now() - (S.featureFetchedAt || 0) > CAMERA_REFETCH_MS) loadFeatures(route);
   placeRoadReports();
   // Traffic for the old route doesn't belong to this one.
   S.traffic = null;
@@ -3514,6 +3653,9 @@ function stopGuidance() {
   S.arriving = false;
   S.cameraCtrl?.abort();
   S.cameras = [];
+  S.featureCtrl?.abort();
+  S.features = [];
+  $('road-alert').hidden = true;
   S.tollCtrl?.abort();
   S.tolls = [];
   S.trafficCtrl?.abort();
@@ -4384,6 +4526,13 @@ function wire() {
     setSetting('speedCameras', e.target.checked);
     if (!e.target.checked) $('camera-alert').hidden = true;
   });
+  $('road-on').addEventListener('change', (e) => {
+    setSetting('roadWarnings', e.target.checked);
+    $('lights-say').disabled = !e.target.checked;
+    if (!e.target.checked) $('road-alert').hidden = true;
+    else if (S.view === 'nav' && S.route && !S.featurePool?.length) loadFeatures(S.route);
+  });
+  $('lights-say').addEventListener('change', (e) => setSetting('sayLights', e.target.checked));
   $('offline-on').addEventListener('change', (e) => setSetting('offlineMap', e.target.checked));
   $('keep-drive').addEventListener('change', (e) => {
     setSetting('keepDrive', e.target.checked);
@@ -4432,6 +4581,11 @@ function wire() {
     renderPlanParking();
   });
   $('plan-parking-clear').addEventListener('click', clearParking);
+  $('plan-other-go').addEventListener('click', () => {
+    const box = $('avoid-tolls');
+    box.checked = !!S.otherWay?.free;
+    box.dispatchEvent(new Event('change'));
+  });
   $('plan-toll').addEventListener('click', () => {
     if (S.along?.state === 'error') { retryAlong(); return; }
     if (S.along?.state !== 'ready') return;

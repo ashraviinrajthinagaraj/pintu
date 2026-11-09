@@ -1217,6 +1217,25 @@ a { color: inherit; }
   box-shadow: var(--lift);
 }
 .camera-alert[hidden] { display: none; }
+/* Lights, bumps and level crossings ahead: the colours of their road signs */
+.road-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 6px 10px 6px 8px;
+  font-family: var(--condensed);
+  font-size: 20px;
+  font-weight: 800;
+  box-shadow: var(--lift);
+}
+.road-alert[hidden] { display: none; }
+.road-alert-icon { display: grid; width: 26px; height: 26px; }
+.road-alert-icon svg { width: 26px; height: 26px; }
+.road-alert[data-kind="bump"] { background: var(--yellow); color: var(--on-yellow); }
+.road-alert[data-kind="rail"] { background: #fff; color: #C62828; box-shadow: inset 0 0 0 3px #C62828, var(--lift); }
 /* Traffic ahead: red for a jam or a closed road, orange for roadworks. */
 .jam-alert {
   display: flex;

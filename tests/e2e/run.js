@@ -79,7 +79,7 @@ function solatMonth(times) {
 
 async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom, fuel, init, hub } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
+  const log = { stadia: 0, fossgis: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
@@ -180,7 +180,8 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
     }
     if (host === 'valhalla1.openstreetmap.de') {
       const body = JSON.parse(new URL(url).searchParams.get('json'));
-      log.fossgis.push(body);
+      // The trip asked for the other way about tolls, only to compare, is kept apart.
+      (body.id === 'pintu-compare' ? log.compare : log.fossgis).push(body);
       if (log.routeFail) return route.abort();
       const fn = routeResponse || ((b) => ({ trip: cityTrip(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }));
       return route.fulfill({ json: fn(body, log.fossgis.length), headers: CORS });
@@ -270,7 +271,7 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
 
 const vis = (page, sel) => page.locator(sel).isVisible();
 // Overpass requests other than the one for tolls, cameras and R&Rs along the routes on offer.
-const notAlong = (log) => log.overpass.filter((b) => !/tags\+1500|tags 1500/.test(b));
+const notAlong = (log) => log.overpass.filter((b) => !/tags\+4000|tags 4000/.test(b));
 const text = (page, sel) => page.locator(sel).innerText();
 const said = (page) => page.evaluate(() => window.__said);
 
@@ -429,11 +430,13 @@ await check('choosing another route, avoiding tolls, motorcycle mode', async () 
   await page.click('.switch');
   await page.waitForFunction((n) => document.querySelectorAll('.route-opt').length === 2, before);
   await page.waitForTimeout(1400);
-  assert.equal(log.fossgis.at(-1).costing_options.auto.use_tolls, 0);
+  // The routes on offer, not the one asked for to compare with tolls.
+  const offered = () => log.fossgis.filter((b) => b.alternates > 0).at(-1);
+  assert.equal(offered().costing_options.auto.use_tolls, 0);
   await page.click('#mode-moto');
   await page.waitForTimeout(1600);
-  assert.equal(log.fossgis.at(-1).costing, 'motorcycle');
-  assert.equal(log.fossgis.at(-1).costing_options, undefined);
+  assert.equal(offered().costing, 'motorcycle');
+  assert.equal(offered().costing_options, undefined);
   assert.equal(await vis(page, '#toll-wrap'), false, 'no toll switch for motorcycles');
   await page.waitForSelector('.route-opt');
   assert.doesNotMatch(await page.locator('#route-list').innerText(), /Tol/);
@@ -5012,6 +5015,97 @@ await check('route plan: when the plazas can\'t be found, it says so and never s
   assert.match(await text(page, '.route-opt .route-tags'), /Tol, /);
   assert.equal(await vis(page, '#plan-along'), false);
   await ctx.close();
+});
+
+// The same trip without tolls: slower, longer, on town roads.
+const freeTrip = () => buildTrip(P.a, [
+  { to: [P.a[0], P.d[1]], type: 1, street: 'Jalan Lama', kph: 30 },
+  { to: P.d, type: 10, street: 'Jalan Lama', kph: 30 },
+]);
+const withLights = (extra = []) => (asked) => {
+  const base = onTheWay()(asked);
+  const node = (id, [lng, lat], tags) => ({ type: 'node', id, lat, lon: lng, tags });
+  return { elements: [...base.elements,
+    node(91, along(P.a, P.b, 0.2), { highway: 'traffic_signals' }),
+    node(92, along(P.a, P.b, 0.2).map((v, i) => v + (i ? 0 : 0.0002)), { highway: 'traffic_signals' }),
+    node(93, along(P.b, P.c, 0.8), { highway: 'traffic_signals' }),
+    ...extra] };
+};
+
+await check('route plan: traffic lights counted, and the trip without tolls compared, one tap to swap', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet, scale: 2,
+    routeResponse: (b) => ({ trip: b.costing_options?.auto?.use_tolls === 0 ? freeTrip() : plannedTrip() }),
+    overpass: withLights(),
+  });
+  await toPreview(page);
+  await page.waitForFunction(() => /lampu isyarat/.test(document.querySelector('.route-opt .route-tags').textContent));
+  assert.match(await text(page, '.route-opt .route-tags'), /2 lampu isyarat/, 'one junction\'s two lights count once');
+  await page.waitForSelector('#plan-other:not([hidden])');
+  assert.match(await text(page, '#plan-other-title'), /^Tanpa tol: \d+ min lebih lama$/);
+  assert.match(await text(page, '#plan-other-detail'), /jimat sekurang-kurangnya RM4\.10/);
+  assert.equal(log.compare.length, 1, 'asked once for the way without tolls');
+  assert.equal(log.compare[0].costing_options.auto.use_tolls, 0);
+  await noOverflow(page, 'other way');
+  await page.evaluate(() => document.getElementById('plan-other').scrollIntoView({ block: 'center' }));
+  await page.screenshot({ path: `${shots}/73-without-tolls.png` });
+
+  await page.click('#plan-other-go');
+  assert.equal(await page.isChecked('#avoid-tolls'), true);
+  await page.waitForFunction(() => /^Guna tol/.test(document.getElementById('plan-other-title').textContent));
+  assert.match(await text(page, '#plan-other-title'), /^Guna tol: \d+ min lebih cepat$/);
+  await page.waitForFunction(() => /RM4\.10/.test(document.getElementById('plan-other-detail').textContent));
+  assert.match(await text(page, '#plan-other-detail'), /tol sekurang-kurangnya RM4\.10/);
+  assert.equal(await vis(page, '#plan-toll-wrap'), false, 'no tolls on this way');
+  await page.click('#plan-other-go');
+  assert.equal(await page.isChecked('#avoid-tolls'), false);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+// A town drive: a light, then a bump, then a level crossing.
+const townTrip = () => buildTrip(P.a, [
+  { to: P.b, type: 1, street: 'Jalan Ampang', kph: 50 },
+  { to: P.c, type: 10, street: 'Jalan Stesen', kph: 50 },
+]);
+const townThings = () => {
+  const node = (id, [lng, lat], tags) => ({ type: 'node', id, lat, lon: lng, tags });
+  return { elements: [
+    node(61, along(P.a, P.b, 0.3), { highway: 'traffic_signals' }),
+    node(62, along(P.a, P.b, 0.6), { traffic_calming: 'bump' }),
+    node(63, along(P.b, P.c, 0.5), { railway: 'level_crossing' }),
+  ] };
+};
+
+await check('driving: the next light, bump and railway crossing show; the bump and crossing are said, the light only if asked', async () => {
+  const trip = prepareTrip(townTrip());
+  const { ctx, page } = await newApp(browser, { ...quiet, scale: 2, routeResponse: () => ({ trip: townTrip() }), overpass: townThings() });
+  await toNav(page);
+  await roll(page, trip, 0, 260, 12);
+  await page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'light' && !document.getElementById('road-alert').hidden);
+  assert.match(await page.getAttribute('#road-alert', 'aria-label'), /^Lampu isyarat dalam \d+ m$/);
+  await roll(page, trip, 260, 610, 12);
+  await page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'bump' && !document.getElementById('road-alert').hidden);
+  await roll(page, trip, 610, trip.maneuvers[1].beginDist + 0.5 * (trip.length - trip.maneuvers[1].beginDist) - 150, 12);
+  await page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'rail' && !document.getElementById('road-alert').hidden);
+  await page.screenshot({ path: `${shots}/74-railway-crossing.png` });
+  const words = (await said(page)).map((x) => x.text);
+  assert.ok(words.some((w) => /^Bonggol di hadapan/.test(w)), 'the bump is said');
+  assert.ok(words.some((w) => /^Lintasan kereta api \d+ meter di hadapan\. Berhati-hati\.$/.test(w)), 'the crossing is said');
+  assert.ok(!words.some((w) => /Lampu isyarat/.test(w)), 'lights are only shown, by default');
+  await ctx.close();
+
+  const again = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { sayLights: true } }, routeResponse: () => ({ trip: townTrip() }), overpass: townThings() });
+  await toNav(again.page);
+  await roll(again.page, trip, 0, 260, 12);
+  await again.page.waitForFunction(() => (window.__said || []).some((x) => /^Lampu isyarat \d+ meter di hadapan\.$/.test(x.text)));
+  await again.ctx.close();
+
+  const off = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { roadWarnings: false } }, routeResponse: () => ({ trip: townTrip() }), overpass: townThings() });
+  await toNav(off.page);
+  await roll(off.page, trip, 0, 640, 12);
+  assert.equal(await vis(off.page, '#road-alert'), false, 'switched off');
+  await off.ctx.close();
 });
 
 await browser.close();

@@ -38,7 +38,10 @@ export function parseCameras(json) {
   const out = [];
   for (const el of json.elements || []) {
     if (!Number.isFinite(el.lat) || !Number.isFinite(el.lon)) continue;
-    const limit = parseInt(el.tags?.maxspeed, 10);
+    // Something else that came back: a light, a bump, a crossing.
+    const tags = el.tags || {};
+    if ((tags.highway && tags.highway !== 'speed_camera') || tags.barrier || tags.traffic_calming || tags.railway) continue;
+    const limit = parseInt(tags.maxspeed, 10);
     out.push({ id: `node/${el.id}`, lat: el.lat, lng: el.lon, limit: limit >= 5 && limit <= 130 ? limit : null });
   }
   return out;
