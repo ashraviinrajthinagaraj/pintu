@@ -25,13 +25,14 @@ export const NEARBY = {
   },
   fuel: { tile: (p) => p.class === 'fuel' || p.subclass === 'fuel', query: '["amenity"="fuel"]', radius: 6000 },
   ev: { tile: (p) => p.subclass === 'charging_station', query: '["amenity"="charging_station"]', radius: 15000 },
+  hospital: { tile: (p) => p.subclass === 'hospital', query: '["amenity"="hospital"]', radius: 30000 },
   hotel: {
     tile: (p) => !!p.name && (p.class === 'lodging' || STAYS.has(p.subclass)),
     query: '["tourism"~"^(hotel|motel|guest_house|hostel|resort)$"]["name"]',
     radius: 10000,
   },
 };
-export const NEARBY_ORDER = ['sights', 'food', 'fuel', 'ev', 'hotel'];
+export const NEARBY_ORDER = ['sights', 'food', 'fuel', 'ev', 'hotel', 'hospital'];
 
 const TILE_RADIUS = 2500;
 const TILE_WAIT_MS = 6000;

@@ -1,10 +1,8 @@
 // Traffic lights, speed bumps and railway crossings on your road, as they are
 // marked in OpenStreetMap. Pintu knows where a light is, not whether it's red:
 // Malaysia's signal timings aren't shared openly.
-import { CONFIG } from './config.js';
 import { clamp } from './geo.js';
-import { overpass, placeOnRoute } from './places.js';
-import { samplePoints } from './cameras.js';
+import { placeOnRoute } from './places.js';
 
 export const KINDS = ['light', 'bump', 'rail'];
 export const NEAR_M = 60;                                   // asked for this wide, then placed exactly
@@ -69,16 +67,4 @@ export function featureAhead(placed, s, speed, wanted = { light: true, bump: tru
     if (feature.kind !== 'rail' && ahead > warnDistance('rail', speed)) return null;
   }
   return null;
-}
-
-export function featureQuery(points) {
-  const line = points.map(([lng, lat]) => `${lat.toFixed(5)},${lng.toFixed(5)}`).join(',');
-  return `[out:json][timeout:25];(${featureStatements(line, 40)});out center tags 3000;`;
-}
-
-// For a route found while driving, when the plan's own answer doesn't cover it.
-export async function fetchFeatures(route, { signal, fetchImpl, servers = CONFIG.overpass } = {}) {
-  const json = await overpass(featureQuery(samplePoints(route)), { signal, fetchImpl, servers });
-  if (!json) throw new Error('no server answered');
-  return parseFeatures(json);
 }

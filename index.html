@@ -51,6 +51,7 @@
       <button id="btn-traffic" class="round round-traffic" type="button" aria-pressed="false" hidden></button>
       <button id="btn-3d-idle" class="round round-text" type="button"></button>
       <button id="btn-locate" class="round" type="button"></button>
+      <button id="btn-sos" class="round round-sos" type="button">SOS</button>
     </div>
   </div>
   <button id="car-pill" class="saved-btn car-pill" type="button" hidden><span id="car-pill-icon" class="saved-icon"></span><span class="saved-text"><strong id="car-pill-title"></strong><span id="car-pill-detail"></span></span></button>
@@ -165,6 +166,11 @@
       </button>
       <ol id="toll-list" class="toll-list" hidden></ol>
     </div>
+    <div id="plan-tng" class="plan-row plan-tng" hidden>
+      <span id="plan-tng-icon" class="plan-icon"></span>
+      <div class="plan-main"><strong id="plan-tng-title"></strong><span id="plan-tng-detail"></span></div>
+      <button id="plan-tng-edit" class="link-btn" type="button"></button>
+    </div>
     <div id="plan-other" class="plan-row plan-other" hidden>
       <span id="plan-other-icon" class="plan-icon"></span>
       <div class="plan-main"><strong id="plan-other-title"></strong><span id="plan-other-detail"></span></div>
@@ -270,6 +276,14 @@
     <button id="btn-report" class="round round-report" type="button" hidden></button>
     <button id="btn-add-stop" class="round" type="button"></button>
     <button id="btn-recenter" class="round round-accent" type="button" hidden></button>
+    <button id="btn-sos-nav" class="round round-sos" type="button">SOS</button>
+  </div>
+  <div id="rest-offer" class="refill faster rest-offer" role="alert" hidden>
+    <p><strong id="rest-title"></strong><span id="rest-detail"></span></p>
+    <div class="resume-actions">
+      <button id="rest-no" class="link-btn" type="button"></button>
+      <button id="rest-yes" class="plate plate-btn plate-small" type="button"></button>
+    </div>
   </div>
   <div id="faster" class="refill faster" role="alert" hidden>
     <p><strong id="faster-title"></strong><span id="faster-detail"></span></p>
@@ -361,11 +375,37 @@
     <label id="car-note-label" class="field-label" for="car-note"></label>
     <input id="car-note" class="text-input" type="text" maxlength="60" autocomplete="off" enterkeyhint="done">
   </div>
+  <div id="car-paid" class="car-paid" hidden>
+    <p id="car-paid-label" class="field-label"></p>
+    <div id="car-paid-choices" class="paid-choices" role="group"></div>
+    <div id="car-paid-status" class="car-paid-status" hidden>
+      <p><strong id="car-paid-left"></strong><span id="car-paid-note"></span></p>
+      <button id="car-paid-stop" class="link-btn" type="button"></button>
+    </div>
+  </div>
   <button id="car-go" class="plate plate-btn sheet-action" type="button"></button>
   <div class="car-links">
     <button id="car-here" class="link-btn" type="button"></button>
     <button id="car-found" class="link-btn" type="button"></button>
   </div>
+</section>
+
+<!-- Emergency: call, say where you are, the nearest hospital -->
+<section id="sos" class="sheet sheet-auto sheet-over" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="sos-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="sos-title"></h2></div>
+  </div>
+  <a id="sos-call" class="sos-call" href="tel:999"></a>
+  <div class="sos-where">
+    <p id="sos-where-label" class="field-label"></p>
+    <p id="sos-coords" class="sos-coords"></p>
+  </div>
+  <button id="sos-share" class="plate plate-btn plate-ghost sheet-action" type="button"></button>
+  <p id="sos-hosp-label" class="field-label"></p>
+  <p id="sos-hosp-status" class="tip"></p>
+  <ol id="sos-hospitals" class="sos-hospitals"></ol>
 </section>
 
 <!-- Choose where a simulated drive jumps to -->
@@ -672,6 +712,16 @@
         <span class="switch-track" aria-hidden="true"></span>
         <span id="lights-say-label"></span>
       </label>
+    </div>
+    <div class="setting">
+      <h3 id="set-tng-title"></h3>
+      <p id="tng-text" class="tip"></p>
+      <div class="tng-row">
+        <label class="tng-rm" for="tng-balance">RM</label>
+        <input id="tng-balance" class="text-input" type="number" inputmode="decimal" min="0" max="10000" step="0.01">
+        <button id="tng-save" class="plate plate-btn plate-small" type="button"></button>
+      </div>
+      <p id="tng-status" class="tip"></p>
     </div>
     <div class="setting">
       <h3 id="set-traffic-title"></h3>

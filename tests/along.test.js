@@ -61,7 +61,7 @@ test('prices a plaza by the highway it stands on, and leaves the rest unknown', 
   assert.deepEqual(priced.map((t) => [t.road, t.fare]), [['LDP', 2.1], ['KESAS', 2], [null, null]]);
   assert.equal(fareAt(r, { along: 10 }), null, 'an ordinary road has no fare');
   const sum = tollTotal(priced);
-  assert.deepEqual(sum, { plazas: 3, priced: 2, unknown: 1, total: 4.1, roads: ['LDP', 'KESAS'] });
+  assert.deepEqual(sum, { plazas: 3, priced: 2, unknown: 1, total: 4.1, roads: ['LDP', 'KESAS'], byDrivers: 0 });
   assert.equal(tollTotal([]).total, null, 'nothing known is not RM0');
   assert.equal(tollTotal(priced.slice(2)).total, null);
 });
@@ -105,4 +105,19 @@ test('every Overpass server asked is one that holds the whole world', async () =
   // ovp.dresel.systems holds only Germany: for Malaysia it answers "nothing" faster than anyone.
   assert.ok(!CONFIG.overpass.some((s) => s.includes('dresel')));
   assert.ok(CONFIG.overpass.length >= 2);
+});
+
+test('a fare drivers paid fills a gap: from the same entry, or agreed by all', async () => {
+  const { driverFare, priceTolls, tollTotal } = await import('../js/toll-fares.js');
+  const exit = [{ prev: 'node/1', rm: 12.4 }, { prev: 'node/7', rm: 30.1 }, { prev: 'node/1', rm: 12.4 }];
+  assert.equal(driverFare(exit, 'node/1'), 12.4, 'the same way on');
+  assert.equal(driverFare(exit, 'node/9'), null, 'from somewhere else, and they disagree');
+  assert.equal(driverFare([{ prev: 'node/3', rm: 2.3 }, { prev: null, rm: 2.3 }], 'node/9'), 2.3, 'an open plaza charges everyone the same');
+  assert.equal(driverFare([], 'node/1'), null);
+  const r = highwayTrip();
+  const plaza = (id, at) => node(id, at, { barrier: 'toll_booth' });
+  const { tolls } = alongRoute(r, parseAlong({ elements: [plaza(1, along(Q.b, Q.c, 0.5)), plaza(3, along(Q.d, Q.e, 0.5))] }));
+  const priced = priceTolls(r, tolls, { 'node/3': [{ prev: 'node/1', rm: 5.5 }] });
+  assert.deepEqual(priced.map((t) => [t.fare, t.byDrivers || false]), [[2.1, false], [5.5, true]]);
+  assert.deepEqual(tollTotal(priced), { plazas: 2, priced: 2, unknown: 0, total: 7.6, roads: ['LDP'], byDrivers: 1 });
 });

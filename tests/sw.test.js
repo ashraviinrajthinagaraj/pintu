@@ -24,5 +24,7 @@ test('notifications ask the same server the app uses', () => {
 });
 
 test('a notification only ever opens Pintu itself', () => {
-  assert.match(sw, /new URL\('\.\/\?go=work', self\.registration\.scope\)/);
+  // Work or the car, on Pintu's own page: never an address that came with the message.
+  assert.match(sw, /const go = e\.notification\.data\?\.url === '\.\/\?go=car' \? '\.\/\?go=car' : '\.\/\?go=work';/);
+  assert.match(sw, /new URL\(go, self\.registration\.scope\)/);
 });

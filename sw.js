@@ -1,7 +1,7 @@
 // Keeps Pintu opening with poor signal. The app's own files come from the
 // network when possible so updates arrive by themselves. Searches, routes and
 // stops are never stored here.
-const VERSION = 'pintu-0.9.9';
+const VERSION = 'pintu-0.10.0';
 const SHELL = `${VERSION}-shell`;
 const LIBS = `${VERSION}-libs`;
 const TILES = 'pintu-tiles-1';
@@ -12,7 +12,7 @@ const FILES = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'js/app.js', 'js/car-gl.js', 'js/car-mesh.js', 'js/config.js', 'js/format.js', 'js/geo.js', 'js/guidance.js', 'js/i18n.js',
   'js/icons.js', 'js/instructions.js', 'js/lanes.js', 'js/location.js', 'js/map.js', 'js/motion.js', 'js/places.js',
-  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/tiles.js', 'js/vehicle.js', 'js/characters.js', 'js/audio.js', 'js/cameras.js', 'js/delivery.js', 'js/junction.js', 'js/kinds.js', 'js/leaveby.js', 'js/nearby.js', 'js/parking.js', 'js/drive-watch.js', 'js/tolls.js', 'js/traffic.js', 'js/traffic-map.js', 'js/tomtom.js', 'js/offline.js', 'js/usage.js', 'js/report.js', 'js/fuel-price.js', 'js/voice-search.js', 'js/trips.js', 'js/battery.js', 'js/hub.js', 'js/road-reports.js', 'js/together.js', 'js/commute.js', 'js/native.js', 'js/along.js', 'js/toll-fares.js', 'js/car-art.js', 'js/road-features.js',
+  'js/prayer.js', 'js/routing.js', 'js/search.js', 'js/store.js', 'js/tiles.js', 'js/vehicle.js', 'js/characters.js', 'js/audio.js', 'js/cameras.js', 'js/delivery.js', 'js/junction.js', 'js/kinds.js', 'js/leaveby.js', 'js/nearby.js', 'js/parking.js', 'js/drive-watch.js', 'js/tolls.js', 'js/traffic.js', 'js/traffic-map.js', 'js/tomtom.js', 'js/offline.js', 'js/usage.js', 'js/report.js', 'js/fuel-price.js', 'js/voice-search.js', 'js/trips.js', 'js/battery.js', 'js/hub.js', 'js/road-reports.js', 'js/together.js', 'js/commute.js', 'js/native.js', 'js/along.js', 'js/toll-fares.js', 'js/car-art.js', 'js/road-features.js', 'js/rest-stop.js', 'js/tng.js', 'js/parking-timer.js', 'js/budi.js', 'js/car-care.js', 'js/worklog.js',
   'js/cast/adik.js', 'js/cast/agent.js', 'js/cast/captain.js', 'js/cast/cikgu.js', 'js/cast/commentator.js', 'js/cast/makcik.js', 'js/cast/trailer.js', 'js/cast/uncle.js', 'js/links.js', 'js/malls.js', 'js/net.js', 'js/weather.js', 'js/vehicle-ui.js',
   'js/voice.js',
   'fonts/Barlow-Medium.woff', 'fonts/Barlow-SemiBold.woff', 'fonts/Barlow-Bold.woff',
@@ -106,7 +106,7 @@ const SERVER = 'https://pintu.ashraviinrajthinagaraj.workers.dev';
 
 self.addEventListener('push', (e) => {
   e.waitUntil((async () => {
-    let msg = { title: 'Pintu', body: 'Buka Pintu untuk lihat perjalanan ke tempat kerja hari ini.', url: './?go=work' };
+    let msg = { title: 'Pintu', body: 'Buka Pintu untuk lihat perjalanan ke tempat kerja hari ini.', url: './?go=work', tag: 'commute' };
     try {
       const sub = await self.registration.pushManager.getSubscription();
       const res = await fetch(`${SERVER}/commute/message`, {
@@ -118,16 +118,20 @@ self.addEventListener('push', (e) => {
         const got = await res.json();
         if (typeof got.title === 'string') msg.title = got.title.slice(0, 80);
         if (typeof got.body === 'string') msg.body = got.body.slice(0, 200);
+        // Only Pintu's own pages: a morning alert opens work, a parking one the car.
+        if (got.url === './?go=car' || got.url === './?go=work') msg.url = got.url;
+        if (got.tag === 'parking') msg.tag = 'parking';
       }
     } catch { /* the plain message, then */ }
-    await self.registration.showNotification(msg.title, { body: msg.body, icon: 'icons/icon-192.png', tag: 'commute', renotify: true, data: { url: msg.url } });
+    await self.registration.showNotification(msg.title, { body: msg.body, icon: 'icons/icon-192.png', tag: msg.tag, renotify: true, data: { url: msg.url } });
   })());
 });
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   // Only ever Pintu's own page.
-  const url = new URL('./?go=work', self.registration.scope).href;
+  const go = e.notification.data?.url === './?go=car' ? './?go=car' : './?go=work';
+  const url = new URL(go, self.registration.scope).href;
   e.waitUntil((async () => {
     const open = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const c of open) {

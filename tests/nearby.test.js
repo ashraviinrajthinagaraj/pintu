@@ -24,13 +24,15 @@ function tileServer(features) {
   return fetchImpl;
 }
 
-test('five kinds of place, each with what to look for', () => {
-  assert.deepEqual(NEARBY_ORDER, ['sights', 'food', 'fuel', 'ev', 'hotel']);
+test('six kinds of place, each with what to look for', () => {
+  assert.deepEqual(NEARBY_ORDER, ['sights', 'food', 'fuel', 'ev', 'hotel', 'hospital']);
   for (const c of NEARBY_ORDER) {
     assert.match(nearbyQuery(c, here), /around:\d+,3\.15000,101\.70000\)/);
     assert.equal(typeof NEARBY[c].tile, 'function');
   }
   assert.equal(NEARBY.hotel.tile({ name: 'Hotel A', class: 'lodging', subclass: 'hotel' }), true);
+  assert.equal(NEARBY.hospital.tile({ name: 'Hospital Kuala Lumpur', class: 'hospital', subclass: 'hospital' }), true);
+  assert.equal(NEARBY.hospital.tile({ name: 'Klinik Kesihatan', class: 'hospital', subclass: 'clinic' }), false, 'a clinic has no emergency department');
   assert.equal(NEARBY.hotel.tile({ name: '', class: 'lodging', subclass: 'hotel' }), false, 'a place to stay needs a name to be chosen');
   assert.equal(NEARBY.sights.tile({ name: 'Muzium', class: 'museum', subclass: 'museum' }), true);
   assert.equal(NEARBY.sights.tile({ name: 'Kedai', class: 'shop', subclass: 'convenience' }), false);

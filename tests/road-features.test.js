@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareTrip } from '../js/routing.js';
-import { countLights, featureAhead, featureQuery, featuresOnRoute, parseFeatures, warnDistance } from '../js/road-features.js';
+import { countLights, featureAhead, featuresOnRoute, parseFeatures, warnDistance } from '../js/road-features.js';
 import { alongQuery, alongRoute, parseAlong } from '../js/along.js';
 import { cityTrip, along, P } from './helpers/fixtures.js';
 
@@ -51,11 +51,10 @@ test('warns nearer for a bump than for a crossing, and further at speed', () => 
   assert.equal(featureAhead(placed, 800, 10), null, 'all behind you');
 });
 
-test('comes in the routes\' own request, and on its own while driving', () => {
+test('comes in the routes\' own request', () => {
   const r = route();
   assert.match(alongQuery([r]), /traffic_signals[\s\S]*traffic_calming[\s\S]*level_crossing/);
   assert.doesNotMatch(alongQuery([r], { features: false }), /traffic_signals/);
-  assert.match(featureQuery([[101.7, 3.15], [101.71, 3.15]]), /around:40,3\.15000,101\.70000/);
   const found = parseAlong({ elements: [node(1, along(P.a, P.b, 0.5), { highway: 'traffic_signals' })] });
   assert.equal(found.features.length, 1);
   assert.equal(alongRoute(r, found).features.length, 1);

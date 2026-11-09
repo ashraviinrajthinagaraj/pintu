@@ -174,6 +174,16 @@ LDP and KESAS fares stay as they are until their concessions end
 When a fare changes, update its row in `js/toll-fares.js` and here. A highway can be added when
 an official announcement gives one fixed car fare for all its plazas.
 
+### Fares drivers paid
+
+For the other plazas, Pintu asks when you arrive what you paid at each plaza it couldn't price
+(0 where you only tapped in). The answers go to the hub (`/fares/add`) with the plaza's
+OpenStreetMap id, the plaza before it on that trip, and the phone's random code; nothing else.
+When a route passes such a plaza, the page asks the hub (`/fares`) and uses the answers given for
+the same plaza coming from the same plaza before it, which is what a closed highway like PLUS
+charges by. Answers from other entry points count only when they all agree, as at an open plaza.
+The plan says how many fares came from drivers. Answers are kept for a little over a year.
+
 ## Traffic lights, bumps and railway crossings
 
 The routes' one Overpass request also brings back traffic lights (`highway=traffic_signals`),
@@ -309,6 +319,25 @@ When a real drive ends, Pintu remembers where (with an optional note, like a lev
 shows it on the main screen and the map, and offers a walking route back. Tapping your own position
 saves it by hand. Starting a drive within 300 m of it, or walking to it, forgets it. Kept for a week.
 
+For paid parking, choose how long you paid for (30 minutes to 3 hours). The car shows when it ends
+and how long is left, and ten minutes before, Pintu says so if it's open. When it's closed, the hub
+sends a notification (`/remind/set`): cron runs every five minutes, so it arrives between five and
+ten minutes before, and its words are worked out when it's sent. Notifications need the browser's
+permission and don't work in the Android app yet, where only the in-app reminder runs.
+
+## Touch 'n Go
+
+Type your card balance once in Settings. On a route with tolls, the plan says whether it covers the
+fares Pintu knows, or might not when some fares are unknown, and it's said again as the drive
+starts. After a real drive, the known fares of the plazas you passed are taken off, and the balance
+is marked as a guess until you type it again (`js/tng.js`).
+
+## Emergency
+
+The red SOS button, on the map and while driving, opens a sheet with a button that calls 999, your
+coordinates in large type to read out, a button to send a map link of where you are, and the three
+nearest hospitals (`amenity=hospital`: clinics are left out), each a tap away from a route.
+
 ## Places on the map, and nearby
 
 Tapping a named place on the map opens a card with what it is and how far, and a way to go there
@@ -343,7 +372,9 @@ It also shows:
   come from OpenStreetMap, so only mapped ones are known, and they're only looked for on routes
   with tolls.
 - **A break reminder** after two hours at the wheel. Driving time carries on into the next trip
-  unless there's been a stop of 15 minutes or more.
+  unless there's been a stop of 15 minutes or more. While driving, a card then points at the next
+  R&R on your side of the road (`js/rest-stop.js` prefers an R&R up to 20 km past a lay-by), says
+  when you'd reach it, and one tap adds it as a stop.
 - **Traffic ahead**, the same as on the driving screen: what it is, how far, and the minutes it adds.
 
 Held upright, there's only room for one of these: a toll plaza first, then traffic, then the break.
@@ -509,6 +540,28 @@ last one without losing saved places or settings.
 - Voice search needs the internet and the phone's speech service.
 - A shared trip or a convoy only updates while Pintu is on screen, for the same reason.
 - Voice depends on the voices installed on each phone.
+
+## BUDI95
+
+Each real drive keeps the litres it used and which fuel. For a car on BUDI95 RON95, Settings shows
+the month's litres against the monthly limit, which is a setting because it has changed (300 L,
+then 200 L from April 2026, then 300 L again from September). Typing the real figure for the month
+replaces Pintu's estimate, and drives after it are added on top. The plan warns when a trip takes
+the month past 80% of the limit, and the monthly summary shows the month so far (`js/budi.js`).
+
+## Looking after the car
+
+Type the odometer reading once, with the next service's reading and the road tax and insurance
+dates. The odometer then grows with each car drive Pintu counts (`js/car-care.js`). The main screen
+shows a note when the service is within 500 km or past it, and 30, 7 and 1 days before each date
+and after it; each is shown once per step, until you save new figures.
+
+## Work trips
+
+On arriving, "Mark as a work trip" marks the drive just ended. The monthly summary counts them,
+with a claim at your rate per km if you set one, and downloads the month's list as a CSV file
+(date, time, from, to, km, fuel and claim) that Excel and Google Sheets open. "From" is filled in
+when a drive starts at your saved home or work.
 
 ## Tests
 

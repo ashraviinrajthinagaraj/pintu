@@ -119,10 +119,13 @@ export const UI = {
   bump: line('<path d="M2.5 18.5h19"/><path d="M5 18.5c2-6 12-6 14 0"/><path d="M9.5 14.2l1-1.6M13.5 14.2l-1-1.6"/>'),
   // The crossed boards that stand at a level crossing.
   railCross: line('<path d="M4.5 5.5l15 13M19.5 5.5l-15 13"/><path d="M12 12v9.5"/>'),
+  // A card held to a reader.
+  card: line('<rect x="2.5" y="6" width="15" height="10.5" rx="2"/><path d="M2.5 10h15M20 8.5c1.2 1.6 1.2 4.4 0 6M22 6.5c2 2.8 2 7.6 0 10.4"/>'),
+  hospital: line('<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M12 7.5v9M7.5 12h9" stroke-width="3"/>'),
   route: line('<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 17V12a4 4 0 0 1 4-4h6M8 19h6a4 4 0 0 0 4-4V7"/>'),
 };
 
-export const CATEGORY_ICONS = { sights: UI.star, hotel: UI.bed, parking: UI.parking, fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };
+export const CATEGORY_ICONS = { hospital: UI.hospital, sights: UI.star, hotel: UI.bed, parking: UI.parking, fuel: UI.fuel, ev: UI.ev, rest: UI.rest, surau: UI.surau, food: UI.food };
 
 export const puckSvg = `<svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="pk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#A9D2FF"/><stop offset="1" stop-color="#2B7BF0"/></linearGradient></defs><circle class="puck-halo" cx="32" cy="32" r="30" fill="#4A9BFF" fill-opacity=".2"/><path d="M32 8 50 52 32 42 14 52Z" fill="url(#pk)" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"/></svg>`;
 

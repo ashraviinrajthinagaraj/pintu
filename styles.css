@@ -1581,3 +1581,32 @@ a { color: inherit; }
 
 /* The Android app's download, looking like the other buttons. */
 .app-link { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }
+
+/* ---------- Emergency ---------- */
+.round-sos { background: #C62828; color: #fff; font-family: var(--condensed); font-weight: 800; font-size: 16px; letter-spacing: .02em; }
+.sos-call { display: flex; align-items: center; justify-content: center; min-height: 64px; margin: 4px 0 14px; border-radius: 14px; background: #C62828; color: #fff; font-family: var(--condensed); font-weight: 800; font-size: 28px; text-decoration: none; box-shadow: inset 0 0 0 3px #fff, 0 0 0 2px #C62828; }
+.sos-where { margin-bottom: 12px; }
+.sos-coords { margin: 2px 0 0; font-family: var(--condensed); font-weight: 700; font-size: 24px; font-variant-numeric: tabular-nums; user-select: all; }
+.sos-hospitals { list-style: none; margin: 0; padding: 0; }
+.sos-hospitals li { display: flex; align-items: center; gap: 12px; min-height: 56px; border-bottom: 1px solid var(--line); }
+.sos-hospitals .sos-hosp { flex: 1; min-width: 0; }
+.sos-hospitals .sos-hosp strong { display: block; overflow-wrap: anywhere; }
+.sos-hospitals .sos-hosp span { display: block; font-size: 14px; color: var(--mute); }
+
+/* ---------- Touch 'n Go ---------- */
+.tng-row { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+.tng-rm { font-family: var(--condensed); font-weight: 700; font-size: 18px; }
+.tng-row .text-input { flex: 1; min-width: 0; }
+.plan-tng.is-short .plan-icon, .plan-tng.is-maybe .plan-icon { background: var(--yellow); color: var(--on-yellow); }
+.plan-tng.is-short .plan-main strong { color: var(--yellow); }
+
+/* ---------- Paid parking ---------- */
+.car-paid { margin: 10px 0 4px; }
+.paid-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.paid-choices button { min-height: 44px; padding: 0 16px; border-radius: 22px; background: var(--panel-2); color: var(--ink); font-family: var(--condensed); font-weight: 700; font-size: 16px; box-shadow: inset 0 0 0 1px var(--line); }
+.paid-choices button[aria-pressed="true"] { background: var(--sky); color: #0B1B2B; box-shadow: none; }
+.car-paid-status { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.car-paid-status p { flex: 1; margin: 0; }
+.car-paid-status strong { display: block; font-family: var(--condensed); font-size: 18px; }
+.car-paid-status span { display: block; font-size: 14px; color: var(--mute); }
+#sos-hosp-label { margin-top: 18px; }

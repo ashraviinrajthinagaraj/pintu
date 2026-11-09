@@ -18,9 +18,12 @@ import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
-import { alongRoute, fetchAlong } from './along.js';
-import { countLights, featureAhead, featuresOnRoute, fetchFeatures } from './road-features.js';
-import { priceTolls, tollTotal } from './toll-fares.js';
+import { alongRoute, fetchAlong, restsOnRoute } from './along.js';
+import { nextRest } from './rest-stop.js';
+import { afterTolls, cleanBalance, tngCheck } from './tng.js';
+import { CHOICES_MIN, parkingLeft, remindOff, remindOnServer, warnDue } from './parking-timer.js';
+import { countLights, featureAhead, featuresOnRoute } from './road-features.js';
+import { fareAt, priceTolls, tollTotal } from './toll-fares.js';
 import { vehiclePicture } from './car-art.js';
 import { ALWAYS_SAY, JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fasterSaving, fetchTraffic, jamAhead, throughPoints } from './traffic.js';
 import { evCar, fetchLimits, mergeResults, planCharging, searchAddresses } from './tomtom.js';
@@ -344,6 +347,14 @@ function applyStaticText() {
   $('camera-text').textContent = t('cameraText');
   $('camera-on-label').textContent = t('cameraOn');
   $('set-road-title').textContent = t('roadTitle');
+  $('set-tng-title').textContent = t('setTng');
+  $('tng-text').textContent = t('tngText');
+  $('tng-save').textContent = t('tngSave');
+  $('sos-title').textContent = t('sosTitle');
+  $('sos-call').textContent = t('sosCall');
+  $('sos-where-label').textContent = t('sosWhere');
+  $('sos-share').textContent = t('sosShare');
+  $('sos-hosp-label').textContent = t('sosHospitals');
   $('road-text').textContent = t('roadText');
   $('road-on-label').textContent = t('roadOn');
   $('lights-say-label').textContent = t('lightsSay');
@@ -372,6 +383,10 @@ function applyStaticText() {
   $('plan-parking-icon').innerHTML = UI.parking;
   $('plan-toll-icon').innerHTML = UI.toll;
   $('plan-other-icon').innerHTML = UI.route;
+  $('plan-tng-icon').innerHTML = UI.card;
+  $('sos-back').innerHTML = UI.back;
+  $('btn-sos').setAttribute('aria-label', t('sosBtn'));
+  $('btn-sos-nav').setAttribute('aria-label', t('sosBtn'));
   $('plan-toll-chev').innerHTML = UI.chevron;
   label($('plan-parking-clear'), t('parkingRemove'), UI.close);
   renderSaved();
@@ -515,6 +530,7 @@ function renderSegments() {
   set('voice-turns', S.settings.voiceLevel === 'turns');
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
+  renderTngSetting();
   $('road-on').checked = S.settings.roadWarnings;
   $('lights-say').checked = S.settings.sayLights;
   $('lights-say').disabled = !S.settings.roadWarnings;
@@ -591,7 +607,7 @@ function applyTheme() {
 /* ---------- Views ---------- */
 
 // Sheets that open over the main screen, in place of its buttons.
-const IDLE_SHEETS = new Set(['explore', 'placecard', 'car', 'watch']);
+const IDLE_SHEETS = new Set(['explore', 'placecard', 'car', 'watch', 'sos']);
 
 function show(view) {
   S.view = view;
@@ -642,6 +658,7 @@ function render() {
   $('nav').hidden = view !== 'nav';
   $('arrival').hidden = view !== 'arrival';
   $('settings').hidden = overlay !== 'settings';
+  $('sos').hidden = overlay !== 'sos';
   $('vehicle').hidden = overlay !== 'vehicle';
   $('summary').hidden = overlay !== 'summary';
   $('report-sheet').hidden = overlay !== 'roadreport';
@@ -683,6 +700,7 @@ addEventListener('popstate', (e) => {
   if (was === 'endsearch' || was === 'stopsearch') S.searchFor = null;
   if (was === 'hudmode') leaveFullscreen();
   if (was === 'mall') S.mallCtrl?.abort();
+  if (was === 'sos') S.sosCtrl?.abort();
   if (was === 'explore' && S.overlay !== 'explore') closeExplore();
   if (was === 'placecard' && S.overlay !== 'placecard' && S.view === 'idle') mapView?.setDestination(null);
   if (st.view === 'idle' && (S.view === 'preview' || S.view === 'search')) leaveDestination();
@@ -1641,6 +1659,7 @@ function renderPlan() {
   renderPlanAlong(route);
   renderPlanFuel(route);
   renderPlanToll(route);
+  renderPlanTng(route);
   renderPlanOtherWay(route);
   renderPlanArrive(route);
   renderPlanConvoy();
@@ -2150,6 +2169,7 @@ function savedCar() {
 }
 
 function saveCar(spot, name = '') {
+  if (load('car', null)?.paidUntil) remindOff();
   save('car', { lng: spot.lng, lat: spot.lat, at: Date.now(), name, note: '' });
   renderCarPill();
 }
@@ -2161,6 +2181,7 @@ function setCarNote(note) {
 }
 
 function forgetCar() {
+  if (load('car', null)?.paidUntil) remindOff();
   remove('car');
   mapView?.setCarPin(null);
   renderCarPill();
@@ -2183,7 +2204,9 @@ function renderCarPill() {
   const far = carDistance(car);
   const parts = [];
   if (far != null && far >= 30) parts.push(fmtDistance(far));
-  parts.push(car.note || t('carParkedAt', { clock: carClock(car) }));
+  const left = parkingLeft(car);
+  if (left > 0) parts.push(t('carPaidPill', { clock: fmtClock(new Date(car.paidUntil), getLang()) }));
+  else parts.push(car.note || t('carParkedAt', { clock: carClock(car) }));
   $('car-pill-title').textContent = t('yourCar');
   $('car-pill-detail').textContent = parts.join(' · ');
   $('car-pill').setAttribute('aria-label', `${t('yourCar')}. ${parts.join(', ')}`);
@@ -2207,6 +2230,7 @@ function renderCarSheet() {
   $('car-go').textContent = car ? t('carWalk') : t('carSaveHere');
   $('car-here').hidden = !car || !S.fix;
   $('car-found').hidden = !car;
+  renderCarPaid(car);
 }
 
 function openCar() {
@@ -2817,9 +2841,13 @@ function startGuidance({ simulate }) {
   S.bumpSaidAt = -Infinity;
   const planned = S.along?.state === 'ready' ? S.along.found : null;
   S.featurePool = planned?.features || [];
+  S.restPool = planned?.rests || [];
+  S.tollsPaid = new Map();
+  hideRest();
   S.featureFetchedAt = planned ? Date.now() : 0;
   S.features = featuresOnRoute(S.route, S.featurePool);
   if (!planned) loadFeatures(S.route);
+  warnTng();
   // Traffic looked up while choosing the route needn't be asked for again yet.
   S.traffic = S.route.traffic?.from === 0 && S.mode !== 'walk' ? S.route.traffic : null;
   S.trafficAt = S.traffic ? S.traffic.at : 0;
@@ -2920,6 +2948,7 @@ function onNavFix(fix, takenAt) {
   for (const p of st.prompts) say(p);
   renderCamera(st, fix);
   renderRoadFeature(st, fix);
+  notePaidTolls(st);
   renderRoadReport(st, fix);
   if (Date.now() - (S.roadAt || 0) > REPORTS_EVERY_MS) loadRoadReports();
   if (Date.now() - (S.trafficAt || 0) > TRAFFIC_EVERY_MS && !S.sim) loadTraffic();
@@ -3022,6 +3051,7 @@ function watchDrive(fix, st) {
     clearAhead: st.distanceToNext,
   });
   if (!S.sim && Date.now() - S.driveTimeSavedAt > DRIVE_TIME_SAVE_MS) saveDriveTime();
+  if (moments.includes('longDrive')) offerRest(st);
   for (const key of moments) {
     // A word about speed matters more than a remark about the view.
     if (!S.moment || SPEED_MOMENT.test(key) || !SPEED_MOMENT.test(S.moment.key)) S.moment = { key, time: fix.time, limit };
@@ -3053,7 +3083,10 @@ function momentLine(key, limit) {
   const who = S.settings.voiceCharacter;
   const lang = getLang();
   if (SPEED_MOMENT.test(key)) return dress(who, key, t('overspeedSay', { limit }), lang, { vars: { limit } });
-  return dress(who, key, key === 'longDrive' ? t('restSay') : '', lang);
+  if (key !== 'longDrive') return dress(who, key, '', lang);
+  const line = dress(who, key, t('restSay'), lang);
+  const at = S.restTarget, s = S.lastState?.s ?? 0;
+  return at && at.along > s ? `${line} ${t('restNext', { name: restName(at), distance: sayDistance(at.along - s, lang) })}` : line;
 }
 
 function onStopReached() {
@@ -3374,16 +3407,18 @@ const BUMP_SAY_KMH = 30;      // slower than this, you'll see it in time anyway
 const BUMP_QUIET_M = 150;     // a row of bumps is said once
 const ROAD_ICONS_AHEAD = { light: () => UI.signal, bump: () => UI.bump, rail: () => UI.railCross };
 
+// Lights, bumps, crossings and places to rest, for a route the plan didn't ask about.
 function loadFeatures(route) {
   S.featureCtrl?.abort();
-  if (!S.settings.roadWarnings || S.mode === 'walk') return;
+  if (S.mode === 'walk') return;
   const ctrl = new AbortController();
   S.featureCtrl = ctrl;
   S.featureFetchedAt = Date.now();
   const timer = setTimeout(() => ctrl.abort(), 30000);
-  fetchFeatures(route, { signal: ctrl.signal }).then((found) => {
-    S.featurePool = found;
-    if (S.view === 'nav' && S.route) S.features = featuresOnRoute(S.route, found);
+  fetchAlong([route], { signal: ctrl.signal, tolls: false, cameras: false, rests: true, features: true }).then((found) => {
+    S.featurePool = found.features;
+    S.restPool = found.rests;
+    if (S.view === 'nav' && S.route) S.features = featuresOnRoute(S.route, found.features);
   }).catch(() => { /* nothing known is nothing to warn about */ })
     .finally(() => clearTimeout(timer));
 }
@@ -3411,6 +3446,244 @@ function renderRoadFeature(st, fix) {
     S.bumpSaidAt = feature.along;
   }
   speakText(t(`roadSay_${feature.kind}`, { distance: sayDistance(ahead, lang) }), { wait: voice.WAIT_TURN_MS });
+}
+
+/* ---------- Time to rest ---------- */
+
+const REST_OFFER_MS = 90000;
+const restName = (r) => r.name || t(r.kind === 'rnr' ? 'nameRest' : 'nameLayby');
+
+function offerRest(st) {
+  if (S.mode === 'walk' || !S.route) return;
+  const lang = getLang();
+  const target = nextRest(restsOnRoute(S.route, S.restPool || []), st.s);
+  S.restTarget = target;
+  $('rest-title').textContent = t('restTitle', { time: fmtDuration(Math.round(S.watch.driving / 60000) * 60, lang) });
+  $('rest-detail').textContent = target
+    ? t('restAt', { name: restName(target), distance: fmtDistance(target.along - st.s), clock: fmtClock(new Date(Date.now() + timeBetween(S.route, st.s, target.along) * 1000), lang) })
+    : t('restAnywhere');
+  $('rest-yes').textContent = t(target ? 'restStop' : 'restOk');
+  $('rest-no').textContent = t('restLater');
+  $('rest-no').hidden = !target;
+  $('rest-offer').hidden = false;
+  clearTimeout(S.restTimer);
+  S.restTimer = setTimeout(hideRest, REST_OFFER_MS);
+}
+
+function hideRest() {
+  clearTimeout(S.restTimer);
+  $('rest-offer').hidden = true;
+}
+
+function takeRest() {
+  const target = S.restTarget;
+  hideRest();
+  if (!target || S.view !== 'nav') return;
+  addStop({ id: target.id, name: restName(target), lat: target.lat, lng: target.lng, category: 'rest' });
+}
+
+/* ---------- Touch 'n Go ---------- */
+
+const tngBalance = () => cleanBalance(load('tng', null));
+
+// Plazas passed, with the fare where it's known.
+function notePaidTolls(st) {
+  if (S.sim || !st.onRoute || !S.tolls?.length || !S.tollsPaid) return;
+  for (const toll of S.tolls) {
+    if (toll.along > st.s - 30 || S.tollsPaid.has(toll.id)) continue;
+    S.tollsPaid.set(toll.id, fareAt(S.route, toll)?.rm ?? null);
+  }
+}
+
+function payTolls() {
+  const paid = [...(S.tollsPaid?.values() || [])].filter((rm) => Number.isFinite(rm));
+  S.tollsPaid = null;
+  if (!paid.length) return;
+  const next = afterTolls(load('tng', null), paid);
+  if (next) save('tng', next);
+}
+
+function renderPlanTng(route) {
+  const row = $('plan-tng');
+  const tolls = alongOf(route)?.tolls || [];
+  row.hidden = !(S.mode === 'car' && tolls.length);
+  if (row.hidden) return;
+  const bal = tngBalance();
+  const check = tngCheck(bal, tolls);
+  row.classList.toggle('is-short', check?.state === 'short');
+  row.classList.toggle('is-maybe', check?.state === 'maybe');
+  $('plan-tng-edit').textContent = t(bal ? 'tngEdit' : 'tngAdd');
+  if (!bal) {
+    $('plan-tng-title').textContent = t('tngUnset');
+    $('plan-tng-detail').textContent = t('tngUnsetDetail');
+    return;
+  }
+  $('plan-tng-title').textContent = t('tngRowTitle', { rm: money(bal.rm) });
+  $('plan-tng-detail').textContent = check.state === 'short' ? t('tngShort', { need: money(check.need) })
+    : check.state === 'maybe' ? t('tngMaybe') : t('tngOk');
+}
+
+function renderTngSetting() {
+  const bal = tngBalance();
+  if (document.activeElement !== $('tng-balance')) $('tng-balance').value = bal ? bal.rm.toFixed(2) : '';
+  const d = bal ? new Date(bal.at) : null;
+  const day = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : '';
+  $('tng-status').textContent = bal ? [t('tngStatus', { date: dateText(day) }), bal.guessed ? t('tngGuessed') : ''].filter(Boolean).join(' ') : '';
+}
+
+function saveTng() {
+  const bal = cleanBalance({ rm: parseFloat($('tng-balance').value), at: Date.now() });
+  if (!bal) return;
+  save('tng', bal);
+  renderTngSetting();
+  toast(t('tngSaved'));
+}
+
+// Said as the drive starts, when the card may not cover the tolls.
+function warnTng() {
+  if (S.sim || S.mode !== 'car') return;
+  const check = tngCheck(tngBalance(), alongOf(S.route)?.tolls || []);
+  if (check?.state === 'short' || check?.state === 'maybe') speakText(t('tngSay'), { wait: voice.WAIT_TURN_MS });
+}
+
+/* ---------- Emergency ---------- */
+
+function openSos() {
+  gps.start();
+  openOverlay('sos');
+  renderSos();
+  loadSosHospitals();
+}
+
+function renderSos() {
+  const fix = S.fix;
+  $('sos-coords').textContent = fix ? `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)}` : t('sosNoFix');
+  $('sos-coords').classList.toggle('tip', !fix);
+  $('sos-share').disabled = !fix;
+}
+
+async function loadSosHospitals() {
+  S.sosCtrl?.abort();
+  const list = $('sos-hospitals');
+  const status = $('sos-hosp-status');
+  const center = S.fix || await waitForFix();
+  if (S.overlay !== 'sos') return;
+  renderSos();
+  if (!center) { status.textContent = t('sosNoFix'); list.replaceChildren(); return; }
+  const ctrl = new AbortController();
+  S.sosCtrl = ctrl;
+  status.hidden = false;
+  status.textContent = t('sosLooking');
+  let found = [];
+  try { found = await findNearby({ lng: center.lng, lat: center.lat }, 'hospital', { signal: ctrl.signal }); } catch { found = []; }
+  if (ctrl.signal.aborted || S.overlay !== 'sos') return;
+  status.hidden = found.length > 0;
+  status.textContent = found.length ? '' : t('sosNone');
+  list.replaceChildren(...found.slice(0, 3).map((p) => {
+    const li = document.createElement('li');
+    const what = document.createElement('span');
+    what.className = 'sos-hosp';
+    const name = document.createElement('strong');
+    name.textContent = p.name || t('unnamed_hospital');
+    const far = document.createElement('span');
+    far.textContent = fmtDistance(p.distance);
+    what.append(name, far);
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.className = 'plate plate-btn plate-small';
+    go.textContent = t('sosGo');
+    go.addEventListener('click', () => {
+      const place = { name: p.name || t('unnamed_hospital'), detail: '', lng: p.lng, lat: p.lat, country: '' };
+      S.afterBack = () => {
+        if (S.view === 'nav') endTrip();
+        goTo(place);
+      };
+      history.back();
+    });
+    li.append(what, go);
+    return li;
+  }));
+}
+
+function shareSos() {
+  const fix = S.fix;
+  if (!fix) return;
+  const at = `${fix.lat.toFixed(5)},${fix.lng.toFixed(5)}`;
+  shareLink(`https://maps.google.com/?q=${at}`, t('sosShareText'), t('sosTitle'));
+}
+
+/* ---------- Paid parking ---------- */
+
+function renderCarPaid(car) {
+  const box = $('car-paid');
+  box.hidden = !car;
+  if (!car) return;
+  const lang = getLang();
+  $('car-paid-label').textContent = t('carPaidLabel');
+  const left = parkingLeft(car);
+  if (!$('car-paid-choices').childElementCount || $('car-paid-choices').dataset.lang !== lang) {
+    $('car-paid-choices').dataset.lang = lang;
+    $('car-paid-choices').replaceChildren(...CHOICES_MIN.map((min) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.min = String(min);
+      b.textContent = min < 60 ? t('carPaidMin', { n: min }) : t('carPaidHour', { n: min / 60 });
+      b.addEventListener('click', () => setParking(min));
+      return b;
+    }));
+  }
+  for (const b of $('car-paid-choices').children) b.setAttribute('aria-pressed', String(Number(b.dataset.min) === car.paidMin && left > 0));
+  $('car-paid-status').hidden = left == null;
+  if (left == null) return;
+  if (left > 0) {
+    $('car-paid-left').textContent = `${t('carPaidUntil', { clock: fmtClock(new Date(car.paidUntil), lang) })} · ${t('carPaidLeft', { time: fmtDuration(Math.ceil(left / 60000) * 60, lang) })}`;
+    $('car-paid-note').textContent = t(car.pushed ? 'carPaidPush' : 'carPaidOpen');
+  } else {
+    $('car-paid-left').textContent = t('carPaidOver');
+    $('car-paid-note').textContent = '';
+  }
+  $('car-paid-stop').textContent = t('carPaidStop');
+}
+
+async function setParking(min) {
+  const car = savedCar();
+  if (!car) return;
+  const until = Date.now() + min * 60000;
+  save('car', { ...car, paidUntil: until, paidMin: min, warned: false, pushed: false });
+  renderCarSheet();
+  renderCarPill();
+  // Closed, Pintu can only remind you through a notification from its server.
+  if (inApp()) return;
+  try {
+    await remindOnServer(until, getLang(), await workerReady());
+    const now = savedCar();
+    if (now?.paidUntil === until) save('car', { ...now, pushed: true });
+  } catch { /* reminded only while open, then */ }
+  if (S.overlay === 'car') renderCarSheet();
+}
+
+function stopParking() {
+  const car = savedCar();
+  if (car) {
+    const { paidUntil, paidMin, warned, pushed, ...rest } = car;
+    save('car', rest);
+  }
+  remindOff();
+  renderCarSheet();
+  renderCarPill();
+}
+
+function checkParking() {
+  const car = savedCar();
+  if (!car?.paidUntil) return;
+  if (warnDue(car)) {
+    save('car', { ...car, warned: true });
+    const words = t('parkSay', { n: Math.max(1, Math.round(parkingLeft(car) / 60000)) });
+    toast(words, 8000);
+    speakText(words);
+  }
+  renderCarPill();
+  if (S.overlay === 'car') renderCarPaid(savedCar());
 }
 
 function renderNavRange(st) {
@@ -3655,6 +3928,8 @@ function stopGuidance() {
   S.cameras = [];
   S.featureCtrl?.abort();
   S.features = [];
+  hideRest();
+  payTolls();
   $('road-alert').hidden = true;
   S.tollCtrl?.abort();
   S.tolls = [];
@@ -4581,6 +4856,25 @@ function wire() {
     renderPlanParking();
   });
   $('plan-parking-clear').addEventListener('click', clearParking);
+  $('plan-tng-edit').addEventListener('click', () => {
+    openOverlay('settings');
+    renderTngSetting();
+    requestAnimationFrame(() => { $('set-tng-title').scrollIntoView({ block: 'center' }); $('tng-balance').focus(); });
+  });
+  $('tng-save').addEventListener('click', () => {
+    saveTng();
+    if (S.view === 'preview') renderRoutes();
+  });
+  $('tng-balance').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tng-save').click(); });
+  $('rest-yes').addEventListener('click', takeRest);
+  $('rest-no').addEventListener('click', hideRest);
+  $('btn-sos').addEventListener('click', openSos);
+  $('btn-sos-nav').addEventListener('click', openSos);
+  $('sos-back').addEventListener('click', () => history.back());
+  $('sos-share').addEventListener('click', shareSos);
+  $('car-paid-stop').addEventListener('click', stopParking);
+  setInterval(checkParking, 30000);
+  checkParking();
   $('plan-other-go').addEventListener('click', () => {
     const box = $('avoid-tolls');
     box.checked = !!S.otherWay?.free;

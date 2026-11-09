@@ -50,10 +50,32 @@ export function fareAt(route, toll) {
   return FARES.find((f) => f.refs.some((r) => refs.has(r))) || null;
 }
 
-export function priceTolls(route, tolls) {
-  return (tolls || []).map((toll) => {
+const median = (xs) => {
+  const v = [...xs].sort((a, b) => a - b);
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+
+// What drivers say they paid at a plaza (newest first), for the plaza before it
+// on this trip. On a closed highway the exit fare depends on the entry, so a
+// fare from the same entry counts; from other entries, only if they all agree,
+// as they would at an open plaza.
+export function driverFare(reports, prev) {
+  if (!reports?.length) return null;
+  const same = reports.filter((r) => (r.prev || null) === (prev || null)).slice(0, 5).map((r) => r.rm);
+  if (same.length) return Math.round(median(same) * 100) / 100;
+  const all = reports.slice(0, 7).map((r) => r.rm);
+  const mid = median(all);
+  return all.every((rm) => Math.abs(rm - mid) <= 0.1) ? Math.round(mid * 100) / 100 : null;
+}
+
+// `drivers` is what Pintu's server knows, by plaza: used where no fare was announced.
+export function priceTolls(route, tolls, drivers = null) {
+  return (tolls || []).map((toll, i, all) => {
     const fare = fareAt(route, toll);
-    return { ...toll, fare: fare ? fare.rm : null, road: fare ? fare.road : null };
+    if (fare) return { ...toll, fare: fare.rm, road: fare.road };
+    const told = drivers ? driverFare(drivers[toll.id], all[i - 1]?.id) : null;
+    return { ...toll, fare: told, road: null, byDrivers: told != null };
   });
 }
 
@@ -66,6 +88,7 @@ export function tollTotal(priced) {
     priced: known.length,
     unknown: priced.length - known.length,
     total: known.length ? total : null,
-    roads: [...new Set(known.map((t) => t.road))],
+    roads: [...new Set(known.map((t) => t.road).filter(Boolean))],
+    byDrivers: known.filter((t) => t.byDrivers).length,
   };
 }

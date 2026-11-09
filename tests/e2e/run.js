@@ -3476,7 +3476,8 @@ await check('a quicker way round a jam: offered, said, and taken with one tap', 
   const via = through.locations.filter((l) => l.type === 'through');
   assert.ok(via.length >= 2 && via.every((l) => Number.isFinite(l.heading)), 'passes TomTom\'s roads, facing their way');
   assert.equal(through.locations[through.locations.length - 1].type, 'break');
-  assert.ok((await said(page)).some((x) => /^Ada laluan lebih cepat, jimat 12 minit/.test(x.text)));
+  // Said just after the card shows, once the voice is free.
+  await page.waitForFunction(() => (window.__said || []).some((x) => /^Ada laluan lebih cepat, jimat 12 minit/.test(x.text)));
   await page.screenshot({ path: `${shots}/60-faster.png` });
   const before = await text(page, '#sign-road');
   await page.click('#faster-yes');
@@ -5106,6 +5107,115 @@ await check('driving: the next light, bump and railway crossing show; the bump a
   await roll(off.page, trip, 0, 640, 12);
   assert.equal(await vis(off.page, '#road-alert'), false, 'switched off');
   await off.ctx.close();
+});
+
+// Waits until the routes' own request has been answered and placed.
+const alongReady = (page) => page.waitForFunction(() => document.querySelectorAll('#along-rail li').length > 0);
+const startNow = async (page) => {
+  await page.click('#start');
+  if (await page.locator('#safety').isVisible()) await page.click('#safety-ok');
+  await page.waitForSelector('#nav-bar');
+};
+
+await check('two hours at the wheel: the next R&R on your side is offered, said, and taken as a stop', async () => {
+  const trip = prepareTrip(plannedTrip());
+  const storage = { 'pintu.safetySeen': 'true', 'pintu.driveTime': { ms: 2 * 3600e3 - 20e3, at: Date.now() } };
+  const { ctx, page, log } = await newApp(browser, { storage, scale: 2, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toPreview(page);
+  await alongReady(page);
+  await startNow(page);
+  await roll(page, trip, 0, 420, 12);
+  await page.waitForSelector('#rest-offer:not([hidden])');
+  assert.match(await text(page, '#rest-title'), /^Dah .+ memandu$/);
+  assert.match(await text(page, '#rest-detail'), /^R&R Ujian dalam [\d.]+ km, sampai lebih kurang \d/);
+  assert.equal(await text(page, '#rest-yes'), 'Berhenti di sana');
+  await page.waitForFunction(() => (window.__said || []).some((x) => /dua jam[\s\S]*R&R Ujian/.test(x.text)));
+  await page.screenshot({ path: `${shots}/75-rest.png` });
+  const before = log.fossgis.length;
+  await page.click('#rest-yes');
+  for (let i = 0; i < 40 && log.fossgis.length === before; i++) await page.waitForTimeout(50);
+  assert.equal(log.fossgis.at(-1).locations.length, 3, 'the R&R is now a stop');
+  assert.equal(await vis(page, '#rest-offer'), false);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('Touch \'n Go: short for the known tolls, said at the start, and the fares paid come off', async () => {
+  const trip = prepareTrip(plannedTrip());
+  const storage = { 'pintu.safetySeen': 'true', 'pintu.tng': { rm: 3, at: Date.now() } };
+  const { ctx, page } = await newApp(browser, { storage, scale: 2, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toPreview(page);
+  await alongReady(page);
+  assert.equal(await text(page, '#plan-tng-title'), 'Baki Touch ’n Go RM3.00');
+  assert.match(await text(page, '#plan-tng-detail'), /^Tak cukup: kurang RM1\.10 untuk tol yang diketahui/);
+  assert.equal(await page.getAttribute('#plan-tng', 'class'), 'plan-row plan-tng is-short');
+
+  await page.click('#plan-tng-edit');
+  await page.waitForSelector('#settings:not([hidden])');
+  assert.equal(await page.inputValue('#tng-balance'), '3.00');
+  await page.fill('#tng-balance', '15');
+  await page.click('#tng-save');
+  assert.match(await text(page, '#tng-status'), /^Dikemas kini /);
+  await page.goBack();
+  await page.waitForFunction(() => /Mungkin tak cukup/.test(document.getElementById('plan-tng-detail').textContent));
+
+  await startNow(page);
+  await page.waitForFunction(() => (window.__said || []).some((x) => /^Baki Touch ’n Go mungkin tak cukup/.test(x.text)));
+  await roll(page, trip, 0, 900, 12);
+  await page.click('#btn-end');
+  await page.click('#btn-end');
+  const kept = JSON.parse(await page.evaluate(() => localStorage.getItem('pintu.tng')));
+  assert.equal(kept.rm, 12.9, 'the LDP plaza\'s RM2.10 came off');
+  assert.equal(kept.guessed, true);
+  await ctx.close();
+});
+
+await check('paid parking: a countdown on the car, and a reminder ten minutes before', async () => {
+  const car = { lng: P.a[0], lat: P.a[1], at: Date.now(), name: '', note: '' };
+  const { ctx, page } = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.car': car }, scale: 2 });
+  await page.click('#car-pill');
+  await page.waitForSelector('#car-paid:not([hidden])');
+  assert.deepEqual(await page.locator('#car-paid-choices button').allInnerTexts(), ['30 min', '1 jam', '2 jam', '3 jam']);
+  await page.locator('#car-paid-choices button').nth(1).click();
+  await page.waitForSelector('#car-paid-status:not([hidden])');
+  assert.match(await text(page, '#car-paid-left'), /^Tamat \d+:\d\d .+ · .+ lagi$/);
+  assert.equal(await text(page, '#car-paid-note'), 'Pintu ingatkan 10 minit sebelum tamat, bila dibuka.');
+  assert.equal(await page.getAttribute('#car-paid-choices button:nth-child(2)', 'aria-pressed'), 'true');
+  await noOverflow(page, 'parking timer');
+  await page.screenshot({ path: `${shots}/76-parking.png` });
+  await page.click('#car-paid-stop');
+  assert.equal(await vis(page, '#car-paid-status'), false);
+  await ctx.close();
+
+  const soon = await newApp(browser, { storage: { 'pintu.safetySeen': 'true', 'pintu.car': { ...car, paidUntil: Date.now() + 9 * 60e3 + 20e3, paidMin: 60, warned: false } } });
+  await soon.page.waitForFunction(() => /^Masa parkir anda tamat dalam 9 minit\.$/.test(document.getElementById('toast').textContent));
+  assert.match(await text(soon.page, '#car-pill-detail'), /^Parkir tamat /);
+  assert.equal(JSON.parse(await soon.page.evaluate(() => localStorage.getItem('pintu.car'))).warned, true, 'only once');
+  await soon.ctx.close();
+});
+
+await check('emergency: 999, where you are, and the nearest hospital, from the map or while driving', async () => {
+  const hospital = (asked) => (asked.includes('"amenity"="hospital"')
+    ? { elements: [{ type: 'node', id: 501, lat: P.b[1], lon: P.b[0], tags: { amenity: 'hospital', name: 'Hospital Ujian' } }] }
+    : { elements: [] });
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, overpass: hospital });
+  await page.click('#btn-sos');
+  await page.waitForSelector('#sos:not([hidden])');
+  assert.equal(await page.getAttribute('#sos-call', 'href'), 'tel:999');
+  assert.equal(await text(page, '#sos-call'), 'Telefon 999');
+  assert.equal(await text(page, '#sos-coords'), 'Lokasi belum diketahui. Pastikan lokasi telefon hidup.');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.waitForFunction(() => /^\d+\.\d{5}, \d+\.\d{5}$/.test(document.getElementById('sos-coords').textContent));
+  await page.waitForFunction(() => document.querySelectorAll('#sos-hospitals li').length > 0);
+  assert.match(await text(page, '#sos-hospitals li'), /Hospital Ujian[\s\S]*km/);
+  await noOverflow(page, 'emergency');
+  await page.screenshot({ path: `${shots}/77-emergency.png` });
+  await page.click('#sos-hospitals button');
+  await page.waitForFunction(() => document.getElementById('dest-name').textContent === 'Hospital Ujian');
+  await startNow(page);
+  assert.equal(await vis(page, '#btn-sos-nav'), true);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
 });
 
 await browser.close();
