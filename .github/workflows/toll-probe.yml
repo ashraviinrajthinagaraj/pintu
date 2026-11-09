@@ -1,0 +1,16 @@
+# Temporary: what the Malaysian Highway Authority's public plaza map offers.
+name: Toll data probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask LLM's public GIS
+        run: |
+          B=https://gis02.llm.gov.my/llmsmpt/rest/services/GIS_LLM/PLAZA_TOL/MapServer
+          echo "== Service"; curl -sS -m 30 "$B?f=json" | head -c 3000; echo
+          echo "== Layer 0"; curl -sS -m 30 "$B/0?f=json" | head -c 6000; echo
+          echo "== Count"; curl -sS -m 30 "$B/0/query?where=1%3D1&returnCountOnly=true&f=json"; echo
+          echo "== Sample"; curl -sS -m 30 "$B/0/query?where=1%3D1&outFields=*&resultRecordCount=5&f=json" | head -c 6000; echo
