@@ -12,7 +12,7 @@ jobs:
           for bbox in "52.50,13.38,52.52,13.42" "3.10,101.65,3.20,101.75" "1.28,103.83,1.31,103.86" "13.70,100.48,13.76,100.55"; do
             Q="[out:json][timeout:25];node[\"amenity\"=\"fuel\"]($bbox);out ids 50;"
             for s in https://ovp.dresel.systems/api/interpreter https://overpass-api.de/api/interpreter; do
-              n=$(curl -sS -m 45 -A "Mozilla/5.0 PintuProbe/1.0" --data-urlencode "data=$Q" "$s" | grep -c '"type"')
+              n=$(curl -sS -m 45 -A "Mozilla/5.0 PintuProbe/1.0" --data-urlencode "data=$Q" "$s" | grep -c '"type"' || true)
               echo "$bbox $s -> $n"
             done
           done
