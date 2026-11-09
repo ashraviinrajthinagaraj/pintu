@@ -1,4 +1,4 @@
-# Temporary: which Overpass output modes carry node positions.
+# Temporary: which Overpass servers hold Malaysia.
 name: Overpass probe
 on:
   workflow_dispatch:
@@ -9,9 +9,8 @@ jobs:
     steps:
       - name: Ask Overpass
         run: |
-          for s in https://ovp.dresel.systems/api/interpreter https://overpass-api.de/api/interpreter; do
-            for out in "out tags 2;" "out center tags 2;"; do
-              echo "== $s $out"
-              curl -sS -m 40 -A "Mozilla/5.0 PintuProbe/1.0" -H "Accept: application/json" -H "Origin: https://ashraviinrajthinagaraj.github.io" --data-urlencode "data=[out:json][timeout:25];node[\"highway\"=\"speed_camera\"](2.9,101.4,3.4,101.9);$out" "$s" | head -c 600; echo
-            done
+          Q='[out:json][timeout:25];node["amenity"="fuel"](3.10,101.65,3.20,101.75);out center tags 3;'
+          for s in https://ovp.dresel.systems/api/interpreter https://overpass.private.coffee/api/interpreter https://overpass.kumi.systems/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter; do
+            echo "== $s"
+            curl -sS -m 45 -A "Mozilla/5.0 PintuProbe/1.0" -H "Origin: https://ashraviinrajthinagaraj.github.io" -w "\nHTTP %{http_code} %{time_total}s\n" --data-urlencode "data=$Q" "$s" | tr -d '\n' | head -c 500; echo
           done
