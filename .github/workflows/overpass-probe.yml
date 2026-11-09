@@ -5,11 +5,13 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Ask Overpass
         run: |
-          for out in "out tags 2;" "out center tags 2;" "out center 2;"; do
-            echo "== $out"
-            curl -sS -m 60 -A "PintuProbe/1.0 (github.com/ashraviinrajthinagaraj/pintu)" --data-urlencode "data=[out:json][timeout:25];node[\"highway\"=\"speed_camera\"](2.9,101.4,3.4,101.9);$out" https://overpass.private.coffee/api/interpreter | head -c 700; echo
+          for s in https://ovp.dresel.systems/api/interpreter https://overpass-api.de/api/interpreter; do
+            for out in "out tags 2;" "out center tags 2;"; do
+              echo "== $s $out"
+              curl -sS -m 40 -A "Mozilla/5.0 PintuProbe/1.0" -H "Accept: application/json" -H "Origin: https://ashraviinrajthinagaraj.github.io" --data-urlencode "data=[out:json][timeout:25];node[\"highway\"=\"speed_camera\"](2.9,101.4,3.4,101.9);$out" "$s" | head -c 600; echo
+            done
           done
