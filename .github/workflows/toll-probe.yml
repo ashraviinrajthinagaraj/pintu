@@ -9,10 +9,10 @@ jobs:
     steps:
       - name: Ask LLM
         run: |
-          curl -sSL -m 30 -A "Mozilla/5.0" "https://www.llm.gov.my/" -o site.html
-          echo "== links"; grep -oiE 'href="https?://www\.llm\.gov\.my/[^"]*"|href="/[^"]*"' site.html | sort -u | grep -viE '\.(pdf|jpg|png|css|js)"' | head -120
-          R=https://gis02.llm.gov.my/llmsmpt/rest/services/GIS_LLM/KAW_REHAT_RAWAT/MapServer
-          echo "== RnR"; curl -sS -m 30 "$R?f=json" | head -c 1500; echo
-          curl -sS -m 30 "$R/0?f=json" | grep -oE '"name":"[A-Z_0-9]+"' | tr '\n' ' '; echo
-          curl -sS -m 30 "$R/0/query?where=1%3D1&returnCountOnly=true&f=json"; echo
-          curl -sS -m 30 "$R/0/query?where=1%3D1&outFields=*&resultRecordCount=3&f=json" | head -c 2500; echo
+          A="Mozilla/5.0"
+          curl -sSL -m 30 -A "$A" "https://www.llm.gov.my/awam/highway" -o hw.html; wc -c hw.html
+          echo "== links"; grep -oiE 'href="[^"]*"' hw.html | sort -u | grep -iE 'highway|lebuh|tol|kadar' | head -80
+          echo "== text"; sed -e 's/<[^>]*>/ /g' hw.html | tr -s ' \t' ' ' | grep -iE 'kadar|tol|RM' | head -40 | cut -c1-300
+          L=$(grep -oiE 'href="[^"]*highway[^"]*/[0-9]+[^"]*"' hw.html | head -1 | sed 's/href="//;s/"$//')
+          echo "== first detail: $L"
+          if [ -n "$L" ]; then curl -sSL -m 30 -A "$A" "$L" -o d.html; sed -e 's/<[^>]*>/ /g' d.html | tr -s ' \t' ' ' | grep -iE 'kadar|kelas|RM|plaza' | head -60 | cut -c1-400; grep -oiE 'href="[^"]*"' d.html | grep -iE 'kadar|tol|pdf' | head -20; fi
