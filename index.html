@@ -38,6 +38,12 @@
   </div>
 </div>
 <main id="idle" class="dock">
+  <div id="care-note" class="resume care-note" role="status" hidden>
+    <p id="care-text"></p>
+    <div class="resume-actions">
+      <button id="care-ok" class="plate plate-btn plate-small" type="button"></button>
+    </div>
+  </div>
   <div id="resume" class="resume" hidden>
     <p id="resume-text"></p>
     <div class="resume-actions">
@@ -148,6 +154,7 @@
           <span id="plan-car-arrive" class="gauge"><span class="gauge-bar"><span id="plan-car-arrive-fill" class="gauge-fill"></span></span><span id="plan-car-arrive-text"></span></span>
           <span id="plan-car-range" class="gauge-km"></span>
         </span>
+        <span id="plan-budi" class="plan-budi" hidden></span>
         <span id="plan-fuel-detail"></span>
         <span id="plan-fuel-price" class="plan-price" hidden></span>
         <button id="plan-charge" class="plate plate-btn plate-small plan-charge" type="button" hidden></button>
@@ -500,6 +507,12 @@
     <label id="arrival-car-text" for="arrival-car-note"></label>
     <input id="arrival-car-note" class="text-input" type="text" maxlength="60" autocomplete="off" enterkeyhint="done">
   </div>
+  <div id="arrival-tolls" class="arrival-tolls" hidden>
+    <p><strong id="arrival-tolls-title"></strong><span id="arrival-tolls-text"></span></p>
+    <ol id="arrival-tolls-list" class="arrival-tolls-list"></ol>
+    <button id="arrival-tolls-send" class="outline-btn" type="button"></button>
+  </div>
+  <button id="arrival-work" class="arrival-more arrival-work" type="button" aria-pressed="false" hidden></button>
   <button id="arrival-walk" class="arrival-more" type="button" hidden></button>
   <button id="arrival-mall" class="arrival-more" type="button" hidden></button>
   <button id="arrival-done" class="plate plate-btn" type="button"></button>
@@ -610,6 +623,36 @@
         <span class="switch-track" aria-hidden="true"></span>
         <span id="keep-trips-label"></span>
       </label>
+    </div>
+    <div class="setting">
+      <h3 id="set-budi-title"></h3>
+      <p id="budi-text" class="tip"></p>
+      <label id="budi-limit-label" class="field-label" for="budi-limit"></label>
+      <input id="budi-limit" class="text-input" type="number" inputmode="numeric" min="1" max="5000" step="1">
+      <label id="budi-actual-label" class="field-label" for="budi-actual"></label>
+      <input id="budi-actual" class="text-input" type="number" inputmode="decimal" min="0" max="5000" step="0.1">
+      <button id="budi-save" class="outline-btn" type="button"></button>
+      <p id="budi-status" class="tip"></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-care-title"></h3>
+      <p id="care-intro" class="tip"></p>
+      <label id="care-odo-label" class="field-label" for="care-odo"></label>
+      <input id="care-odo" class="text-input" type="number" inputmode="numeric" min="0" step="1">
+      <label id="care-service-label" class="field-label" for="care-service"></label>
+      <input id="care-service" class="text-input" type="number" inputmode="numeric" min="0" step="1">
+      <label id="care-tax-label" class="field-label" for="care-tax"></label>
+      <input id="care-tax" class="text-input" type="date">
+      <label id="care-ins-label" class="field-label" for="care-ins"></label>
+      <input id="care-ins" class="text-input" type="date">
+      <button id="care-save" class="outline-btn" type="button"></button>
+      <p id="care-status" class="tip"></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-work-title"></h3>
+      <p id="work-text" class="tip"></p>
+      <label id="work-rate-label" class="field-label" for="work-rate"></label>
+      <input id="work-rate" class="text-input" type="number" inputmode="decimal" min="0" max="20" step="0.01">
     </div>
     <div class="setting">
       <h3 id="set-saved-title"></h3>
@@ -917,6 +960,7 @@
       </div>
       <dl id="month-rows" class="month-rows"></dl>
     </div>
+    <button id="month-csv" class="outline-btn" type="button" hidden></button>
     <button id="month-forget" class="link-btn center" type="button"></button>
   </div>
 </section>

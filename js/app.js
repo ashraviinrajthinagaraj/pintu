@@ -23,7 +23,7 @@ import { nextRest } from './rest-stop.js';
 import { afterTolls, cleanBalance, tngCheck } from './tng.js';
 import { CHOICES_MIN, parkingLeft, remindOff, remindOnServer, warnDue } from './parking-timer.js';
 import { countLights, featureAhead, featuresOnRoute } from './road-features.js';
-import { fareAt, priceTolls, tollTotal } from './toll-fares.js';
+import { driverFare, fareAt, priceTolls, tollTotal } from './toll-fares.js';
 import { vehiclePicture } from './car-art.js';
 import { ALWAYS_SAY, JAM_SAY_M, TRAFFIC_EVERY_MS, delayAhead, fasterSaving, fetchTraffic, jamAhead, throughPoints } from './traffic.js';
 import { evCar, fetchLimits, mergeResults, planCharging, searchAddresses } from './tomtom.js';
@@ -43,12 +43,15 @@ import { DEFAULT_LOOKS, levelAfter, rangeLeft, rangeWarning, reserveKm, tripPlan
 import { initVehicleUI } from './vehicle-ui.js';
 import { GRADES, fetchFuelPrices, isStale, keptFuelPrices, priced } from './fuel-price.js';
 import { canListen, listen, understand } from './voice-search.js';
-import { CrawlClock, forgetTrips, keptTrips, monthSummary, recordTrip, tripMonths } from './trips.js';
+import { CrawlClock, forgetTrips, keptTrips, markLastTrip, monthSummary, recordTrip, tripMonths } from './trips.js';
+import { BUDI_GRADE, budiAfter, budiUsed, cleanBudi } from './budi.js';
+import { careToShow, cleanCare, markSeen, odometerNow } from './car-care.js';
+import { cleanRate, workCsv, workTotals, workTrips } from './worklog.js';
 import { frameDue, saverOn, watchBattery } from './battery.js';
 import { REPORT_KINDS, REPORTS_EVERY_MS, fetchReports, justPassed, reportAhead, reportBox, reportsOnRoute, sendReport as sendRoadReport, voteReport } from './road-reports.js';
 import { Convoy, TripShare, convoyOrder, watchTrip } from './together.js';
 import { COMMUTE_DEFAULTS, DAY_ORDER, CommuteError, commuteOff, commuteOn, commuteTest } from './commute.js';
-import { isCode } from './hub.js';
+import { deviceCode, get, isCode, post } from './hub.js';
 import { inApp, nativePlugin } from './native.js';
 import * as voice from './voice.js';
 
@@ -348,6 +351,21 @@ function applyStaticText() {
   $('camera-on-label').textContent = t('cameraOn');
   $('set-road-title').textContent = t('roadTitle');
   $('set-tng-title').textContent = t('setTng');
+  $('set-budi-title').textContent = t('setBudi');
+  $('budi-text').textContent = t('budiText');
+  $('budi-limit-label').textContent = t('budiLimit');
+  $('budi-actual-label').textContent = t('budiActual');
+  $('budi-save').textContent = t('budiSave');
+  $('set-care-title').textContent = t('careTitle');
+  $('care-intro').textContent = t('careText');
+  $('care-odo-label').textContent = t('careOdo');
+  $('care-service-label').textContent = t('careService');
+  $('care-tax-label').textContent = t('careRoadTax');
+  $('care-ins-label').textContent = t('careInsurance');
+  $('care-save').textContent = t('budiSave');
+  $('set-work-title').textContent = t('workTitle');
+  $('work-text').textContent = t('workText');
+  $('work-rate-label').textContent = t('workRate');
   $('tng-text').textContent = t('tngText');
   $('tng-save').textContent = t('tngSave');
   $('sos-title').textContent = t('sosTitle');
@@ -531,6 +549,9 @@ function renderSegments() {
   $('limit-on').checked = S.settings.speedLimit;
   $('camera-on').checked = S.settings.speedCameras;
   renderTngSetting();
+  renderBudiSetting();
+  renderCareSetting();
+  if (document.activeElement !== $('work-rate')) $('work-rate').value = load('workRate', '') ?? '';
   $('road-on').checked = S.settings.roadWarnings;
   $('lights-say').checked = S.settings.sayLights;
   $('lights-say').disabled = !S.settings.roadWarnings;
@@ -1708,6 +1729,16 @@ function renderPlanFuel(route) {
   } else {
     $('plan-fuel-title').textContent = t('planRangeNow', { km: kmText(plan.rangeNow) });
   }
+  // Subsidised petrol: say so when this trip takes the month near its limit.
+  $('plan-budi').hidden = true;
+  if (v.grade === BUDI_GRADE && plan.used > 0 && plan.unit === 'L') {
+    const after = budiAfter(budiUsed(keptTrips(), load('budi', null)), plan.used);
+    if (after.near) {
+      $('plan-budi').hidden = false;
+      $('plan-budi').classList.toggle('is-over', after.over);
+      $('plan-budi').textContent = t('budiPlan', { litres: amountText(after.litres), limit: after.limit });
+    }
+  }
   // How full the tank or battery will be on arrival, and how far it goes now.
   if (v.range && plan.rangeAtEnd != null) {
     const pct = Math.max(0, Math.round((plan.rangeAtEnd / v.range) * 100));
@@ -1768,15 +1799,41 @@ function loadAlong() {
       if (S.along?.key !== key) return;
       const byRoute = new Map(routes.map((r) => {
         const on = alongRoute(r, found);
-        return [r.id, { ...on, tolls: priceTolls(r, on.tolls) }];
+        return [r.id, { ...on, plazas: on.tolls, tolls: priceTolls(r, on.tolls, S.driverFares) }];
       }));
       S.along = { key, state: 'ready', byRoute, found };
+      askDriverFares(routes, key);
     }).catch(() => {
       if (S.along?.key === key && !ctrl.signal.aborted) S.along = { key, state: 'error', byRoute: new Map() };
     }).finally(() => {
       if (S.along?.key === key && S.view === 'preview') renderRoutes();
     });
   }, ALONG_WAIT_MS);
+}
+
+// What Pintu's drivers paid at plazas with no announced fare, asked once per plaza.
+async function askDriverFares(routes, key) {
+  if (!CONFIG.server) return;
+  S.driverFares ||= {};
+  S.faresAsked ||= new Set();
+  const ids = [];
+  for (const r of routes) {
+    for (const toll of S.along.byRoute.get(r.id)?.tolls || []) {
+      if (toll.fare == null && !S.faresAsked.has(toll.id)) ids.push(toll.id);
+    }
+  }
+  const want = [...new Set(ids)].slice(0, 80);
+  if (!want.length) return;
+  for (const id of want) S.faresAsked.add(id);
+  let got;
+  try { got = await get(`/fares?ids=${encodeURIComponent(want.join(','))}`); } catch { return; }
+  Object.assign(S.driverFares, got?.fares || {});
+  if (S.along?.key !== key || S.along.state !== 'ready') return;
+  for (const r of routes) {
+    const on = S.along.byRoute.get(r.id);
+    if (on) on.tolls = priceTolls(r, on.plazas, S.driverFares);
+  }
+  if (S.view === 'preview') renderRoutes();
 }
 
 function retryAlong() {
@@ -1820,7 +1877,8 @@ function renderPlanToll(route) {
     title.textContent = sum.total == null ? t('tollCardNone', { n: sum.plazas })
       : t(sum.unknown ? 'tollCardSome' : 'tollCardAll', { total: money(sum.total) });
     const parts = [t('tollPlazaCount', { n: sum.plazas })];
-    if (sum.priced) parts.push(t('tollFareFrom', { roads: sum.roads.join(', ') }));
+    if (sum.roads.length) parts.push(t('tollFareFrom', { roads: sum.roads.join(', ') }));
+    if (sum.byDrivers) parts.push(t('tollDriversCount', { n: sum.byDrivers }));
     parts.push(sum.priced ? (sum.unknown ? t('tollUnknownSome', { n: sum.unknown }) : '') : t('tollUnknownAll'));
     detail.textContent = parts.filter(Boolean).join(' · ');
   }
@@ -1841,9 +1899,9 @@ function renderPlanToll(route) {
     const strong = document.createElement('strong');
     strong.textContent = toll.name || t(toll.gantry ? 'tollGantry' : 'tollPlazaUnnamed');
     name.append(strong);
-    if (toll.road) {
+    if (toll.road || toll.byDrivers) {
       const road = document.createElement('span');
-      road.textContent = toll.road;
+      road.textContent = toll.road || t('tollByDrivers');
       name.append(road);
     }
     const fare = document.createElement('span');
@@ -2837,12 +2895,15 @@ function startGuidance({ simulate }) {
   S.tollFetchedAt = 0;
   loadTolls(S.route);
   // Lights, bumps and crossings: the plan already asked, so only ask if it hadn't.
+  S.tripFrom = savedNear(S.fix);
   S.featuresSaid = new Set();
   S.bumpSaidAt = -Infinity;
   const planned = S.along?.state === 'ready' ? S.along.found : null;
   S.featurePool = planned?.features || [];
   S.restPool = planned?.rests || [];
   S.tollsPaid = new Map();
+  S.lastPlaza = null;
+  S.unpriced = [];
   hideRest();
   S.featureFetchedAt = planned ? Date.now() : 0;
   S.features = featuresOnRoute(S.route, S.featurePool);
@@ -3491,13 +3552,20 @@ function notePaidTolls(st) {
   if (S.sim || !st.onRoute || !S.tolls?.length || !S.tollsPaid) return;
   for (const toll of S.tolls) {
     if (toll.along > st.s - 30 || S.tollsPaid.has(toll.id)) continue;
-    S.tollsPaid.set(toll.id, fareAt(S.route, toll)?.rm ?? null);
+    const prev = S.lastPlaza || null;
+    const rm = fareAt(S.route, toll)?.rm ?? driverFare(S.driverFares?.[toll.id], prev);
+    S.tollsPaid.set(toll.id, { rm, prev, name: toll.name || '', gantry: !!toll.gantry });
+    S.lastPlaza = toll.id;
   }
 }
 
 function payTolls() {
-  const paid = [...(S.tollsPaid?.values() || [])].filter((rm) => Number.isFinite(rm));
+  const passed = [...(S.tollsPaid?.entries() || [])];
   S.tollsPaid = null;
+  S.lastPlaza = null;
+  // Asked about when you arrive: the plazas nobody knew the fare of.
+  S.unpriced = S.mode === 'car' ? passed.filter(([, p]) => p.rm == null).map(([id, p]) => ({ id, ...p })) : [];
+  const paid = passed.map(([, p]) => p.rm).filter((rm) => Number.isFinite(rm));
   if (!paid.length) return;
   const next = afterTolls(load('tng', null), paid);
   if (next) save('tng', next);
@@ -3898,7 +3966,11 @@ function keepVehicleLevel() {
 function keepTripSummary() {
   if (S.sim || !S.guidance || S.mode === 'walk' || !S.settings.keepTrips) return;
   const plan = tripPlan(pricedVehicle(), S.tripKm);
-  recordTrip({ km: S.tripKm, s: S.crawl?.span || (Date.now() - S.tripStart) / 1000, slow: S.crawl?.slow || 0, cost: plan?.cost ?? null, mode: S.mode, to: S.dest?.name || '' });
+  const v = pricedVehicle();
+  recordTrip({
+    km: S.tripKm, s: S.crawl?.span || (Date.now() - S.tripStart) / 1000, slow: S.crawl?.slow || 0, cost: plan?.cost ?? null, mode: S.mode, to: S.dest?.name || '',
+    l: plan?.unit === 'L' ? plan.used : null, g: v?.grade || null, from: S.tripFrom || '',
+  });
 }
 
 // The trip's over one way or another: put everything back.
@@ -4013,6 +4085,11 @@ function finishTrip() {
     $('arrival-car-note').value = '';
   }
   $('arrival-car').hidden = !drove;
+  renderFareAsk(drove ? S.unpriced : []);
+  const work = $('arrival-work');
+  work.hidden = !drove || !S.settings.keepTrips;
+  work.setAttribute('aria-pressed', 'false');
+  work.textContent = t('workMark');
   if (onFoot && !simulated && place?.isCar) forgetCar();
   // Where the road ends isn't always where the door is.
   $('arrival-walk').hidden = onFoot || simulated || !place;
@@ -4867,6 +4944,17 @@ function wire() {
   });
   $('tng-balance').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tng-save').click(); });
   $('rest-yes').addEventListener('click', takeRest);
+  $('arrival-work').addEventListener('click', toggleWorkTrip);
+  $('arrival-tolls-send').addEventListener('click', sendFares);
+  $('month-csv').addEventListener('click', downloadWork);
+  $('budi-save').addEventListener('click', saveBudi);
+  $('care-save').addEventListener('click', saveCare);
+  $('care-ok').addEventListener('click', careSeen);
+  $('work-rate').addEventListener('change', (e) => {
+    const r = cleanRate(e.target.value);
+    if (r == null) remove('workRate'); else save('workRate', r);
+  });
+  renderCareNote();
   $('rest-no').addEventListener('click', hideRest);
   $('btn-sos').addEventListener('click', openSos);
   $('btn-sos-nav').addEventListener('click', openSos);
@@ -5866,6 +5954,19 @@ function renderSummary() {
   ];
   if (m.longest) rows.push([t('monthLongest'), m.longest.to ? t('monthLongestDetail', { km: fmtDistance(m.longest.km * 1000), to: m.longest.to }) : fmtDistance(m.longest.km * 1000)]);
   if (m.top) rows.push([t('monthTop'), t('monthTopDetail', { name: m.top.name, n: m.top.count })]);
+  const now2 = new Date();
+  const thisMonth = S.month.year === now2.getFullYear() && S.month.month === now2.getMonth();
+  if (thisMonth && trips.some((x) => x.g === BUDI_GRADE)) {
+    const b = budiUsed(trips, load('budi', null));
+    rows.push([t('setBudi'), `${t('budiStatus', { litres: amountText(b.litres), limit: b.limit })}${b.guessed ? ` ${t('budiGuess')}` : ''}`]);
+  }
+  const work = workTrips(trips, S.month.year, S.month.month);
+  $('month-csv').hidden = !work.length;
+  $('month-csv').textContent = t('workCsv');
+  if (work.length) {
+    const sum = workTotals(work, load('workRate', null));
+    rows.push([t('workRow'), sum.claim != null ? t('workSumClaim', { n: sum.trips, km: fmtDistance(sum.km * 1000), claim: money(sum.claim) }) : t('workSum', { n: sum.trips, km: fmtDistance(sum.km * 1000) })]);
+  }
   $('month-rows').replaceChildren(...rows.map(([name, value]) => {
     const row = document.createElement('div');
     const dt = document.createElement('dt');
@@ -5875,6 +5976,167 @@ function renderSummary() {
     row.append(dt, dd);
     return row;
   }));
+}
+
+/* ---------- Work trips, BUDI95 and the car ---------- */
+
+// Home or work, if the drive started there.
+function savedNear(fix) {
+  if (!fix) return '';
+  const saved = savedPlaces();
+  for (const kind of ['home', 'work']) {
+    const p = saved[kind];
+    if (p && haversine([fix.lng, fix.lat], [p.lng, p.lat]) < 300) return t(kind);
+  }
+  return '';
+}
+
+/* ---------- Asking what a plaza cost ---------- */
+
+function renderFareAsk(plazas) {
+  const box = $('arrival-tolls');
+  box.hidden = !plazas?.length || !CONFIG.server;
+  if (box.hidden) return;
+  S.fareAsk = plazas.slice(0, 8);
+  $('arrival-tolls-title').textContent = t('fareAskTitle');
+  $('arrival-tolls-text').textContent = t('fareAskText');
+  $('arrival-tolls-send').textContent = t('fareAskSend');
+  $('arrival-tolls-send').disabled = false;
+  $('arrival-tolls-list').replaceChildren(...S.fareAsk.map((p, i) => {
+    const li = document.createElement('li');
+    const label = document.createElement('label');
+    label.htmlFor = `fare-${i}`;
+    label.textContent = p.name || t(p.gantry ? 'tollGantry' : 'tollPlazaUnnamed');
+    const wrap = document.createElement('span');
+    wrap.className = 'fare-in';
+    const input = document.createElement('input');
+    input.id = `fare-${i}`;
+    input.className = 'text-input';
+    input.type = 'number';
+    input.inputMode = 'decimal';
+    input.min = '0';
+    input.max = '300';
+    input.step = '0.01';
+    wrap.append('RM', input);
+    li.append(label, wrap);
+    return li;
+  }));
+}
+
+async function sendFares() {
+  const paid = (S.fareAsk || []).map((p, i) => ({ plaza: p.id, prev: p.prev, rm: parseFloat($(`fare-${i}`).value) }))
+    .filter((p) => Number.isFinite(p.rm) && p.rm >= 0 && p.rm <= 300);
+  if (!paid.length) return;
+  $('arrival-tolls-send').disabled = true;
+  try {
+    await post('/fares/add', { device: deviceCode(), paid });
+    for (const p of paid) S.faresAsked?.delete(p.plaza);
+    $('arrival-tolls').hidden = true;
+    toast(t('fareAskThanks'));
+  } catch {
+    $('arrival-tolls-send').disabled = false;
+    toast(t('fareAskFailed'), 5000);
+  }
+}
+
+function toggleWorkTrip() {
+  const btn = $('arrival-work');
+  const on = btn.getAttribute('aria-pressed') !== 'true';
+  if (!markLastTrip({ w: on })) return;
+  btn.setAttribute('aria-pressed', String(on));
+  btn.textContent = t(on ? 'workMarked' : 'workMark');
+}
+
+function downloadWork() {
+  const list = workTrips(keptTrips(), S.month.year, S.month.month);
+  if (!list.length) return;
+  const head = ['csvDate', 'csvTime', 'csvFrom', 'csvTo', 'csvKm', 'csvFuel', 'csvClaim'].map((k) => t(k));
+  const csv = workCsv(list, load('workRate', null), head);
+  const name = `pintu-${S.month.year}-${String(S.month.month + 1).padStart(2, '0')}.csv`;
+  if (inApp()) { shareLink('', csv, name); return; }
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function renderBudiSetting() {
+  const b = cleanBudi(load('budi', null));
+  if (document.activeElement !== $('budi-limit')) $('budi-limit').value = String(b.limit);
+  const used = budiUsed(keptTrips(), b);
+  $('budi-status').textContent = `${t('budiStatus', { litres: amountText(used.litres), limit: used.limit })}${used.guessed ? ` ${t('budiGuess')}` : ''}`;
+}
+
+function saveBudi() {
+  const before = cleanBudi(load('budi', null));
+  const limit = parseInt($('budi-limit').value, 10);
+  const actual = $('budi-actual').value === '' ? null : parseFloat($('budi-actual').value);
+  const d = new Date();
+  const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const fixed = actual != null && Number.isFinite(actual) && actual >= 0 ? { month, litres: actual, at: Date.now() } : before.fixed;
+  save('budi', cleanBudi({ limit: Number.isFinite(limit) ? limit : before.limit, fixed }));
+  $('budi-actual').value = '';
+  renderBudiSetting();
+  toast(t('savedOk'));
+}
+
+function renderCareSetting() {
+  const c = cleanCare(load('care', null));
+  const fill = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v ?? ''; };
+  const odo = odometerNow(c, keptTrips());
+  fill('care-odo', odo);
+  fill('care-service', c.serviceAt);
+  fill('care-tax', c.roadTax);
+  fill('care-ins', c.insurance);
+  $('care-status').textContent = odo != null ? t('careOdoNow', { km: fmtDistance(odo * 1000) }) : '';
+}
+
+function saveCare() {
+  const before = cleanCare(load('care', null));
+  const odoTyped = $('care-odo').value;
+  const odoNow = odometerNow(before, keptTrips());
+  // Only a new reading moves the odometer's starting point.
+  const newOdo = odoTyped !== '' && Number(odoTyped) !== odoNow;
+  save('care', cleanCare({
+    ...before,
+    odometer: newOdo ? odoTyped : before.odometer,
+    odometerAt: newOdo ? Date.now() : before.odometerAt,
+    serviceAt: $('care-service').value,
+    roadTax: $('care-tax').value || null,
+    insurance: $('care-ins').value || null,
+  }));
+  renderCareSetting();
+  renderCareNote();
+  toast(t('savedOk'));
+}
+
+function careLine(d) {
+  const lang = getLang();
+  if (d.kind === 'service') {
+    const c = cleanCare(load('care', null));
+    return d.step === 'over' ? t('careService_over', { km: fmtDistance(Math.abs(d.kmLeft) * 1000) })
+      : t('careService_soon', { km: fmtDistance(d.kmLeft * 1000), at: fmtDistance(c.serviceAt * 1000) });
+  }
+  const date = new Date(`${d.date}T12:00:00+08:00`).toLocaleDateString(localeOf(lang), { day: 'numeric', month: 'short', year: 'numeric' });
+  return t(`care${d.kind === 'roadTax' ? 'RoadTax' : 'Insurance'}_${d.step === 'over' ? 'over' : 'soon'}`, { days: d.days, date });
+}
+
+function renderCareNote() {
+  const due = careToShow(load('care', null), keptTrips());
+  $('care-note').hidden = !due.length;
+  if (!due.length) return;
+  $('care-text').textContent = due.map(careLine).join(' ');
+  $('care-ok').textContent = t('careOk');
+}
+
+function careSeen() {
+  const care = load('care', null);
+  save('care', markSeen(care, careToShow(care, keptTrips())));
+  renderCareNote();
 }
 
 // Two taps, so one stray tap can't lose a year of trips.

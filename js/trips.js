@@ -34,7 +34,23 @@ export function cleanTrip(t) {
     cost: t.cost != null && Number.isFinite(Number(t.cost)) && t.cost > 0 ? Math.round(t.cost * 100) / 100 : null,
     mode: ['car', 'motorcycle'].includes(t.mode) ? t.mode : 'car',
     to: String(t.to || '').slice(0, 60),
+    // For BUDI95: the litres used, and which fuel.
+    l: Number.isFinite(Number(t.l)) && t.l != null && Number(t.l) > 0 ? Math.round(Number(t.l) * 10) / 10 : null,
+    g: typeof t.g === 'string' && /^[a-z0-9_]{2,24}$/.test(t.g) ? t.g : null,
+    // For claiming mileage: marked as work, and where it started.
+    w: !!t.w,
+    from: String(t.from || '').slice(0, 60),
   };
+}
+
+// The drive just ended, changed: marked as work, or not. Only soon after.
+export function markLastTrip(patch, now = Date.now()) {
+  const list = keptTrips();
+  const last = list[list.length - 1];
+  if (!last || now - last.at > 30 * 60e3) return null;
+  list[list.length - 1] = cleanTrip({ ...last, ...patch });
+  save(KEY, list);
+  return list[list.length - 1];
 }
 
 export function recordTrip(trip, now = Date.now()) {

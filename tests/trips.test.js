@@ -12,7 +12,7 @@ test('keeps a short line about each drive, and skips moving the car', () => {
   assert.equal(recordTrip({ km: MIN_KM / 2, s: 60 }, at(2026, 10, 1)), false);
   assert.equal(recordTrip({ km: 12.34, s: 1500, slow: 300, cost: 1.4789, mode: 'car', to: 'Rumah' }, at(2026, 10, 1)), true);
   const [t] = keptTrips();
-  assert.deepEqual(t, { at: at(2026, 10, 1), km: 12.3, s: 1500, slow: 300, cost: 1.48, mode: 'car', to: 'Rumah' });
+  assert.deepEqual(t, { at: at(2026, 10, 1), km: 12.3, s: 1500, slow: 300, cost: 1.48, mode: 'car', to: 'Rumah', l: null, g: null, w: false, from: '' });
   forgetTrips();
   assert.deepEqual(keptTrips(), []);
 });
@@ -25,6 +25,20 @@ test('cleans what it keeps', () => {
   assert.equal(t.cost, null);
   assert.equal(t.mode, 'car');
   assert.equal(t.to.length, 60);
+  const kept = cleanTrip({ at: 5, km: 3, l: '0.84', g: 'ron95_budi95', w: 1, from: 'Rumah' });
+  assert.deepEqual([kept.l, kept.g, kept.w, kept.from], [0.8, 'ron95_budi95', true, 'Rumah']);
+  assert.equal(cleanTrip({ at: 5, km: 3, g: '<script>' }).g, null);
+});
+
+test('the drive just ended can be marked as work, but not one long gone', async () => {
+  const { markLastTrip } = await import('../js/trips.js');
+  forgetTrips();
+  const now = at(2026, 10, 2);
+  recordTrip({ km: 5, s: 600, slow: 0, cost: null, mode: 'car', to: 'Pejabat' }, now);
+  assert.equal(markLastTrip({ w: true }, now + 60e3).w, true);
+  assert.equal(keptTrips()[0].w, true);
+  assert.equal(markLastTrip({ w: false }, now + 3600e3), null, 'an hour later is too late');
+  forgetTrips();
 });
 
 test('only the last year or so is kept', () => {

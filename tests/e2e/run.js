@@ -38,7 +38,7 @@ const ORIGIN = `http://127.0.0.1:${server.address().port}/`;
 
 const stub = await readFile(path.join(root, 'tests/e2e/stub-maplibre.js'), 'utf8');
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
-const HUB_PATHS = /^\/(share|reports|convoy|commute|push)(\/|$)/;
+const HUB_PATHS = /^\/(share|reports|convoy|commute|push|remind|fares)(\/|$)/;
 
 // The real hub from server/hub.js, on an in-memory database, as a stand-in server.
 function standInHub({ now = () => Date.now(), env = {}, fetchImpl } = {}) {
@@ -5216,6 +5216,115 @@ await check('emergency: 999, where you are, and the nearest hospital, from the m
   assert.equal(await vis(page, '#btn-sos-nav'), true);
   assert.deepEqual(log.errors, []);
   await ctx.close();
+});
+
+await check('work trip: marked on arrival, counted in the month, and downloaded as a list', async () => {
+  const saved = { home: { name: 'Rumah', lng: P.a[0], lat: P.a[1] } };
+  const { ctx, page } = await newApp(browser, {
+    ...quiet, scale: 2, fuel: PUMP,
+    storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { ...myvi.car, grade: 'ron95_budi95' } }, 'pintu.saved': saved, 'pintu.workRate': 0.6 },
+  });
+  await toNav(page);
+  await driveTo(page, cityTrip());
+  await page.waitForSelector('#arrival:not([hidden])');
+  assert.equal(await text(page, '#arrival-work'), 'Tanda sebagai perjalanan kerja');
+  await page.click('#arrival-work');
+  assert.equal(await page.getAttribute('#arrival-work', 'aria-pressed'), 'true');
+  const last = (await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.trips')))).at(-1);
+  assert.equal(last.w, true);
+  assert.equal(last.from, 'Rumah', 'it started at home');
+  assert.equal(last.g, 'ron95_budi95');
+  assert.ok(last.l > 0, 'litres kept for BUDI95');
+  await page.click('#arrival-done');
+
+  await page.click('#btn-settings');
+  await page.click('#summary-open');
+  const rows = await page.locator('#month-rows div').allInnerTexts();
+  assert.ok(rows.some((r) => /Perjalanan kerja[\s\S]*1 perjalanan, [\d.]+ km, tuntutan RM\d+\.\d\d/.test(r)), rows.join(' | '));
+  assert.ok(rows.some((r) => /BUDI95[\s\S]*Bulan ini: [\d.]+ \/ 300 L \(anggaran\)/.test(r)), rows.join(' | '));
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('#month-csv')]);
+  assert.match(download.suggestedFilename(), /^pintu-\d{4}-\d\d\.csv$/);
+  const csv = await (await import('node:fs/promises')).readFile(await download.path(), 'utf8');
+  assert.match(csv, /^\uFEFFTarikh,Masa,Dari,Ke,km,Minyak \(RM\),Tuntutan \(RM\)\r\n\d{4}-\d\d-\d\d,\d\d:\d\d,Rumah,Suria KLCC,[\d.]+,\d+\.\d\d,\d+\.\d\d\r\n/);
+  await ctx.close();
+});
+
+await check('BUDI95: near the limit, the plan says so; your own figure replaces the estimate', async () => {
+  const now = Date.now();
+  const trips = [{ at: now - 3600e3, km: 400, s: 18000, slow: 0, cost: 50, mode: 'car', to: 'Ipoh', l: 245, g: 'ron95_budi95' }];
+  const { ctx, page } = await newApp(browser, {
+    ...quiet, scale: 2, fuel: PUMP,
+    storage: { 'pintu.safetySeen': 'true', 'pintu.vehicles': { car: { ...myvi.car, grade: 'ron95_budi95' } }, 'pintu.trips': trips },
+  });
+  await toPreview(page);
+  await page.waitForSelector('#plan-budi:not([hidden])');
+  assert.match(await text(page, '#plan-budi'), /^BUDI95 bulan ini: 245(\.\d)? \/ 300 L selepas perjalanan ini$/);
+  await page.goBack();
+  await page.click('#btn-settings');
+  assert.equal(await text(page, '#budi-status'), 'Bulan ini: 245 / 300 L (anggaran)');
+  await page.fill('#budi-limit', '200');
+  await page.fill('#budi-actual', '120');
+  await page.click('#budi-save');
+  assert.equal(await text(page, '#budi-status'), 'Bulan ini: 120 / 200 L');
+  await ctx.close();
+});
+
+await check('the car: service, road tax and insurance shown when they\'re near, each once', async () => {
+  const day = 86400e3;
+  const ymd = (ms) => new Date(ms + 8 * 3600e3).toISOString().slice(0, 10);
+  const care = { odometer: 41000, odometerAt: Date.now() - 2 * day, serviceAt: 41300, roadTax: ymd(Date.now() + 5 * day) };
+  const trips = [{ at: Date.now() - day, km: 50, s: 3600, slow: 0, cost: null, mode: 'car', to: 'Kerja' }];
+  const storage = { 'pintu.safetySeen': 'true', 'pintu.care': care, 'pintu.trips': trips };
+  const { ctx, page } = await newApp(browser, { storage, scale: 2 });
+  await page.waitForSelector('#care-note:not([hidden])');
+  assert.match(await text(page, '#care-text'), /Cukai jalan tamat dalam 5 hari \(.+\)\./);
+  assert.match(await text(page, '#care-text'), /Servis dalam 250 km, pada 41,?300 km\./);
+  await page.screenshot({ path: `${shots}/78-car-care.png` });
+  await page.click('#care-ok');
+  assert.equal(await vis(page, '#care-note'), false);
+  await page.click('#btn-settings');
+  assert.equal(await page.inputValue('#care-odo'), '41050');
+  assert.equal(await page.inputValue('#care-tax'), care.roadTax);
+  await noOverflow(page, 'settings with the car');
+  await ctx.close();
+
+  const seen = { [`roadTax:${care.roadTax}`]: '7', 'service:41300': 'soon' };
+  const again = await newApp(browser, { storage: { ...storage, 'pintu.care': { ...care, seen } }, scale: 1 });
+  await again.page.waitForTimeout(800);
+  assert.equal(await vis(again.page, '#care-note'), false, 'seen at this step already');
+  await again.ctx.close();
+});
+
+await check('toll fares from drivers: an unknown plaza gets what others paid, and you\'re asked after a drive', async () => {
+  const hub = standInHub();
+  // Someone paid RM5.50 at the Sungai Besi plaza, coming from the KESAS one.
+  await hub.fetch(new Request('https://hub/fares/add', { method: 'POST', body: JSON.stringify({ device: 'abcdefghjkmnpqrs', paid: [{ plaza: 'node/83', prev: 'node/82', rm: 5.5 }] }) }));
+  const { ctx, page } = await newApp(browser, { ...quiet, scale: 2, hub, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toPreview(page);
+  await page.waitForFunction(() => /RM9\.60/.test(document.getElementById('plan-toll-title').textContent));
+  assert.equal(await text(page, '#plan-toll-title'), 'Tol RM9.60', 'every plaza priced now');
+  assert.match(await text(page, '#plan-toll-detail'), /harga 1 plaza dari pemandu Pintu/);
+  await page.click('#plan-toll');
+  assert.match((await page.locator('#toll-list li').allInnerTexts())[2], /Plaza Tol Sungai Besi[\s\S]*harga dari pemandu[\s\S]*RM5\.50/);
+  await ctx.close();
+
+  // Nobody has said yet: the drive ends with the question.
+  const fresh = standInHub();
+  const b = await newApp(browser, { ...quiet, scale: 2, hub: fresh, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toNav(b.page);
+  await driveTo(b.page, plannedTrip(), { kph: 60 });
+  await b.page.waitForSelector('#arrival:not([hidden])');
+  await b.page.waitForSelector('#arrival-tolls:not([hidden])');
+  assert.equal(await text(b.page, '#arrival-tolls-title'), 'Berapa anda bayar di plaza tol?');
+  assert.deepEqual(await b.page.locator('#arrival-tolls-list label').allInnerTexts(), ['Plaza Tol Sungai Besi'], 'only the plaza with no known fare');
+  await noOverflow(b.page, 'asking the fare');
+  await b.page.screenshot({ path: `${shots}/79-fare-ask.png` });
+  await b.page.fill('#fare-0', '5.5');
+  await b.page.click('#arrival-tolls-send');
+  await b.page.waitForSelector('#arrival-tolls', { state: 'hidden' });
+  const kept = await (await fresh.fetch(new Request('https://hub/fares?ids=node/83'))).json();
+  assert.deepEqual(kept.fares['node/83'].map((f) => [f.prev, f.rm]), [['node/82', 5.5]]);
+  await b.ctx.close();
 });
 
 await browser.close();
