@@ -30,9 +30,9 @@ import { fuelCheck, fuelRoute } from './fuel.js';
 // The hub is a Durable Object, which Cloudflare finds by this name.
 export { Hub } from './hub.js';
 
-const HUB_GETS = ['/share', '/reports', '/convoy', '/push/key', '/fares'];
+const HUB_GETS = ['/share', '/reports', '/convoy', '/push/key', '/fares', '/marks'];
 const HUB_POSTS = ['/share/start', '/share/update', '/share/end', '/reports/add', '/reports/vote', '/convoy/start', '/convoy/join',
-  '/convoy/update', '/convoy/leave', '/commute/set', '/commute/off', '/commute/test', '/commute/message', '/remind/set', '/remind/off', '/fares/add'];
+  '/convoy/update', '/convoy/leave', '/commute/set', '/commute/off', '/commute/test', '/commute/message', '/remind/set', '/remind/off', '/fares/add', '/marks/add'];
 const HUB_MAX_BODY = 20000;
 const hubOf = (env) => env.HUB.get(env.HUB.idFromName('pintu'));
 

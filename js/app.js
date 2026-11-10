@@ -4,7 +4,7 @@ import { clamp, haversine } from './geo.js';
 import { Guidance } from './guidance.js';
 import { getLang, setLang, t } from './i18n.js';
 import { CATEGORY_ICONS, UI, doorSvg, laneIcon, turnIcon } from './icons.js';
-import { describe, laneView, speech } from './instructions.js';
+import { describe, laneView, roadNames, speech } from './instructions.js';
 import { LaneScene, NO_LANES } from './lanes.js';
 import { Gps, SimulatedDrive } from './location.js';
 import { MapView } from './map.js';
@@ -20,6 +20,8 @@ import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
 import { alongRoute, fetchAlong, restsOnRoute } from './along.js';
 import { nextRest } from './rest-stop.js';
+import { MARK_KINDS, fetchMarks, markCameras, markFeatures, marksBox, sendMark } from './marks.js';
+import { StopWatch, lightsToAsk, rememberStop, settleSpot } from './stop-learn.js';
 import { afterTolls, cleanBalance, tngCheck } from './tng.js';
 import { CHOICES_MIN, parkingLeft, remindOff, remindOnServer, warnDue } from './parking-timer.js';
 import { countLights, featureAhead, featuresOnRoute } from './road-features.js';
@@ -1417,6 +1419,7 @@ async function nameDestination(place) {
 
 function leaveDestination() {
   S.routeCtrl?.abort();
+  S.marks = null;
   S.otherCtrl?.abort();
   S.otherWay = null;
   S.alongCtrl?.abort();
@@ -1795,10 +1798,13 @@ function loadAlong() {
   S.along = { key, state: 'loading', byRoute: new Map() };
   S.alongPick = null;
   S.alongTimer = setTimeout(() => {
-    fetchAlong(routes, { signal: ctrl.signal, ...opts }).then((found) => {
+    const marks = togetherReady() ? fetchMarks(marksBox(routes), { signal: ctrl.signal }).catch(() => []) : Promise.resolve([]);
+    Promise.all([fetchAlong(routes, { signal: ctrl.signal, ...opts }), marks]).then(([found, fixes]) => {
       if (S.along?.key !== key) return;
+      S.marks = fixes;
+      const fixed = { ...found, features: markFeatures(found.features, fixes), cameras: markCameras(found.cameras, fixes) };
       const byRoute = new Map(routes.map((r) => {
-        const on = alongRoute(r, found);
+        const on = alongRoute(r, fixed);
         return [r.id, { ...on, plazas: on.tolls, tolls: priceTolls(r, on.tolls, S.driverFares) }];
       }));
       S.along = { key, state: 'ready', byRoute, found };
@@ -2906,7 +2912,10 @@ function startGuidance({ simulate }) {
   S.unpriced = [];
   hideRest();
   S.featureFetchedAt = planned ? Date.now() : 0;
-  S.features = featuresOnRoute(S.route, S.featurePool);
+  S.features = placeFeatures(S.route);
+  S.stopWatch = simulate ? null : new StopWatch();
+  S.tripSpots = [];
+  if (!S.marks && togetherReady()) loadMarks(S.route);
   if (!planned) loadFeatures(S.route);
   warnTng();
   // Traffic looked up while choosing the route needn't be asked for again yet.
@@ -3010,6 +3019,7 @@ function onNavFix(fix, takenAt) {
   renderCamera(st, fix);
   renderRoadFeature(st, fix);
   notePaidTolls(st);
+  noteStop(st, fix);
   renderRoadReport(st, fix);
   if (Date.now() - (S.roadAt || 0) > REPORTS_EVERY_MS) loadRoadReports();
   if (Date.now() - (S.trafficAt || 0) > TRAFFIC_EVERY_MS && !S.sim) loadTraffic();
@@ -3288,7 +3298,7 @@ function loadCameras(route) {
   const timer = setTimeout(() => ctrl.abort(), 30000);
   fetchCameras(route, { signal: ctrl.signal }).then((found) => {
     S.cameraPool = found;
-    if (S.view === 'nav' && S.route) S.cameras = camerasOnRoute(S.route, found);
+    if (S.view === 'nav' && S.route) S.cameras = placeCameras(S.route);
   }).catch(() => { /* none known is the same as none mapped: nothing to warn about */ })
     .finally(() => clearTimeout(timer));
 }
@@ -3446,6 +3456,7 @@ function renderCamera(st, fix) {
   const near = S.settings.speedCameras && st.onRoute && S.mode !== 'walk' ? cameraAhead(S.cameras, st.s, fix.speed ?? 0) : null;
   box.hidden = !near;
   if (!near) return;
+  S.cameraNear = near.camera;
   const lang = getLang();
   const limit = near.camera.limit ?? currentLimit(st);
   const distance = fmtDistance(Math.max(near.ahead, 10));
@@ -3479,7 +3490,7 @@ function loadFeatures(route) {
   fetchAlong([route], { signal: ctrl.signal, tolls: false, cameras: false, rests: true, features: true }).then((found) => {
     S.featurePool = found.features;
     S.restPool = found.rests;
-    if (S.view === 'nav' && S.route) S.features = featuresOnRoute(S.route, found.features);
+    if (S.view === 'nav' && S.route) S.features = placeFeatures(S.route);
   }).catch(() => { /* nothing known is nothing to warn about */ })
     .finally(() => clearTimeout(timer));
 }
@@ -3491,6 +3502,7 @@ function renderRoadFeature(st, fix) {
   box.hidden = !near;
   if (!near) return;
   const { feature, ahead } = near;
+  S.roadNear = feature;
   const lang = getLang();
   const distance = fmtDistance(Math.max(ahead, 10));
   box.dataset.kind = feature.kind;
@@ -3507,6 +3519,112 @@ function renderRoadFeature(st, fix) {
     S.bumpSaidAt = feature.along;
   }
   speakText(t(`roadSay_${feature.kind}`, { distance: sayDistance(ahead, lang) }), { wait: voice.WAIT_TURN_MS });
+}
+
+/* ---------- Fixing the map ---------- */
+
+const placeFeatures = (route) => featuresOnRoute(route, markFeatures(S.featurePool || [], S.marks || []));
+const placeCameras = (route) => camerasOnRoute(route, markCameras(S.cameraPool || [], S.marks || []));
+const MARK_ICONS = { light: () => UI.signal, bump: () => UI.bump, camera: () => UI.camera };
+
+// For a drive started before the plan had asked.
+function loadMarks(route) {
+  fetchMarks(marksBox([route])).then((fixes) => {
+    S.marks = fixes;
+    if (S.view !== 'nav' || !S.route) return;
+    S.features = placeFeatures(S.route);
+    S.cameras = placeCameras(S.route);
+  }).catch(() => { /* the map as it is, then */ });
+}
+
+function renderMarkKinds() {
+  $('mark-title').textContent = t('markTitle');
+  $('mark-kinds').replaceChildren(...MARK_KINDS.map((kind) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `report-kind mark-${kind}`;
+    b.innerHTML = MARK_ICONS[kind]();
+    const word = document.createElement('span');
+    word.textContent = t(`mark_${kind}`);
+    b.append(word);
+    b.addEventListener('click', () => {
+      S.afterBack = () => submitMark(kind, 'add', S.fix);
+      history.back();
+    });
+    return b;
+  }));
+}
+
+async function submitMark(kind, action, where, ref = null) {
+  if (!where) { toast(t('roadNoFix')); return; }
+  try {
+    const r = await sendMark({ kind, action, fix: where, ref });
+    S.marks = [...(S.marks || []), { id: r?.id ?? -1, kind, action, lng: where.lng, lat: where.lat, ref }];
+    if (S.view === 'nav' && S.route) {
+      S.features = placeFeatures(S.route);
+      S.cameras = placeCameras(S.route);
+    }
+    toast(action === 'add' ? t('markSent', { kind: t(`mark_${kind}`) }) : t('markGoneSent'));
+  } catch {
+    toast(t('fareAskFailed'), 5000);
+  }
+}
+
+// Tapping a warning: is it really not there?
+function askNotHere(kind, thing) {
+  if (!thing || !togetherReady() || !MARK_KINDS.includes(kind)) return;
+  S.markAsk = { kind, thing };
+  $('mark-ask-title').textContent = t(`markGone_${kind}`);
+  $('mark-ask-yes').textContent = t('markGoneYes');
+  $('mark-ask-no').textContent = t('markGoneNo');
+  $('mark-ask').hidden = false;
+  clearTimeout(S.markAskTimer);
+  S.markAskTimer = setTimeout(() => { $('mark-ask').hidden = true; }, 15000);
+}
+
+function answerNotHere(gone) {
+  $('mark-ask').hidden = true;
+  clearTimeout(S.markAskTimer);
+  const ask = S.markAsk;
+  S.markAsk = null;
+  if (!gone || !ask) return;
+  const { kind, thing } = ask;
+  const ref = /^(node|way|mark)\/\d+$/.test(thing.id || '') ? thing.id : null;
+  submitMark(kind, 'gone', { lng: thing.lng, lat: thing.lat }, ref);
+}
+
+// Where a real drive stops like at a red light.
+function noteStop(st, fix) {
+  if (!S.stopWatch || !st.onRoute || S.mode === 'walk') return;
+  if (st.s < 200 || st.remainingDistance < 200) return;
+  const m = S.route.maneuvers[st.currentIndex];
+  const stop = S.stopWatch.note({ time: fix.time, speed: fix.speed, lng: fix.lng, lat: fix.lat, road: m ? roadNames(m).name || roadNames(m).ref || '' : '' });
+  if (!stop) return;
+  save('lightSpots', rememberStop(load('lightSpots', []), stop));
+  S.tripSpots.push(stop);
+}
+
+function renderLightAsk(drove) {
+  const box = $('arrival-light');
+  const known = markFeatures(S.featurePool || [], S.marks || []).filter((f) => f.kind === 'light');
+  const here = (spot) => (S.tripSpots || []).some((p) => haversine([p.lng, p.lat], [spot.lng, spot.lat]) <= 30);
+  const ask = drove && togetherReady() ? lightsToAsk(load('lightSpots', []), known, here)[0] : null;
+  S.lightAsk = ask || null;
+  box.hidden = !ask;
+  if (!ask) return;
+  $('arrival-light-title').textContent = ask.road ? t('lightAskTitle', { road: ask.road }) : t('lightAskHere');
+  $('arrival-light-text').textContent = t('lightAskText', { n: ask.days.length });
+  $('arrival-light-yes').textContent = t('lightAskYes');
+  $('arrival-light-no').textContent = t('lightAskNo');
+}
+
+function answerLight(yes) {
+  const spot = S.lightAsk;
+  S.lightAsk = null;
+  $('arrival-light').hidden = true;
+  if (!spot) return;
+  save('lightSpots', settleSpot(load('lightSpots', []), spot));
+  if (yes) submitMark('light', 'add', { lng: spot.lng, lat: spot.lat });
 }
 
 /* ---------- Time to rest ---------- */
@@ -3856,11 +3974,11 @@ function useRoute(route) {
   S.guidance = new Guidance(route, { walking: S.mode === 'walk' });
   motion.setRoute(route);
   startScene(route);
-  S.cameras = camerasOnRoute(route, S.cameraPool || []);
+  S.cameras = placeCameras(route);
   if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
   S.tolls = tollsOnRoute(route, S.tollPool || []);
   if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
-  S.features = featuresOnRoute(route, S.featurePool || []);
+  S.features = placeFeatures(route);
   if (Date.now() - (S.featureFetchedAt || 0) > CAMERA_REFETCH_MS) loadFeatures(route);
   placeRoadReports();
   // Traffic for the old route doesn't belong to this one.
@@ -4086,6 +4204,7 @@ function finishTrip() {
   }
   $('arrival-car').hidden = !drove;
   renderFareAsk(drove ? S.unpriced : []);
+  renderLightAsk(drove);
   const work = $('arrival-work');
   work.hidden = !drove || !S.settings.keepTrips;
   work.setAttribute('aria-pressed', 'false');
@@ -4944,6 +5063,12 @@ function wire() {
   });
   $('tng-balance').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tng-save').click(); });
   $('rest-yes').addEventListener('click', takeRest);
+  $('road-alert').addEventListener('click', () => askNotHere(S.roadNear?.kind, S.roadNear));
+  $('camera-alert').addEventListener('click', () => askNotHere('camera', S.cameraNear));
+  $('mark-ask-yes').addEventListener('click', () => answerNotHere(true));
+  $('mark-ask-no').addEventListener('click', () => answerNotHere(false));
+  $('arrival-light-yes').addEventListener('click', () => answerLight(true));
+  $('arrival-light-no').addEventListener('click', () => answerLight(false));
   $('arrival-work').addEventListener('click', toggleWorkTrip);
   $('arrival-tolls-send').addEventListener('click', sendFares);
   $('month-csv').addEventListener('click', downloadWork);
@@ -5580,6 +5705,7 @@ function renderReportKinds() {
 
 function openRoadReport() {
   renderReportKinds();
+  renderMarkKinds();
   openOverlay('roadreport');
 }
 

@@ -196,6 +196,25 @@ said; lights are only said if you switch that on in Settings. Pintu knows where 
 whether it's red: Malaysia's signal timings aren't shared openly. A route found while driving
 asks for its own, and only things someone has mapped are known.
 
+## Fixing the map
+
+The map is OpenStreetMap, and it misses things. While driving, the road report button also has
+"Missing from the map? Add it here" for a traffic light, speed bump or speed camera, and tapping a
+light, bump or camera warning asks "No ... here?" to take a wrong one away. These fixes go to the
+hub (`/marks/add`: what, where, and the phone's random code) and are laid over the map for every
+Pintu driver from the next route on (`js/marks.js`). They don't change OpenStreetMap itself: for
+that, add the thing there too (Every Door or StreetComplete on Android), and Pintu will have it
+from the map as well.
+
+Pintu also learns traffic lights from your own drives (`js/stop-learn.js`). A stop like a red
+light (still for 15 seconds to two and a half minutes, then on for 150 m without stopping again,
+so not a jam) is kept on the phone. When you've stopped at the same spot on three different days
+and the map has no light there, Pintu asks when you arrive whether there's one; yes adds it as a
+fix. Nothing about these stops leaves the phone unless you say yes.
+
+The Malaysian Highway Authority's own map lists toll plazas and R&Rs, but its site is "Hak Cipta
+Terpelihara" with no permission to reuse its data, so Pintu doesn't use it.
+
 ## Without tolls
 
 When a route has tolls, Pintu also asks Valhalla for the same trip without them and shows the

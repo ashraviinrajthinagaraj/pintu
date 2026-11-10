@@ -306,6 +306,13 @@
       <button id="report-still" class="plate plate-btn plate-small" type="button"></button>
     </div>
   </div>
+  <div id="mark-ask" class="refill report-ask" role="alert" hidden>
+    <p><strong id="mark-ask-title"></strong></p>
+    <div class="resume-actions">
+      <button id="mark-ask-no" class="link-btn" type="button"></button>
+      <button id="mark-ask-yes" class="plate plate-btn plate-small" type="button"></button>
+    </div>
+  </div>
   <div id="refill" class="refill" hidden>
     <p id="refill-text"></p>
     <div class="resume-actions">
@@ -506,6 +513,13 @@
   <div id="arrival-car" class="arrival-car" hidden>
     <label id="arrival-car-text" for="arrival-car-note"></label>
     <input id="arrival-car-note" class="text-input" type="text" maxlength="60" autocomplete="off" enterkeyhint="done">
+  </div>
+  <div id="arrival-light" class="arrival-tolls" hidden>
+    <p><strong id="arrival-light-title"></strong><span id="arrival-light-text"></span></p>
+    <div class="resume-actions">
+      <button id="arrival-light-no" class="link-btn" type="button"></button>
+      <button id="arrival-light-yes" class="outline-btn" type="button"></button>
+    </div>
   </div>
   <div id="arrival-tolls" class="arrival-tolls" hidden>
     <p><strong id="arrival-tolls-title"></strong><span id="arrival-tolls-text"></span></p>
@@ -884,6 +898,8 @@
     <div class="dest-title"><h2 id="report-title"></h2><p id="report-text" class="wrap"></p></div>
   </div>
   <div id="report-kinds" class="report-kinds"></div>
+  <p id="mark-title" class="field-label"></p>
+  <div id="mark-kinds" class="report-kinds"></div>
 </section>
 
 <!-- A trip being shared, or a convoy -->

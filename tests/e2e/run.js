@@ -38,7 +38,7 @@ const ORIGIN = `http://127.0.0.1:${server.address().port}/`;
 
 const stub = await readFile(path.join(root, 'tests/e2e/stub-maplibre.js'), 'utf8');
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' };
-const HUB_PATHS = /^\/(share|reports|convoy|commute|push|remind|fares)(\/|$)/;
+const HUB_PATHS = /^\/(share|reports|convoy|commute|push|remind|fares|marks)(\/|$)/;
 
 // The real hub from server/hub.js, on an in-memory database, as a stand-in server.
 function standInHub({ now = () => Date.now(), env = {}, fetchImpl } = {}) {
@@ -4605,7 +4605,7 @@ await check('road reports: police reported by one driver warns the next, who is 
   await smallTargets(a.page, 'report button', ['#btn-report', '#btn-share']);
   await a.page.click('#btn-report');
   await a.page.waitForSelector('#report-sheet:not([hidden])');
-  assert.deepEqual(await a.page.locator('.report-kind').allInnerTexts(), ['Polis', 'Kemalangan', 'Bahaya', 'Sesak', 'Jalan ditutup']);
+  assert.deepEqual(await a.page.locator('#report-kinds .report-kind').allInnerTexts(), ['Polis', 'Kemalangan', 'Bahaya', 'Sesak', 'Jalan ditutup']);
   await noOverflow(a.page, 'report sheet');
   await a.page.screenshot({ path: `${shots}/65-report.png` });
   await a.page.locator('.report-kind', { hasText: 'Polis' }).click();
@@ -5325,6 +5325,77 @@ await check('toll fares from drivers: an unknown plaza gets what others paid, an
   const kept = await (await fresh.fetch(new Request('https://hub/fares?ids=node/83'))).json();
   assert.deepEqual(kept.fares['node/83'].map((f) => [f.prev, f.rm]), [['node/82', 5.5]]);
   await b.ctx.close();
+});
+
+await check('fixing the map: a wrong light removed from its warning, a missing bump added, and both reach the next driver', async () => {
+  const hub = standInHub();
+  const trip = prepareTrip(townTrip());
+  const a = await newApp(browser, { ...quiet, scale: 2, hub, routeResponse: () => ({ trip: townTrip() }), overpass: townThings() });
+  await toNav(a.page);
+  await roll(a.page, trip, 0, 260, 12);
+  await a.page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'light' && !document.getElementById('road-alert').hidden);
+  await a.page.click('#road-alert');
+  await a.page.waitForSelector('#mark-ask:not([hidden])');
+  assert.equal(await text(a.page, '#mark-ask-title'), 'Tiada lampu isyarat di sini?');
+  await a.page.screenshot({ path: `${shots}/80-not-here.png` });
+  await a.page.click('#mark-ask-yes');
+  await a.page.waitForFunction(() => document.getElementById('toast').textContent === 'Dibuang. Terima kasih.');
+  await roll(a.page, trip, 260, 270, 12);
+  assert.notEqual(await a.page.getAttribute('#road-alert', 'data-kind') === 'light' && await vis(a.page, '#road-alert'), true, 'gone from the warnings');
+
+  await a.page.click('#btn-report');
+  await a.page.waitForSelector('#report-sheet:not([hidden])');
+  assert.equal(await text(a.page, '#mark-title'), 'Tiada pada peta? Tambah di sini');
+  assert.deepEqual(await a.page.locator('#mark-kinds button').allInnerTexts(), ['Lampu isyarat', 'Bonggol', 'Kamera laju']);
+  await noOverflow(a.page, 'report sheet with map fixes');
+  await a.page.locator('#mark-kinds button').nth(1).click();
+  await a.page.waitForFunction(() => document.getElementById('toast').textContent === 'Bonggol ditambah. Terima kasih.');
+  const kept = (await (await hub.fetch(new Request('https://hub/marks?bbox=101.6,3.1,101.8,3.2'))).json()).marks;
+  assert.deepEqual(kept.map((m) => [m.kind, m.action, m.ref]).sort(), [['bump', 'add', null], ['light', 'gone', 'node/61']]);
+  await a.ctx.close();
+
+  // The next driver: no light there any more, and the new bump is warned of.
+  const b = await newApp(browser, { ...quiet, scale: 2, hub, routeResponse: () => ({ trip: townTrip() }), overpass: townThings() });
+  await toPreview(b.page);
+  await b.page.waitForTimeout(1200);
+  assert.doesNotMatch(await text(b.page, '.route-opt .route-tags'), /lampu isyarat/, 'the only light was removed');
+  await b.page.click('#start');
+  if (await b.page.locator('#safety').isVisible()) await b.page.click('#safety-ok');
+  await b.page.waitForSelector('#nav-bar');
+  await roll(b.page, trip, 0, 215, 12);
+  await b.page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'bump' && !document.getElementById('road-alert').hidden);
+  assert.deepEqual(b.log.errors, []);
+  await b.ctx.close();
+});
+
+await check('learned traffic lights: stopping at the same spot on a third day asks, and yes shares it', async () => {
+  const hub = standInHub();
+  const trip = prepareTrip(townTrip());
+  const spotAt = 330;
+  const [lng, lat] = pointAt(trip, spotAt);
+  const spots = [{ lng, lat, road: 'Jalan Ampang', count: 2, days: ['2026-01-05', '2026-01-06'], last: Date.now() - 86400e3, done: false }];
+  const { ctx, page } = await newApp(browser, {
+    storage: { 'pintu.safetySeen': 'true', 'pintu.lightSpots': spots }, scale: 2, hub,
+    routeResponse: () => ({ trip: townTrip() }), overpass: () => ({ elements: [] }),
+  });
+  await toNav(page);
+  await roll(page, trip, 0, spotAt, 12);
+  // Red: half a minute standing still, then away.
+  await page.evaluate(([x, y, t0]) => { for (let i = 1; i <= 30; i++) window.__gps.push(x, y, { accuracy: 8, speed: 0, time: t0 + i * 1000 }); }, [lng, lat, rollClock]);
+  rollClock += 30000;
+  await roll(page, trip, spotAt, trip.length, 12);
+  await page.waitForSelector('#arrival:not([hidden])');
+  await page.waitForSelector('#arrival-light:not([hidden])');
+  assert.equal(await text(page, '#arrival-light-title'), 'Ada lampu isyarat di Jalan Ampang?');
+  assert.match(await text(page, '#arrival-light-text'), /pada 3 hari/);
+  await page.screenshot({ path: `${shots}/81-learned-light.png` });
+  await page.click('#arrival-light-yes');
+  await page.waitForFunction(() => document.getElementById('arrival-light').hidden);
+  const kept = (await (await hub.fetch(new Request('https://hub/marks?bbox=101.6,3.1,101.8,3.2'))).json()).marks;
+  assert.deepEqual(kept.map((m) => [m.kind, m.action]), [['light', 'add']]);
+  const after = JSON.parse(await page.evaluate(() => localStorage.getItem('pintu.lightSpots')));
+  assert.equal(after[0].done, true, 'asked once');
+  await ctx.close();
 });
 
 await browser.close();

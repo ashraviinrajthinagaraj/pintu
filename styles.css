@@ -1630,3 +1630,8 @@ a { color: inherit; }
 .arrival-tolls-list label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .arrival-tolls-list .fare-in { display: flex; align-items: center; gap: 6px; font-family: var(--condensed); font-weight: 700; }
 .arrival-tolls-list input { width: 6.5em; }
+
+/* ---------- Fixing the map ---------- */
+#mark-title { margin-top: 14px; }
+.road-alert, .camera-alert { cursor: pointer; }
+.arrival-tolls .resume-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }

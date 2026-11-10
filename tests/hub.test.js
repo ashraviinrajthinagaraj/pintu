@@ -395,3 +395,22 @@ test('toll fares drivers paid: kept with the plaza before, read back newest firs
   for (let i = 0; i < 2; i++) await call('/fares/add', { device, paid: many });
   assert.equal((await call('/fares/add', { device, paid: many })).status, 429, 'one phone can only say so much in a day');
 });
+
+test('map fixes: a missing light or a gone camera, kept once, read back by area, and limited', async () => {
+  const { call } = hub();
+  const device = 'abcdefghjkmnpqrs';
+  const add = await call('/marks/add', { device, kind: 'light', action: 'add', lng: 101.7, lat: 3.15, heading: 92 });
+  assert.equal(add.status, 200);
+  const twice = await call('/marks/add', { device, kind: 'light', action: 'add', lng: 101.70005, lat: 3.15005 });
+  assert.deepEqual(twice.body, { id: add.body.id, again: true }, 'the same light, a few metres off');
+  assert.equal((await call('/marks/add', { device, kind: 'camera', action: 'gone', lng: 101.71, lat: 3.16, ref: 'node/77' })).status, 200);
+  assert.equal((await call('/marks/add', { device, kind: 'ufo', action: 'add', lng: 101.7, lat: 3.15 })).status, 400);
+  assert.equal((await call('/marks/add', { device, kind: 'bump', action: 'maybe', lng: 101.7, lat: 3.15 })).status, 400);
+  assert.equal((await call('/marks/add', { device, kind: 'bump', action: 'add', lng: 500, lat: 3.15 })).status, 400);
+  const list = (await call('/marks?bbox=101.6,3.1,101.8,3.2')).body.marks;
+  assert.deepEqual(list.map((m) => [m.kind, m.action, m.ref]).sort(), [['camera', 'gone', 'node/77'], ['light', 'add', null]]);
+  assert.equal(list.find((m) => m.kind === 'light').heading, 92);
+  assert.equal((await call('/marks?bbox=100,1,110,9')).status, 400, 'too big an area');
+  for (let i = 0; i < 40; i++) await call('/marks/add', { device, kind: 'bump', action: 'add', lng: 101 + i * 0.01, lat: 3 });
+  assert.equal((await call('/marks/add', { device, kind: 'bump', action: 'add', lng: 102, lat: 3.5 })).status, 429);
+});

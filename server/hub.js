@@ -6,6 +6,7 @@
 //   morning alerts: home, work and a time       (until switched off)
 //   a parking reminder: when the time paid ends (gone an hour after it ends)
 //   toll fares drivers say they paid, at a plaza and after which plaza (a year)
+//   map fixes: a light, bump or camera missing from the map, or one that's gone (two years)
 //
 // One Durable Object holds it all in its own small SQLite database. Nothing here
 // says who anyone is: names are whatever people type, and a phone is a random code.
@@ -32,6 +33,12 @@ export const FARES_PER_DAY = 60;              // one phone, in a day
 export const FARES_KEEP_MS = 400 * 86400e3;
 export const FARES_SHOWN = 20;                // the newest, per plaza
 const PLAZA = /^(node|way)\/\d{1,12}$/;
+export const MARK_KINDS = ['light', 'bump', 'camera'];
+export const MARKS_PER_DAY = 40;
+export const MARKS_KEEP_MS = 730 * 86400e3;
+export const MARK_SAME_M = 30;
+const MARK_REF = /^(node|way|mark)\/\d{1,12}$/;
+const MARKS_BOX_DEG = 8;
 const PUSH_SUB = 'https://ashraviinrajthinagaraj.github.io/pintu/';
 
 // Push services the server will send to, and nothing else.
@@ -47,6 +54,8 @@ CREATE TABLE IF NOT EXISTS commuters (id TEXT PRIMARY KEY, key TEXT, endpoint TE
 CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS fares (id INTEGER PRIMARY KEY AUTOINCREMENT, plaza TEXT, prev TEXT, rm REAL, at INTEGER, device TEXT);
 CREATE INDEX IF NOT EXISTS fares_plaza ON fares (plaza, at);
+CREATE TABLE IF NOT EXISTS marks (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, action TEXT, lng REAL, lat REAL, heading REAL, ref TEXT, at INTEGER, device TEXT);
+CREATE INDEX IF NOT EXISTS marks_at ON marks (lat, lng);
 CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY, key TEXT, endpoint TEXT UNIQUE, at INTEGER, until INTEGER, lang TEXT, sent INTEGER, message TEXT, message_at INTEGER);
 `;
 
@@ -291,6 +300,8 @@ export class Hub {
       case '/remind/set': return this.remindSet(body);
       case '/fares/add': return this.faresAdd(body);
       case '/fares': return this.faresGet(q.get('ids'));
+      case '/marks/add': return this.markAdd(body);
+      case '/marks': return this.markList(q.get('bbox'));
       case '/remind/off': return this.remindOff(body);
       case '/cron': return json(await this.cron());
       default: return nope('not found', 404);
@@ -569,6 +580,40 @@ export class Hub {
     return json({ fares: out });
   }
 
+  /* ----- Map fixes ----- */
+
+  // Something the map has wrong: a light, bump or camera it's missing, or one
+  // it shows that isn't there (`ref` is which, when it came from the map).
+  markAdd(b) {
+    const device = isId(b?.device, 16) ? b.device : null;
+    const kind = MARK_KINDS.includes(b?.kind) ? b.kind : null;
+    const action = b?.action === 'add' || b?.action === 'gone' ? b.action : null;
+    const at = cleanPoint(b);
+    const ref = typeof b?.ref === 'string' && MARK_REF.test(b.ref) ? b.ref : null;
+    if (!device || !kind || !action || !at) return nope('not a fix');
+    const now = this.now();
+    const today = this.row('SELECT COUNT(*) AS n FROM marks WHERE device = ? AND at > ?', device, now - 86400e3).n;
+    if (today >= MARKS_PER_DAY) return nope('too many', 429);
+    // The same thing said twice is said once.
+    const d = 0.0005;
+    const same = this.rows('SELECT * FROM marks WHERE kind = ? AND action = ? AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?',
+      kind, action, at.lat - d, at.lat + d, at.lng - d, at.lng + d).find((m) => (ref ? m.ref === ref : metres(m, at) <= MARK_SAME_M));
+    if (same) return json({ id: same.id, again: true });
+    const heading = finite(b.heading, 0, 360);
+    this.run('INSERT INTO marks (kind, action, lng, lat, heading, ref, at, device) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      kind, action, at.lng, at.lat, heading == null ? null : Math.round(heading), ref, now, device);
+    return json({ id: this.row('SELECT last_insert_rowid() AS id').id });
+  }
+
+  markList(bbox) {
+    const box = String(bbox || '').split(',').map(Number);
+    if (box.length !== 4 || box.some((v) => !Number.isFinite(v))) return nope('which area?');
+    const [w, s, e, n] = box;
+    if (e <= w || n <= s || e - w > MARKS_BOX_DEG || n - s > MARKS_BOX_DEG) return nope('too big an area');
+    const rows = this.rows('SELECT id, kind, action, lng, lat, heading, ref, at FROM marks WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ? ORDER BY at DESC LIMIT 3000', s, n, w, e);
+    return json({ marks: rows });
+  }
+
   /* ----- Parking reminders ----- */
 
   remindSet(b) {
@@ -652,6 +697,7 @@ export class Hub {
     }
     this.run('DELETE FROM reminders WHERE until < ?', now - 3600e3);
     this.run('DELETE FROM fares WHERE at < ?', now - FARES_KEEP_MS);
+    this.run('DELETE FROM marks WHERE at < ?', now - MARKS_KEEP_MS);
     const due = this.rows('SELECT * FROM commuters').filter((c) => commuteDue(c, now)).slice(0, COMMUTE_PER_RUN);
     let sent = 0;
     for (const c of due) {
