@@ -1,0 +1,22 @@
+# Temporary: the Highway Authority's terms for its site and its public map.
+name: LLM terms probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Read LLM's terms
+        run: |
+          A="Mozilla/5.0"
+          curl -sSL -m 30 -A "$A" "https://www.llm.gov.my/" -o home.html || true
+          echo "== links"; grep -oiE 'href="[^"]*"[^>]*>[^<]{0,60}' home.html | grep -iE 'hak|penafian|disclaim|copyright|privasi|privacy|dasar|polic|terma|term|keselamatan' | sort -u | head -20
+          for p in $(grep -oiE 'href="[^"]*(hak|penafian|disclaim|copyright|privasi|privacy|dasar|polic|terma|term)[^"]*"' home.html | sed 's/href="//;s/"$//' | sort -u | head -6); do
+            case "$p" in http*) u="$p";; /*) u="https://www.llm.gov.my$p";; *) u="https://www.llm.gov.my/$p";; esac
+            echo "======== $u"
+            curl -sSL -m 30 -A "$A" "$u" | python3 -c "import sys,re,html; s=sys.stdin.read(); s=re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>',' ',s); t=html.unescape(re.sub(r'<[^>]+>','\n',s)); print('\n'.join(l.strip() for l in t.split('\n') if len(l.strip())>40)[:3500])"
+          done
+          echo "======== GIS service info"
+          curl -sS -m 30 "https://gis02.llm.gov.my/llmsmpt/rest/services/GIS_LLM/PLAZA_TOL/MapServer?f=json" | python3 -c "import sys,json; d=json.load(sys.stdin); print({k:d.get(k) for k in ['serviceDescription','description','copyrightText','documentInfo']})"
+          curl -sS -m 30 "https://gis02.llm.gov.my/llmsmpt/rest/services/GIS_LLM/KAW_REHAT_RAWAT/MapServer?f=json" | python3 -c "import sys,json; d=json.load(sys.stdin); print({k:d.get(k) for k in ['serviceDescription','description','copyrightText']})"
