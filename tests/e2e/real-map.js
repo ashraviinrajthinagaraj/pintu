@@ -684,7 +684,12 @@ await check('real library: HUD over a real trip, and walking with no car on the 
   await page.screenshot({ path: `${shots}/real-nav-buttons.png` });
   await page.click('#btn-hud');
   await page.waitForTimeout(300);
+  const shotAt = Date.now();
   await page.screenshot({ path: `${shots}/real-hud.png` });
+  console.log(`  (HUD picture took ${Date.now() - shotAt} ms)`);
+  // The controls fade after six seconds, and a picture on the real renderer can
+  // take that long: a tap on the HUD brings them back, as it would for anyone.
+  await page.click('#hudmode', { position: { x: 30, y: 60 } });
   await page.click('#hm-close');
   await page.waitForSelector('#hudmode', { state: 'hidden' });
   await page.click('#btn-end');

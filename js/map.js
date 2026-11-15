@@ -559,6 +559,7 @@ export class MapView {
 
   // Signs ahead: [{ kind: 'light' | 'bump' | 'rail', lng, lat }].
   setRoadSigns(list) {
+    if (!list?.length && !this.data.signs.features.length) return;
     this.data.signs = collection((list || []).map((f) => point(f.lng, f.lat, { k: f.kind })));
     this.map?.getSource('pintu-signs')?.setData(this.data.signs);
   }
@@ -671,7 +672,10 @@ export class MapView {
 
   // The way you'd go with (or without) tolls instead, to compare. Null takes it away.
   setOtherWay(coords) {
-    this.data.other = collection(coords?.length > 1 ? [line(coords)] : []);
+    const has = coords?.length > 1;
+    // Nothing to nothing isn't a change: no need to have the map redraw.
+    if (!has && !this.data.other.features.length) return;
+    this.data.other = collection(has ? [line(coords)] : []);
     this.map?.getSource('pintu-other')?.setData(this.data.other);
   }
 
