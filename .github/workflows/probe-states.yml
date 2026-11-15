@@ -1,0 +1,48 @@
+# Temporary: fetches Malaysia's state boundaries (UNHCR/OCHA, CC BY-IGO, via HDX)
+# and a sample of MET Malaysia's warnings, and puts them on the probe-data branch.
+name: Probe states
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/probe-states.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch
+        run: |
+          mkdir -p out work
+          curl -sSL 'https://data.humdata.org/api/3/action/package_show?id=malaysia-administrative-level-0-2-boundaries' -o work/pkg.json
+          jq '{license: .result.license_title, source: .result.dataset_source, date: .result.dataset_date, resources: [.result.resources[] | {name, format, url}]}' work/pkg.json > out/package.json
+          cat out/package.json
+          URL="$(jq -r '.result.resources[] | select((.name|test("SHP";"i")) and (.name|test("zip";"i"))) | .url' work/pkg.json | head -1)"
+          echo "SHP: $URL"
+          curl -sSL "$URL" -o work/shp.zip
+          (cd work && unzip -o -q shp.zip && find . -name '*.shp' | sort) | tee out/files.txt
+          SHP="$(find work -iname '*adm1*.shp' | head -1)"
+          echo "ADM1: $SHP"
+          npx -y mapshaper@0.6 "$SHP" -info 2> out/info.txt || true
+          cat out/info.txt
+          npx -y mapshaper@0.6 "$SHP" -simplify 1% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/states-1.json
+          npx -y mapshaper@0.6 "$SHP" -simplify 0.5% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/states-05.json
+          ls -la out
+          curl -sSL 'https://api.data.gov.my/weather/warning?limit=6' -o out/warnings.json || true
+          head -c 3000 out/warnings.json
+      - name: Keep
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan probe-data
+          git rm -rf -q .
+          cp -r out/* .
+          git add -A
+          git commit -q -m "Probe output"
+          git push -f origin probe-data
