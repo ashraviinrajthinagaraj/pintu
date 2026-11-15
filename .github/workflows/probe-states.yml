@@ -19,23 +19,37 @@ jobs:
           node-version: 22
       - name: Fetch
         run: |
+          set +e
           mkdir -p out work
-          curl -sSL 'https://data.humdata.org/api/3/action/package_show?id=malaysia-administrative-level-0-2-boundaries' -o work/pkg.json
-          jq '{license: .result.license_title, source: .result.dataset_source, date: .result.dataset_date, resources: [.result.resources[] | {name, format, url}]}' work/pkg.json > out/package.json
-          cat out/package.json
-          URL="$(jq -r '.result.resources[] | select((.name|test("SHP";"i")) and (.name|test("zip";"i"))) | .url' work/pkg.json | head -1)"
+          curl -sSL -A 'Mozilla/5.0 pintu-probe' 'https://data.humdata.org/api/3/action/package_show?id=malaysia-administrative-level-0-2-boundaries' -o work/pkg.json
+          head -c 600 work/pkg.json; echo
+          jq '{license: .result.license_title, source: .result.dataset_source, resources: [.result.resources[]? | {name, format, url}]}' work/pkg.json > out/hdx.json
+          cat out/hdx.json
+          curl -sSL 'https://www.geoboundaries.org/api/current/gbOpen/MYS/ADM1/' -o out/gb-meta.json
+          cat out/gb-meta.json; echo
+          GB="$(jq -r '.simplifiedGeometryGeoJSON // empty' out/gb-meta.json)"
+          echo "GB: $GB"
+          if [ -n "$GB" ]; then
+            curl -sSL "$GB" -o work/gb.geojson
+            ls -la work/gb.geojson
+            npx -y mapshaper@0.6 work/gb.geojson -info 2> out/gb-info.txt; cat out/gb-info.txt
+            npx -y mapshaper@0.6 work/gb.geojson -simplify 20% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/gb-20.json
+            npx -y mapshaper@0.6 work/gb.geojson -simplify 8% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/gb-8.json
+          fi
+          URL="$(jq -r '.result.resources[]? | select((.name|test("SHP";"i"))) | .url' work/pkg.json | head -1)"
           echo "SHP: $URL"
-          curl -sSL "$URL" -o work/shp.zip
-          (cd work && unzip -o -q shp.zip && find . -name '*.shp' | sort) | tee out/files.txt
-          SHP="$(find work -iname '*adm1*.shp' | head -1)"
-          echo "ADM1: $SHP"
-          npx -y mapshaper@0.6 "$SHP" -info 2> out/info.txt || true
-          cat out/info.txt
-          npx -y mapshaper@0.6 "$SHP" -simplify 1% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/states-1.json
-          npx -y mapshaper@0.6 "$SHP" -simplify 0.5% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/states-05.json
+          if [ -n "$URL" ]; then
+            curl -sSL -A 'Mozilla/5.0 pintu-probe' "$URL" -o work/shp.zip
+            (cd work && unzip -o -q shp.zip && find . -name '*.shp' | sort) | tee out/files.txt
+            SHP="$(find work -iname '*adm1*.shp' | head -1)"
+            echo "ADM1: $SHP"
+            npx -y mapshaper@0.6 "$SHP" -info 2> out/info.txt; cat out/info.txt
+            npx -y mapshaper@0.6 "$SHP" -simplify 1% keep-shapes planar -filter-islands min-area=20km2 -o format=geojson precision=0.0005 out/hdx-1.json
+          fi
           ls -la out
-          curl -sSL 'https://api.data.gov.my/weather/warning?limit=6' -o out/warnings.json || true
+          curl -sSL 'https://api.data.gov.my/weather/warning?limit=6' -o out/warnings.json
           head -c 3000 out/warnings.json
+          exit 0
       - name: Keep
         run: |
           git config user.name "github-actions[bot]"
