@@ -63,8 +63,11 @@
       if (this.layers.find((x) => x.id === l.id)) throw new Error(`layer ${l.id} exists`);
       if (l.type === 'custom') { this.layers.push(l); l.source.onReady?.(true); return; }
       if (!this.sources[l.source]) throw new Error(`no source ${l.source}`);
-      if (before !== 'labels') throw new Error(`layer before ${before}`);
-      this.layers.push(l);
+      // Below the labels, or below one of the app's own layers.
+      const at = this.layers.findIndex((x) => x.id === before);
+      if (before !== 'labels' && at < 0) throw new Error(`layer before ${before}`);
+      if (at >= 0) this.layers.splice(at, 0, l);
+      else this.layers.push(l);
     }
     easeTo(o) { calls.push(['easeTo', o]); Object.assign(this.cam, { ...o, center: o.center || this.cam.center }); this.draw(); }
     fitBounds(b, o) {
@@ -127,17 +130,20 @@
           if (l.paint['line-blur']) { g.shadowColor = g.strokeStyle; g.shadowBlur = l.paint['line-blur'] * 2; }
           for (const f of polys) for (const r of rings(f.geometry)) { g.beginPath(); path(r); g.closePath(); g.stroke(); }
           if (!l.paint['line-blur']) for (const f of lines) { g.beginPath(); path(f.geometry.coordinates); g.stroke(); }
-        } else if (l.type === 'symbol' && typeof l.layout?.['icon-image'] === 'string') {
-          const img = this.images?.[l.layout['icon-image']];
-          if (img) {
+        } else if (l.type === 'symbol' && l.layout?.['icon-image']) {
+          // A fixed image, or ['concat', 'prefix-', ['get', key]].
+          const spec = l.layout['icon-image'];
+          const idFor = (f) => (typeof spec === 'string' ? spec : Array.isArray(spec) && spec[0] === 'concat' ? spec.slice(1).map((p) => (Array.isArray(p) && p[0] === 'get' ? f.properties[p[1]] : p)).join('') : null);
+          const bottom = l.layout['icon-anchor'] === 'bottom';
+          for (const f of src.data.features) {
+            const img = this.images?.[idFor(f)];
+            if (!img) continue;
             const c2 = document.createElement('canvas');
             c2.width = img.width; c2.height = img.height;
             c2.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
-            const size = img.width / (img.pixelRatio || 1);
-            for (const f of src.data.features) {
-              const [x, y] = toXY(f.geometry.coordinates, this.cam, w, h);
-              g.drawImage(c2, x - size / 2, y - size / 2, size, size);
-            }
+            const [iw, ih] = [img.width / (img.pixelRatio || 1), img.height / (img.pixelRatio || 1)];
+            const [x, y] = toXY(f.geometry.coordinates, this.cam, w, h);
+            g.drawImage(c2, x - iw / 2, bottom ? y - ih : y - ih / 2, iw, ih);
           }
         }
         g.restore();

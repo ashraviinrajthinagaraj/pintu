@@ -520,8 +520,10 @@ await check('first trip shows the safety note once, and voice speaks Malay in or
   assert.match(await text(page, '#sign-road'), /Jalan Tun Razak/);
   assert.match(await text(page, '#sign-distance'), /^\d+ m$/);
   assert.equal(await page.locator('#sign').evaluate((e) => e.classList.contains('blue')), true, 'blue on ordinary roads');
-  assert.match(await text(page, '#eta-clock'), /^\d+ min$/);
-  assert.match(await text(page, '#eta-rest'), /^[\d.]+ k?m, sampai \d+:\d\d (PG|PTG)$/);
+  // When you'll get there, big; then how long and how far.
+  assert.match(await text(page, '#eta-clock'), /^\d+:\d\d (PG|PTG)$/);
+  assert.match(await page.getAttribute('#eta-clock', 'aria-label'), /^Sampai \d+:\d\d (PG|PTG)$/);
+  assert.match(await text(page, '#eta-rest'), /^\d+ min · [\d.]+ k?m$/);
   await page.screenshot({ path: `${shots}/5-nav-day.png` });
 
   await driveTo(page, trip, { from: 900, t0: t });
@@ -879,7 +881,7 @@ await check('English throughout, and the choice sticks', async () => {
   await page.waitForTimeout(50);
   assert.match((await said(page)).at(-1).text, /^Continue for .*then turn right onto Jalan Tun Razak\.$/);
   assert.match(await text(page, '#sign-action'), /Turn right/);
-  assert.match(await text(page, '#eta-rest'), /, arrive \d/);
+  assert.match(await text(page, '#eta-clock'), /^\d+:\d\d (am|pm)$/i);
   await page.reload();
   await page.waitForFunction(() => window.__map?.ready);
   assert.equal(await text(page, '#where-text'), 'Where to?');
@@ -3355,14 +3357,14 @@ await check('traffic: a jam ahead shows, is said once, and counts in the arrival
   const sent = driving[0].points;
   assert.ok(sent.length >= 2 && sent.length <= 1500);
   assert.ok(haversine(sent[0], trip.coords[0]) < 30 && haversine(sent[sent.length - 1], trip.coords[trip.coords.length - 1]) < 1);
-  const before = minutesIn(await text(page, '#eta-clock'));
+  const before = minutesIn(await text(page, '#eta-rest'));
   assert.equal(await vis(page, '#jam-alert'), false);
 
   await page.waitForTimeout(2700);
   await roll(page, trip, 200, 260, 12);
   await page.waitForSelector('#jam-alert:not([hidden])');
   assert.match(await text(page, '#jam-alert'), /1[.,]2\s*km\s*\+8 min/);
-  const after = minutesIn(await text(page, '#eta-clock'));
+  const after = minutesIn(await text(page, '#eta-rest'));
   assert.ok(Math.abs(after - before - 8) <= 1, `arrival ${before} → ${after} min`);
   await page.screenshot({ path: `${shots}/58-jam.png` });
 
@@ -5246,10 +5248,37 @@ await check('driving: the next light, bump and railway crossing show; the bump a
   await roll(page, trip, 0, 260, 12);
   await page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'light' && !document.getElementById('road-alert').hidden);
   assert.match(await page.getAttribute('#road-alert', 'aria-label'), /^Lampu isyarat dalam \d+ m$/);
+  // Standing on the road ahead too, with the bump after it.
+  const signs = () => page.evaluate(() => window.__map.sources['pintu-signs'].data.features.map((f) => f.properties.k));
+  assert.deepEqual(await signs(), ['light', 'bump']);
+  // The road you're on, at the foot of the map.
+  assert.equal(await text(page, '#road-now-name'), 'Jalan Ampang');
+  await noOverflow(page, 'road name');
+  await page.screenshot({ path: `${shots}/84-signs-on-road.png` });
+  // Clear of everything else on the screen, upright and on its side.
+  const clearOfRest = () => page.evaluate(() => {
+    const box = (e) => e.getBoundingClientRect();
+    const pill = box(document.getElementById('road-now'));
+    const others = [...document.querySelectorAll('.nav-left > :not([hidden]), .nav-float > :not([hidden]), .nav-top, .nav-bar, .maplibregl-ctrl-bottom-right')]
+      .filter((e) => e.offsetParent !== null);
+    return others.filter((e) => {
+      const r = box(e);
+      return r.width && !(r.right <= pill.left || pill.right <= r.left || r.bottom <= pill.top || pill.bottom <= r.top);
+    }).map((e) => e.id || e.className);
+  });
+  assert.deepEqual(await clearOfRest(), []);
+  await page.setViewportSize({ width: 844, height: 390 });
+  await page.waitForTimeout(300);
+  assert.equal(await vis(page, '#road-now'), true);
+  assert.deepEqual(await clearOfRest(), []);
+  await page.screenshot({ path: `${shots}/84-signs-on-road-844x390.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
   await roll(page, trip, 260, 610, 12);
   await page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'bump' && !document.getElementById('road-alert').hidden);
   await roll(page, trip, 610, trip.maneuvers[1].beginDist + 0.5 * (trip.length - trip.maneuvers[1].beginDist) - 150, 12);
   await page.waitForFunction(() => document.getElementById('road-alert').dataset.kind === 'rail' && !document.getElementById('road-alert').hidden);
+  assert.deepEqual(await signs(), ['rail'], 'the ones passed are gone');
+  assert.equal(await text(page, '#road-now-name'), 'Jalan Stesen');
   await page.screenshot({ path: `${shots}/74-railway-crossing.png` });
   const words = (await said(page)).map((x) => x.text);
   assert.ok(words.some((w) => /^Bonggol di hadapan/.test(w)), 'the bump is said');
@@ -5267,6 +5296,7 @@ await check('driving: the next light, bump and railway crossing show; the bump a
   await toNav(off.page);
   await roll(off.page, trip, 0, 640, 12);
   assert.equal(await vis(off.page, '#road-alert'), false, 'switched off');
+  assert.equal(await off.page.evaluate(() => window.__map.sources['pintu-signs'].data.features.length), 0, 'and none on the road');
   await off.ctx.close();
 });
 

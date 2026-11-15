@@ -37,6 +37,93 @@ const line = (coords, properties = {}) => ({ type: 'Feature', properties, geomet
 const collection = (features) => ({ type: 'FeatureCollection', features });
 const point = (lng, lat, properties = {}) => ({ type: 'Feature', properties, geometry: { type: 'Point', coordinates: [lng, lat] } });
 
+// Signs standing on the road ahead while driving: a traffic light, a hump and a
+// railway crossing, drawn upright like the real thing.
+export function drawRoadSign(kind, ratio = 2) {
+  const W = 22, H = kind === 'light' ? 46 : 34;
+  const canvas = document.createElement('canvas');
+  canvas.width = W * ratio;
+  canvas.height = H * ratio;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(ratio, ratio);
+  const round = (x, y, w, h, r) => {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h);
+  };
+  // The pole.
+  ctx.fillStyle = '#9AA3A8';
+  ctx.fillRect(W / 2 - 1, H - 10, 2, 10);
+  if (kind === 'light') {
+    round(3, 1, W - 6, 34, 6);
+    ctx.fillStyle = '#15191C';
+    ctx.fill();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.stroke();
+    [['#FF4D4D', 8], ['#FFC233', 18], ['#3DDC6F', 28]].forEach(([colour, y]) => {
+      ctx.beginPath();
+      ctx.arc(W / 2, y, 3.9, 0, Math.PI * 2);
+      ctx.fillStyle = colour;
+      ctx.fill();
+    });
+  } else if (kind === 'bump') {
+    // A yellow diamond with a hump on it.
+    ctx.save();
+    ctx.translate(W / 2, 12);
+    ctx.rotate(Math.PI / 4);
+    round(-8, -8, 16, 16, 2.5);
+    ctx.fillStyle = '#FFC233';
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = '#15191C';
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - 6, 15);
+    ctx.quadraticCurveTo(W / 2, 6.5, W / 2 + 6, 15);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#15191C';
+    ctx.stroke();
+  } else {
+    // A railway crossing: a white cross with a red edge.
+    ctx.save();
+    ctx.translate(W / 2, 12);
+    for (const angle of [Math.PI / 4, -Math.PI / 4]) {
+      ctx.save();
+      ctx.rotate(angle);
+      round(-10, -2.6, 20, 5.2, 1);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = '#D93025';
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+  return { width: canvas.width, height: canvas.height, data: ctx.getImageData(0, 0, canvas.width, canvas.height).data, pixelRatio: ratio };
+}
+export const SIGN_KINDS = ['light', 'bump', 'rail'];
+
+// The roads around you while driving, drawn as roads: asphalt the width of their
+// lanes, white edges and dashed lane lines. The map doesn't say how many lanes
+// most roads have, so it's judged from the kind of road; the route's own lanes,
+// which are known, are drawn over these.
+const LANE_M = 3.3;
+const PX_PER_M_15 = 0.4187, PX_PER_M_22 = 53.59;     // at the equator; Malaysia is close enough
+// Faded in as the map comes close enough for real widths to make sense.
+const fadeIn = (to = 1) => ['interpolate', ['linear'], ['zoom'], 15, 0, 16, to];
+const metresWide = (m) => ['interpolate', ['exponential', 2], ['zoom'], 15, ['*', m, PX_PER_M_15], 22, ['*', m, PX_PER_M_22]];
+const ROAD_CLASSES = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'minor', 'service'];
+export const JUNCTION_LAYERS = ['pintu-jr-shadow', 'pintu-jr-surface', 'pintu-jr-edge', 'pintu-jr-lane-1', 'pintu-jr-lane-2', 'pintu-jr-lane-3'];
+export const lanesGuess = ['case',
+  ['==', ['get', 'ramp'], 1], 1,
+  ['==', ['get', 'oneway'], 1], ['match', ['get', 'class'], 'motorway', 3, 'trunk', 2, 'primary', 2, 'secondary', 2, 1],
+  ['match', ['get', 'class'], 'motorway', 4, 'trunk', 4, 'primary', 2, 'secondary', 2, 'tertiary', 2, 'minor', 2, 1],
+];
+
 // A speed camera on the map: a violet badge with a white camera, like the signs.
 export const CAMERA_VIOLET = '#6B3FD6';
 export function drawCameraBadge(ratio = 2) {
@@ -102,7 +189,8 @@ export class MapView {
     this.carPin = null;
     this.carKey = '';
     this.map = null;
-    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY };
+    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY };
+    this.junctionRoads = false;
     this.routeLabels = [];
     this.routeLabelKey = '';
     this.stormPin = null;
@@ -244,6 +332,9 @@ export class MapView {
     if (!m.getLayer('pintu-warn-glow')) m.addLayer({ id: 'pintu-warn-glow', type: 'line', source: 'pintu-warn', layout: { 'line-join': 'round' }, paint: { 'line-color': '#FF9A2E', 'line-width': 9, 'line-blur': 7, 'line-opacity': 0.55 } }, beforeId);
     if (!m.getLayer('pintu-warn-edge')) m.addLayer({ id: 'pintu-warn-edge', type: 'line', source: 'pintu-warn', layout: { 'line-join': 'round' }, paint: { 'line-color': '#F07A12', 'line-width': 1.6 } }, beforeId);
 
+    // On the ground, under the buildings, so a road behind one stays hidden.
+    this._addJunctionRoads(m.getLayer('pintu-3d') ? 'pintu-3d' : beforeId, c);
+
     if (!m.getSource('pintu-other')) m.addSource('pintu-other', { type: 'geojson', data: this.data.other });
     if (!m.getSource('pintu-alts')) m.addSource('pintu-alts', { type: 'geojson', data: this.data.alts });
     if (!m.getSource('pintu-active')) m.addSource('pintu-active', { type: 'geojson', data: this.data.active });
@@ -291,6 +382,34 @@ export class MapView {
           'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.7, 12, 0.9, 16, 1.1],
           'icon-allow-overlap': true,
           'icon-ignore-placement': true,
+        },
+      }, beforeId);
+    }
+
+    // Lights, humps and crossings ahead, standing on the road.
+    if (!m.getSource('pintu-signs')) m.addSource('pintu-signs', { type: 'geojson', data: this.data.signs });
+    for (const kind of SIGN_KINDS) {
+      if (m.hasImage?.(`pintu-sign-${kind}`)) continue;
+      try {
+        const img = drawRoadSign(kind, Math.min(3, Math.max(1, Math.round(window.devicePixelRatio || 2))));
+        if (img) m.addImage?.(`pintu-sign-${kind}`, { width: img.width, height: img.height, data: img.data }, { pixelRatio: img.pixelRatio });
+      } catch { /* the signs are a nicety */ }
+    }
+    if (!m.getLayer('pintu-signs')) {
+      m.addLayer({
+        id: 'pintu-signs',
+        type: 'symbol',
+        source: 'pintu-signs',
+        minzoom: 13,
+        layout: {
+          'icon-image': ['concat', 'pintu-sign-', ['get', 'k']],
+          'icon-anchor': 'bottom',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 14, 0.6, 17, 0.95, 19, 1.25],
+          'icon-pitch-alignment': 'viewport',
+          'icon-rotation-alignment': 'viewport',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'symbol-z-order': 'viewport-y',
         },
       }, beforeId);
     }
@@ -396,6 +515,52 @@ export class MapView {
     fill('pintu-lane-dim', ['arrow-dim'], c.arrowDim);
     fill('pintu-lane-paint', ['arrow', 'paint'], '#FFFFFF');
     fill('pintu-lane-chevron', ['chevron'], '#FFFFFF', 0.72);
+  }
+
+  // The roads around drawn as roads, while driving in 3D.
+  _addJunctionRoads(beforeId, c) {
+    const m = this.map;
+    if (!m.getSource('openmaptiles')) return;
+    const visibility = this.junctionRoads ? 'visible' : 'none';
+    const base = ['all', ['match', ['get', 'class'], ROAD_CLASSES, true, false], ['!=', ['get', 'brunnel'], 'tunnel']];
+    const width = ['+', ['*', lanesGuess, LANE_M], 1.2];
+    const add = (layer) => {
+      if (m.getLayer(layer.id)) return;
+      m.addLayer({ type: 'line', source: 'openmaptiles', 'source-layer': 'transportation', minzoom: 15, ...layer, layout: { 'line-join': 'round', visibility, ...(layer.layout || {}) } }, beforeId);
+    };
+    // Bridges and flyovers cast a shadow, so they read as above the rest.
+    add({ id: 'pintu-jr-shadow', filter: ['all', base, ['==', ['get', 'brunnel'], 'bridge']], paint: { 'line-color': '#000000', 'line-opacity': fadeIn(0.35), 'line-blur': 6, 'line-width': metresWide(['+', width, 3]), 'line-translate': [0, 7], 'line-translate-anchor': 'viewport' } });
+    add({ id: 'pintu-jr-surface', filter: base, paint: { 'line-color': c.road, 'line-opacity': fadeIn(), 'line-width': metresWide(width) } });
+    add({ id: 'pintu-jr-edge', filter: base, paint: { 'line-color': c.edge, 'line-opacity': fadeIn(0.85), 'line-gap-width': metresWide(['-', width, 0.6]), 'line-width': ['interpolate', ['exponential', 2], ['zoom'], 15, 0.4, 18, 1.1, 22, 6] } });
+    // A dashed line between each pair of lanes.
+    for (const i of [1, 2, 3]) {
+      add({
+        id: `pintu-jr-lane-${i}`,
+        filter: ['all', base, ['>', lanesGuess, i]],
+        layout: { 'line-cap': 'butt' },
+        paint: {
+          'line-color': c.edge,
+          'line-opacity': fadeIn(0.8),
+          'line-width': ['interpolate', ['exponential', 2], ['zoom'], 15, 0.35, 18, 0.9, 22, 5],
+          'line-dasharray': [5, 7],
+          'line-offset': metresWide(['*', ['-', i, ['/', lanesGuess, 2]], LANE_M]),
+        },
+      });
+    }
+  }
+
+  setJunctionRoads(on) {
+    if (this.junctionRoads === on) return;
+    this.junctionRoads = on;
+    for (const id of JUNCTION_LAYERS) {
+      if (this.map?.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+    }
+  }
+
+  // Signs ahead: [{ kind: 'light' | 'bump' | 'rail', lng, lat }].
+  setRoadSigns(list) {
+    this.data.signs = collection((list || []).map((f) => point(f.lng, f.lat, { k: f.kind })));
+    this.map?.getSource('pintu-signs')?.setData(this.data.signs);
   }
 
   setLanes(featureCollection) {

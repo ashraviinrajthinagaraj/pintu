@@ -1034,6 +1034,7 @@ function toggle3D() {
   render3DButtons();
   mapView?.setView3D(on);
   mapView?.setCarOn(on);
+  mapView?.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && on);
   S.carDirty = true;
   if (S.view === 'idle') mapView?.tilt(on, S.fix ? [S.fix.lng, S.fix.lat] : null);
   S.poseStale = true;
@@ -1813,6 +1814,8 @@ function clearOfLabels(points) {
 
 function renderMapExtras() {
   if (!mapView) return;
+  mapView.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && !!S.settings.view3d);
+  if (S.view !== 'nav') renderRoadSigns({ onRoute: false });
   renderMapLabels();
   renderMapCameras();
   renderMapTools();
@@ -3226,6 +3229,7 @@ function onNavFix(fix, takenAt) {
 
   renderSign(st);
   renderEta(st);
+  renderRoadNow(st);
   renderSpeed(fix, st);
   updateScene(st, fix);
   renderNavRange(st);
@@ -3239,6 +3243,7 @@ function onNavFix(fix, takenAt) {
   for (const p of st.prompts) say(p);
   renderCamera(st, fix);
   renderRoadFeature(st, fix);
+  renderRoadSigns(st);
   notePaidTolls(st);
   noteStop(st, fix);
   renderRoadReport(st, fix);
@@ -3479,12 +3484,39 @@ function timeLeft(st) {
   return st.remainingTime + (st.onRoute && S.settings.traffic ? delayAhead(S.traffic, st.s) : 0);
 }
 
+// When you'll get there, big, then how long and how far.
 function renderEta(st) {
   const lang = getLang();
   const left = timeLeft(st);
   const clock = fmtClock(new Date(Date.now() + left * 1000), lang);
-  $('eta-clock').textContent = fmtDuration(left, lang);
-  $('eta-rest').textContent = t('arrivalIn', { distance: fmtDistance(st.remainingDistance), clock });
+  $('eta-clock').textContent = clock;
+  $('eta-clock').setAttribute('aria-label', t('arriveOnly', { clock }));
+  $('eta-rest').textContent = `${fmtDuration(left, lang)} · ${fmtDistance(st.remainingDistance)}`;
+}
+
+// The name of the road you're on, at the foot of the map.
+function renderRoadNow(st) {
+  const box = $('road-now');
+  const m = st.onRoute && S.mode !== 'walk' ? S.route?.maneuvers[st.currentIndex] : null;
+  const { name, ref } = m ? roadNames(m) : { name: '', ref: '' };
+  const show = !!(name || ref) && S.overlay !== 'hudmode';
+  box.hidden = !show;
+  if (!show) return;
+  $('road-now-name').textContent = name || ref;
+  $('road-now-ref').textContent = name ? ref : '';
+  $('road-now-ref').hidden = !(name && ref);
+}
+
+// Lights, humps and crossings standing on the road ahead, the next few.
+const SIGNS_AHEAD_M = 900;
+const SIGNS_MAX = 10;
+function renderRoadSigns(st) {
+  const on = S.view === 'nav' && S.settings.roadWarnings && st.onRoute && S.mode !== 'walk';
+  const list = on ? (S.features || []).filter((f) => f.along > st.s - 15 && f.along < st.s + SIGNS_AHEAD_M).slice(0, SIGNS_MAX) : [];
+  const key = list.map((f) => f.id).join('|');
+  if (key === S.signsKey) return;
+  S.signsKey = key;
+  mapView?.setRoadSigns(list);
 }
 
 function currentLimit(st) {

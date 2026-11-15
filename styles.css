@@ -825,7 +825,7 @@ a { color: inherit; }
 
 .nav-bar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 2px; }
 .nav-eta { min-width: 0; display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
-.nav-eta strong { font-family: var(--condensed); font-size: 38px; font-weight: 800; line-height: 1.02; white-space: nowrap; }
+.nav-eta strong { font-family: var(--condensed); font-size: 40px; font-weight: 800; line-height: 1.02; white-space: nowrap; color: #3FD47E; }
 .nav-eta span { font-size: 16px; color: var(--mute); font-weight: 600; }
 .end-btn { flex: none; min-height: 56px; min-width: 92px; max-width: 46%; padding: 8px 16px; border-radius: 13px; background: var(--panel-2); border: 1px solid var(--mute); font-weight: 700; font-size: 18px; line-height: 1.15; }
 .end-btn.is-armed { background: var(--yellow); border-color: var(--yellow); color: var(--on-yellow); }
@@ -1707,3 +1707,36 @@ a { color: inherit; }
   box-shadow: 0 0 0 6px rgba(255, 138, 31, .28), 0 2px 6px rgba(0, 0, 0, .5);
 }
 .storm-pin svg { width: 21px; height: 21px; }
+
+/* The road you're on, at the foot of the map while driving */
+.road-now {
+  position: fixed;
+  left: 50%;
+  /* Above the map's credits in the corner, just under the car. */
+  bottom: calc(var(--bottom-inset) + 56px);
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 2 * (104px + var(--safe-l)));
+  padding: 8px 15px;
+  border-radius: 999px;
+  background: rgba(13, 18, 20, .9);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: var(--lift);
+  pointer-events: none;
+}
+.road-now[hidden] { display: none; }
+#road-now-name { overflow: hidden; text-overflow: ellipsis; }
+.road-now .shield { font-size: 13px; }
+@media (max-width: 360px), (max-height: 620px) and (orientation: portrait) {
+  .road-now { max-width: calc(100% - 2 * (96px + var(--safe-l))); font-size: 15px; padding: 7px 12px; }
+}
+@media (orientation: landscape) and (max-height: 520px) {
+  /* Over the road, clear of the panel on the left and the buttons along the bottom. */
+  .road-now { left: calc(370px + (100% - 370px) / 2); bottom: auto; top: calc(10px + var(--safe-t)); max-width: calc(100% - 370px - 2 * 92px); }
+}

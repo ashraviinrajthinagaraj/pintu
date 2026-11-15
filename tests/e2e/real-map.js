@@ -96,12 +96,33 @@ const POIS = [
   { id: 32, lng: 101.7104, lat: 3.1548, props: { class: 'fuel', subclass: 'fuel', rank: 5 } },
   { id: 33, lng: 101.7052, lat: 3.1502, props: { name: 'Surau Al-Amin', class: 'place_of_worship', subclass: 'place_of_worship' } },
 ];
-const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, { poi: POIS.filter((p) => {
-  const [tx, ty] = lngLatToTile(p.lng, p.lat, z);
-  return Math.floor(tx) === x && Math.floor(ty) === y;
-}) });
+// The demo city's streets as the map's own road data: busy ones every eighth
+// street (four lanes), the rest two, and one flyover.
+const STREETS = (() => {
+  const out = [];
+  const step = 0.00125;
+  const [x0, x1, y0, y1] = [101.692, 101.726, 3.142, 3.168];
+  let id = 900;
+  for (let x = x0; x <= x1 + 1e-9; x += step) {
+    const major = Math.round((x - 101.7) / step) % 8 === 0;
+    out.push({ id: id++, line: [[x, y0], [x, y1]], props: { class: major ? 'trunk' : 'minor' } });
+  }
+  for (let y = y0; y <= y1 + 1e-9; y += step) {
+    const major = Math.round((y - 3.15) / step) % 8 === 0;
+    out.push({ id: id++, line: [[x0, y], [x1, y]], props: { class: major ? 'primary' : 'minor' } });
+  }
+  out.push({ id: id++, line: [[101.7085, 3.1440], [101.7165, 3.1520]], props: { class: 'trunk', brunnel: 'bridge', oneway: 1 } });
+  return out;
+})();
+const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, {
+  poi: POIS.filter((p) => {
+    const [tx, ty] = lngLatToTile(p.lng, p.lat, z);
+    return Math.floor(tx) === x && Math.floor(ty) === y;
+  }),
+  transportation: STREETS,
+});
 
-async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null }) {
+async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null, roadThings = null }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: 'block', locale: 'ms-MY', timezoneId: 'Asia/Kuala_Lumpur' });
   const errors = [];
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -151,6 +172,7 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
       return route.fulfill({ json: { elements: [
         { type: 'node', id: 1, lat: 3.1503, lon: 101.7055, tags: { name: 'Petronas Ampang', amenity: 'fuel' } },
         { type: 'node', id: 2, lat: 3.1548, lon: 101.7104, tags: { brand: 'Shell', amenity: 'fuel' } },
+        ...(roadThings || []),
       ] }, headers: CORS });
     }
     if (host === 'api.waktusolat.app') return route.fulfill({ status: 404, json: {}, headers: CORS });
@@ -392,6 +414,37 @@ await check('real library: lane layers are valid, and appear with real day and n
   assert.deepEqual(bad, []);
   assert.deepEqual(errors, []);
   await ctx.close();
+});
+
+await check('driving in 3D: the roads around drawn with their lanes, a light standing on the road ahead, and the road you\'re on', async () => {
+  const trip = prepareTrip(cityTrip());
+  const node = (id, s, tags) => { const [lon, lat] = pointAt(trip, s); return { type: 'node', id, lat, lon, tags }; };
+  const roadThings = [node(71, 900, { highway: 'traffic_signals' }), node(72, 1000, { traffic_calming: 'hump' })];
+  for (const theme of ['day', 'night']) {
+    const { ctx, page, errors } = await open(browser, {
+      styleFor: async (n) => demoCity(n === 'dark' ? 'night' : 'day'), theme, laneCount: 3, tiles: true, roadThings,
+      routeResponse: () => ({ trip: cityTrip() }),
+    });
+    await toPreview(page);
+    await page.waitForFunction(() => document.querySelectorAll('#along-rail li').length >= 0);
+    await page.click('#start');
+    await page.waitForSelector('#nav-bar');
+    await drive(page, cityTrip(), { to: 780, kph: 45, liveMs: 12 });
+    await settle(page, 2200);
+    const seen = await page.evaluate(() => ({
+      on: window.__map.getLayoutProperty('pintu-jr-surface', 'visibility'),
+      roads: window.__map.querySourceFeatures('openmaptiles', { sourceLayer: 'transportation' }).length,
+    }));
+    assert.equal(seen.on, 'visible');
+    assert.ok(seen.roads > 0, 'the roads around are there to draw');
+    assert.match(await page.locator('#road-now-name').innerText(), /\S/);
+    await page.screenshot({ path: `${shots}/real-${theme}-5-junction.png` });
+    // Out of 3D, the plain map again.
+    await page.click('#btn-3d');
+    assert.equal(await page.evaluate(() => window.__map.getLayoutProperty('pintu-jr-surface', 'visibility')), 'none');
+    await ctx.close();
+    assert.deepEqual(errors, []);
+  }
 });
 
 // Pictures for looking at.

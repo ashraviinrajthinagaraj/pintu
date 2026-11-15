@@ -189,13 +189,14 @@ The plan says how many fares came from drivers. Answers are kept for a little ov
 
 ## Traffic lights, bumps and railway crossings
 
-The routes' one Overpass request also brings back traffic lights (`highway=traffic_signals`),
+After the tolls, a second Overpass request brings back traffic lights (`highway=traffic_signals`),
 speed bumps (`traffic_calming` bump, hump, table or cushion) and level crossings
 (`railway=level_crossing`) near each route. `js/road-features.js` keeps those on your own line,
 counts a junction's lights once, and each route option shows how many lights it has. While you
 drive, the next one ahead shows beside the speed, from a distance that grows with speed. A bump
 is said when you're going faster than 30 km/h, a row of bumps once; a railway crossing is always
-said; lights are only said if you switch that on in Settings. Pintu knows where a light is, not
+said; lights are only said if you switch that on in Settings. The next few within 900 m also
+stand on the road on the map, upright like the real thing. Pintu knows where a light is, not
 whether it's red: Malaysia's signal timings aren't shared openly. A route found while driving
 asks for its own, and only things someone has mapped are known.
 
@@ -509,6 +510,15 @@ painted arrows, a stop line, and a blue carpet leading into the lane you want.
   from the left. That's an estimate for a keep-left country, not mapped data.
 - A phone's GPS isn't accurate enough to tell lanes apart. **The car on the map shows the
   lane to be in, not the lane you're in**, and the app says so the first time it appears.
+
+The other roads around, at a junction ahead, are drawn as roads too while you drive in 3D:
+asphalt as wide as their lanes, white edges, dashed lane lines, and a shadow under flyovers.
+The map data doesn't say how many lanes most roads have, so it's judged from the kind of road
+(an expressway three each way, a main road two, a side road one); only your own road's lanes
+are known. They're drawn from close up (zoom 15 and in), under the buildings.
+
+Also while driving: the name of the road you're on sits under the car, and the bottom of the
+screen shows when you'll arrive, large and green, with the time and distance left under it.
 
 The vehicles are general body shapes built in code (`js/car-mesh.js`), not models of any
 real car, so there's nothing to download or license.
