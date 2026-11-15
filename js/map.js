@@ -124,6 +124,30 @@ export const lanesGuess = ['case',
   ['match', ['get', 'class'], 'motorway', 4, 'trunk', 4, 'primary', 2, 'secondary', 2, 'tertiary', 2, 'minor', 2, 1],
 ];
 
+// The head of the arrow at the next turn: white, edged dark, pointing up (the
+// map turns it to the road's direction). 64 px across before it's sized.
+export function drawTurnHead(ratio = 2) {
+  const W = 64, H = 52;
+  const canvas = document.createElement('canvas');
+  canvas.width = W * ratio;
+  canvas.height = H * ratio;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(ratio, ratio);
+  ctx.beginPath();
+  ctx.moveTo(W / 2, 3);
+  ctx.lineTo(W - 4, H - 3);
+  ctx.lineTo(4, H - 3);
+  ctx.closePath();
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = '#0B1B2E';
+  ctx.stroke();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fill();
+  return { width: canvas.width, height: canvas.height, data: ctx.getImageData(0, 0, canvas.width, canvas.height).data, pixelRatio: ratio };
+}
+
 // A speed camera on the map: a violet badge with a white camera, like the signs.
 export const CAMERA_VIOLET = '#6B3FD6';
 export function drawCameraBadge(ratio = 2) {
@@ -172,9 +196,11 @@ export const NEAR_REFRESH_M = 1500;
 const placeName = (p = {}) => p.name || p['name:latin'] || p.name_en || p['name:en'] || '';
 
 export class MapView {
-  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onOtherTap, onPlaceTap, onPuckTap, trafficTiles = null }) {
+  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onOtherTap, onPlaceTap, onPuckTap, trafficTiles = null, satelliteTiles = null, satellite = false }) {
     this.el = el;
     this.trafficTiles = trafficTiles;   // where TomTom's traffic tiles come from, if anywhere
+    this.satelliteTiles = satelliteTiles; // where the photos from above come from, if anywhere
+    this.satellite = !!satellite && !!satelliteTiles;
     this.trafficOn = false;
     this.trafficDriving = false;
     this.theme = theme;
@@ -189,7 +215,7 @@ export class MapView {
     this.carPin = null;
     this.carKey = '';
     this.map = null;
-    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY };
+    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY, turn: EMPTY };
     this.junctionRoads = false;
     this.routeLabels = [];
     this.routeLabelKey = '';
@@ -304,6 +330,7 @@ export class MapView {
     const m = this.map;
     const c = COLORS[this.theme];
     const beforeId = this._routeInsertPoint(m.getStyle().layers);
+    this._addSatellite(m.getStyle().layers, beforeId);
     this._addTrafficLayers(beforeId);
 
     // One set of 3D buildings for day and night, so the switch behaves the same.
@@ -316,7 +343,7 @@ export class MapView {
         'source-layer': 'building',
         minzoom: 14,
         filter: ['!', ['has', 'hide_3d']],
-        layout: { visibility: this.view3d && !this.saving ? 'visible' : 'none' },
+        layout: { visibility: this._buildingsShown() ? 'visible' : 'none' },
         paint: {
           'fill-extrusion-color': c.building,
           'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.5, ['get', 'render_height']],
@@ -363,6 +390,39 @@ export class MapView {
     add('pintu-far-route', 'pintu-far', { 'line-color': c.route, 'line-width': width(5, 11) });
     add('pintu-route', 'pintu-active', { 'line-color': c.route, 'line-width': width(5, 11) });
     this._addLaneLayers(beforeId, c);
+
+    // The arrow at the next turn, painted on the road over the route.
+    if (!m.getSource('pintu-turn')) m.addSource('pintu-turn', { type: 'geojson', data: this.data.turn });
+    // Its shaft and its head keep the same shape at every zoom.
+    const turnLine = ['==', ['get', 'part'], 'line'], turnHead = ['==', ['get', 'part'], 'head'];
+    const turnLayer = (layer) => { if (!m.getLayer(layer.id)) m.addLayer({ source: 'pintu-turn', ...layer }, beforeId); };
+    const shaft = (grow) => ['interpolate', ['exponential', 2], ['zoom'], 15, 2.5 + grow, 17, 5 + grow, 19, 10 + grow * 1.5, 20, 15 + grow * 2, 22, 40 + grow * 4];
+    if (!m.hasImage?.('pintu-turn-head')) {
+      try {
+        const img = drawTurnHead(Math.min(3, Math.max(1, Math.round(window.devicePixelRatio || 2))));
+        if (img) m.addImage?.('pintu-turn-head', { width: img.width, height: img.height, data: img.data }, { pixelRatio: img.pixelRatio });
+      } catch { /* the line alone still shows the way */ }
+    }
+    this.turnShown = undefined;
+    turnLayer({ id: 'pintu-turn-casing', type: 'line', filter: turnLine, layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#0B1B2E', 'line-width': shaft(3) } });
+    turnLayer({ id: 'pintu-turn-line', type: 'line', filter: turnLine, layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#FFFFFF', 'line-width': shaft(0) } });
+    turnLayer({
+      id: 'pintu-turn-head',
+      type: 'symbol',
+      filter: turnHead,
+      layout: {
+        'icon-image': 'pintu-turn-head',
+        'icon-anchor': 'bottom',
+        'icon-rotate': ['get', 'bearing'],
+        'icon-rotation-alignment': 'map',
+        'icon-pitch-alignment': 'map',
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        // Sized with the shaft, about three shafts across.
+        'icon-size': ['interpolate', ['exponential', 2], ['zoom'], 15, 0.12, 17, 0.23, 19, 0.47, 20, 0.7, 22, 1.9],
+      },
+    });
+    this._syncTurnArrow();
 
     // Speed cameras, on top of the route.
     if (!m.getSource('pintu-cams')) m.addSource('pintu-cams', { type: 'geojson', data: this.data.cams });
@@ -567,6 +627,18 @@ export class MapView {
   setLanes(featureCollection) {
     this.data.lanes = featureCollection;
     this.map?.getSource('pintu-lanes')?.setData(featureCollection);
+    this._syncTurnArrow();
+  }
+
+  // With the lanes drawn, the lane to take carries its own painted arrows, and an
+  // arrow down the middle of the road would sit on the wrong lane.
+  _syncTurnArrow() {
+    const show = !this.data.lanes?.features?.length;
+    if (this.turnShown === show) return;
+    this.turnShown = show;
+    for (const id of ['pintu-turn-casing', 'pintu-turn-line', 'pintu-turn-head']) {
+      if (this.map?.getLayer(id)) this.map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
+    }
   }
 
   _syncPuck() {
@@ -591,8 +663,78 @@ export class MapView {
     this._syncBuildings();
   }
 
+  // The photo has its own buildings: drawn ones on top would hide the roads.
+  _buildingsShown() { return this.view3d && !this.saving && !this.satellite; }
+
   _syncBuildings() {
-    if (this.map?.getLayer('pintu-3d')) this.map.setLayoutProperty('pintu-3d', 'visibility', this.view3d && !this.saving ? 'visible' : 'none');
+    if (this.map?.getLayer('pintu-3d')) this.map.setLayoutProperty('pintu-3d', 'visibility', this._buildingsShown() ? 'visible' : 'none');
+    this._syncBaseFills();
+  }
+
+  // Any of the map's own areas (buildings, fields) drawn above the photo are
+  // hidden while it shows, and put back after.
+  _syncBaseFills() {
+    const m = this.map;
+    if (!m?.getLayer?.('pintu-sat')) return;
+    const layers = m.getStyle().layers;
+    const from = layers.findIndex((l) => l.id === 'pintu-sat');
+    this.hiddenFills ||= new Map();
+    for (const l of layers.slice(from + 1)) {
+      if (l.id.startsWith('pintu-') || !['fill', 'fill-extrusion'].includes(l.type) || l.id === 'building-3d') continue;
+      if (this.satellite) {
+        if (!this.hiddenFills.has(l.id)) this.hiddenFills.set(l.id, l.layout?.visibility || 'visible');
+        m.setLayoutProperty(l.id, 'visibility', 'none');
+      } else if (this.hiddenFills.has(l.id)) {
+        m.setLayoutProperty(l.id, 'visibility', this.hiddenFills.get(l.id));
+        this.hiddenFills.delete(l.id);
+      }
+    }
+  }
+
+  // Photos from above, under the roads and names: the map's own roads and
+  // labels stay on top, its fields, water and buildings go under the photo.
+  _addSatellite(layers, beforeId) {
+    const m = this.map;
+    if (!this.satelliteTiles) return;
+    if (!m.getSource('pintu-sat')) {
+      m.addSource('pintu-sat', {
+        type: 'raster',
+        tiles: [`${this.satelliteTiles}/sat/{z}/{x}/{y}.jpg`],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: 'Satellite © TomTom, Maxar',
+      });
+    }
+    if (m.getLayer('pintu-sat')) return;
+    const firstRoad = layers.find((l) => l['source-layer'] === 'transportation')?.id;
+    m.addLayer({
+      id: 'pintu-sat',
+      type: 'raster',
+      source: 'pintu-sat',
+      layout: { visibility: this.satellite ? 'visible' : 'none' },
+      // At night, darker, so it doesn't dazzle.
+      paint: this.theme === 'night' ? { 'raster-brightness-max': 0.55, 'raster-saturation': -0.25 } : { 'raster-brightness-max': 0.95 },
+    }, firstRoad || beforeId);
+    this.hiddenFills = new Map();
+    this._syncBaseFills();
+  }
+
+  setSatellite(on) {
+    const want = !!on && !!this.satelliteTiles;
+    if (this.satellite === want) return;
+    this.satellite = want;
+    if (this.map?.getLayer('pintu-sat')) this.map.setLayoutProperty('pintu-sat', 'visibility', want ? 'visible' : 'none');
+    this._syncBuildings();
+  }
+
+  // The arrow painted on the road at the next turn: { line, head } or null.
+  setTurnArrow(arrow) {
+    if (!arrow && !this.data.turn.features.length) return;
+    this.data.turn = collection(arrow ? [
+      { type: 'Feature', properties: { part: 'line' }, geometry: { type: 'LineString', coordinates: arrow.line } },
+      point(arrow.end[0], arrow.end[1], { part: 'head', bearing: arrow.bearing }),
+    ] : []);
+    this.map?.getSource('pintu-turn')?.setData(this.data.turn);
   }
 
   setSaver(on) {

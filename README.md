@@ -23,6 +23,7 @@ folder as it is.
 | Pump prices | [data.gov.my fuel prices](https://data.gov.my/data-catalogue/fuelprice), through the small server | Set weekly. 4 requests a minute, so the server keeps the answer 6 hours |
 | Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
 | Toll plazas, cameras and R&Rs | `data/along.json`, kept with the app and refreshed from OpenStreetMap every Monday by a GitHub workflow (`scripts/along-data.mjs`) | © OpenStreetMap contributors, ODbL. If the file can't be loaded, the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) is asked instead. Toll fares are a short list in the app, see Tolls |
+| Satellite photos (if chosen) | Maxar's, through [TomTom's Map Display API](https://docs.tomtom.com/map-display-api/documentation/raster/satellite-tile), via Pintu's server | TomTom's key. 200,000 tiles a month free, no card. See Satellite map |
 | Traffic lights, bumps and railway crossings | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), asked after the tolls, in small boxes along the routes | Too many to keep with the app. No more than two requests at a time |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
@@ -529,6 +530,23 @@ are known. They're drawn from close up (zoom 15 and in), under the buildings.
 
 Also while driving: the name of the road you're on sits under the car, and the bottom of the
 screen shows when you'll arrive, large and green, with the time and distance left under it.
+
+At the next turn, an arrow is painted on the road along the route: from 30 m before the turn to
+24 m after it, shown from 600 m away (`js/turn-arrow.js`). Where the lanes are drawn, the lane to
+take carries its own painted arrows instead.
+
+## Satellite map
+
+The button above Settings on the main screen, or Settings → Map look, puts photos from above
+under the map's roads and names. They're Maxar's, through TomTom's Map Display API, passed
+through Pintu's server (`/tiles/sat/z/x/y.jpg`, Malaysia and around only) with the same TomTom
+key as the traffic, and kept by the server for a week so the same roads aren't fetched twice.
+The map's own buildings and fields are hidden over the photo, which has its own; at night it's
+darkened. While driving on it, the roads around are drawn with their lanes even in 2D.
+
+TomTom's free plan has 200,000 map tiles a month and asks for no credit card: past that, the
+photos stop until the next month, and the plain map shows instead. A 20 km drive in 3D uses
+roughly 300 to 800 tiles, and 10 to 20 MB of mobile data, which is why it's off unless chosen.
 
 The vehicles are general body shapes built in code (`js/car-mesh.js`), not models of any
 real car, so there's nothing to download or license.

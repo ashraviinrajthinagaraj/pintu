@@ -5274,6 +5274,49 @@ const townThings = () => {
   ] };
 };
 
+await check('satellite map: a switch on the map and in Settings, kept; and an arrow on the road at the next turn', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, appServer: async () => null, routeResponse: () => ({ trip: cityTrip() }) });
+  const satShown = () => page.evaluate(() => window.__map.layout['pintu-sat'] ?? window.__map.getLayer('pintu-sat')?.layout?.visibility);
+  assert.equal(await vis(page, '#btn-sat'), true);
+  assert.equal(await page.getAttribute('#btn-sat', 'aria-pressed'), 'false');
+  assert.equal(await satShown(), 'none');
+  assert.equal(await page.evaluate(() => window.__map.sources['pintu-sat']?.tiles?.[0] ?? null), 'https://pintu.test/tiles/sat/{z}/{x}/{y}.jpg');
+  await page.click('#btn-sat');
+  assert.equal(await page.getAttribute('#btn-sat', 'aria-pressed'), 'true');
+  assert.equal(await satShown(), 'visible');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).satellite), true);
+  await smallTargets(page, 'idle with satellite', ['#btn-sat', '#btn-settings']);
+  await noOverflow(page, 'idle with satellite');
+  await page.screenshot({ path: `${shots}/86-satellite-switch.png` });
+  // The same choice in Settings.
+  await page.click('#btn-settings');
+  assert.equal(await page.getAttribute('#look-sat', 'aria-checked'), 'true');
+  assert.match(await text(page, '#look-note'), /MB/);
+  await page.click('#look-map');
+  assert.equal(await satShown(), 'none');
+  await page.click('#look-sat');
+  assert.equal(await satShown(), 'visible');
+  await page.click('#settings-back');
+
+  // Driving: the arrow shows close to the turn, and goes once through it.
+  await toNav(page);
+  const arrow = () => page.evaluate(() => window.__map.sources['pintu-turn'].data.features.map((f) => f.properties.part));
+  const trip = prepareTrip(cityTrip());
+  const turn = trip.maneuvers.find((m) => m.type === 10).beginDist;
+  await roll(page, trip, 0, Math.max(0, turn - 700), 12, 2);
+  assert.deepEqual(await arrow(), [], 'not yet');
+  await roll(page, trip, Math.max(0, turn - 700), turn - 120, 12, 2);
+  await page.waitForFunction(() => window.__map.sources['pintu-turn'].data.features.length === 2);
+  assert.deepEqual(await arrow(), ['line', 'head']);
+  await page.screenshot({ path: `${shots}/86-turn-arrow.png` });
+  await roll(page, trip, turn - 120, turn + 80, 12, 2);
+  await page.waitForFunction(() => window.__map.sources['pintu-turn'].data.features.every((f) => true));
+  const after = await page.evaluate(() => window.__map.sources['pintu-turn'].data.features.length);
+  assert.ok(after === 0 || after === 2, 'through the first turn: none, or the next one already');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
 await check('driving: the next light, bump and railway crossing show; the bump and crossing are said, the light only if asked', async () => {
   const trip = prepareTrip(townTrip());
   const { ctx, page } = await newApp(browser, { ...quiet, scale: 2, routeResponse: () => ({ trip: townTrip() }), overpass: townThings() });

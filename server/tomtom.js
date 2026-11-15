@@ -4,6 +4,7 @@
 //   POST /traffic   a route's points: slow stretches, the delay, a faster way
 //                   round if there is one, or when to leave to arrive on time
 //   GET  /tiles/flow/z/x/y.pbf, /tiles/incidents/z/x/y.pbf   map overlays
+//   GET  /tiles/sat/z/x/y.jpg   satellite photos (Maxar, through TomTom), Malaysia only
 //   POST /limits    a route's points: speed limits along it
 //   GET  /geocode?q=   addresses
 //   POST /ev        an electric car's trip: where to charge, and for how long
@@ -15,7 +16,10 @@ const TT = 'https://api.tomtom.com';
 export const MAX_POINTS = 2000;
 const MAX_BODY = 400000;
 export const BETTER_PATH_POINTS = 600;
-const TILE_SECONDS = { flow: 60, incidents: 120 };
+// Traffic changes by the minute; the photos from above, hardly ever.
+const TILE_SECONDS = { flow: 60, incidents: 120, sat: 7 * 86400 };
+// Satellite photos only for Malaysia and around it: they come out of a monthly allowance.
+const SAT_AREA = { west: 98.5, south: -0.5, east: 120.5, north: 8.5 };
 // A short drive in KL, only to check the key works.
 export const CHECK_ROUTE = [[101.71230, 3.15790], [101.71800, 3.15900]];
 
@@ -152,21 +156,31 @@ export async function askTraffic(points, key, { better = false, arriveAt = null 
 
 /* ---------- Map overlays ---------- */
 
-const TILE = /^\/tiles\/(flow|incidents)\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.pbf$/;
+const TILE = /^\/tiles\/(?:(flow|incidents)\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.pbf|(sat)\/(\d{1,2})\/(\d{1,7})\/(\d{1,7})\.jpg)$/;
+
+const tileLng = (x, z) => (x / 2 ** z) * 360 - 180;
+const tileLat = (y, z) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** z))) * 180) / Math.PI;
 
 export function tileRequest(pathname) {
   const m = TILE.exec(pathname);
   if (!m) return null;
-  const [kind, z, x, y] = [m[1], +m[2], +m[3], +m[4]];
-  if (z > 18 || x >= 2 ** z || y >= 2 ** z) return null;
+  const kind = m[1] || m[5];
+  const [z, x, y] = (m[1] ? [m[2], m[3], m[4]] : [m[6], m[7], m[8]]).map(Number);
+  if (z > (kind === 'sat' ? 19 : 18) || x >= 2 ** z || y >= 2 ** z) return null;
   return { kind, z, x, y };
+}
+
+// Whether a satellite tile is over Malaysia or near it.
+export function satInArea({ z, x, y }) {
+  const west = tileLng(x, z), east = tileLng(x + 1, z), north = tileLat(y, z), south = tileLat(y + 1, z);
+  return east > SAT_AREA.west && west < SAT_AREA.east && north > SAT_AREA.south && south < SAT_AREA.north;
 }
 
 // Tiles are kept a minute or two, so everyone looking at the same place shares
 // one request to TomTom.
 export async function tomtomTile({ kind, z, x, y }, key, origin, { cache = globalThis.caches?.default, fetchImpl = fetch, ctx } = {}) {
   const headers = {
-    'content-type': 'application/x-protobuf',
+    'content-type': kind === 'sat' ? 'image/jpeg' : 'application/x-protobuf',
     'cache-control': `public, max-age=${TILE_SECONDS[kind]}`,
     'access-control-allow-origin': origin,
     vary: 'Origin',
@@ -175,8 +189,11 @@ export async function tomtomTile({ kind, z, x, y }, key, origin, { cache = globa
   const kept = await cache?.match(cacheKey);
   if (kept) return new Response(kept.body, { status: 200, headers });
 
-  const path = kind === 'flow' ? 'flow/relative' : 'incidents';
-  const res = await fetchImpl(`${TT}/traffic/map/4/tile/${path}/${z}/${x}/${y}.pbf?key=${encodeURIComponent(key)}`);
+  if (kind === 'sat' && !satInArea({ z, x, y })) return new Response(null, { status: 204, headers });
+  const url = kind === 'sat'
+    ? `${TT}/map/1/tile/sat/main/${z}/${x}/${y}.jpg?key=${encodeURIComponent(key)}`
+    : `${TT}/traffic/map/4/tile/${kind === 'flow' ? 'flow/relative' : 'incidents'}/${z}/${x}/${y}.pbf?key=${encodeURIComponent(key)}`;
+  const res = await fetchImpl(url);
   // An empty tile is fine for the map, and better than an error it keeps retrying.
   if (!res.ok) return new Response(null, { status: res.status === 403 || res.status === 401 ? 503 : 204, headers });
   const body = await res.arrayBuffer();

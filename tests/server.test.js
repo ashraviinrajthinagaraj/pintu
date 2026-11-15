@@ -1149,6 +1149,32 @@ test('tiles: traffic colours and incidents come through, kept a minute, key neve
   delete globalThis.caches;
 });
 
+test('tiles: satellite photos over Malaysia come through and are kept a week; elsewhere, nothing', async () => {
+  const store = new Map();
+  globalThis.caches = { default: {
+    match: async (req) => store.get(req.url)?.clone(),
+    put: async (req, res) => { store.set(req.url, res); },
+  } };
+  const calls = tomtom(() => new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200 }));
+  // Over Kuala Lumpur at zoom 17.
+  let res = await askPintu('/tiles/sat/17/102511/64390.jpg');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/jpeg');
+  assert.equal(res.headers.get('cache-control'), 'public, max-age=604800');
+  assert.deepEqual([...new Uint8Array(await res.arrayBuffer())], [0xff, 0xd8, 0xff]);
+  assert.match(calls[0].url, /^https:\/\/api\.tomtom\.com\/map\/1\/tile\/sat\/main\/17\/102511\/64390\.jpg\?key=/);
+  await askPintu('/tiles/sat/17/102511/64390.jpg');
+  assert.equal(calls.length, 1, 'the second look came from the cache');
+  // Over London: not asked for.
+  res = await askPintu('/tiles/sat/15/16372/10895.jpg');
+  assert.equal(res.status, 204);
+  assert.equal(calls.length, 1);
+  assert.equal((await askPintu('/tiles/sat/20/1/1.jpg')).status, 404, 'no closer than zoom 19');
+  assert.equal((await askPintu('/tiles/sat/17/102511/64390.png')).status, 404);
+  assert.equal((await askPintu('/tiles/sat/17/102511/64390.jpg', { origin: 'https://evil.example' })).status, 403);
+  delete globalThis.caches;
+});
+
 test('speed limits: TomTom\'s roads along the route, joined into stretches', async () => {
   const road = (coords, value, extra = {}) => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: { speedLimits: { value, unit: 'kmph', type: 'Maximum', ...extra } } });
   const calls = tomtom(() => new Response(JSON.stringify({ route: [

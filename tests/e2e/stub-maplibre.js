@@ -65,8 +65,10 @@
       if (!this.sources[l.source]) throw new Error(`no source ${l.source}`);
       // Below the labels, or below one of the app's own layers.
       const at = this.layers.findIndex((x) => x.id === before);
-      if (before !== 'labels' && at < 0) throw new Error(`layer before ${before}`);
+      const base = this.getStyle().layers.slice(0, -1).some((x) => x.id === before);
+      if (before !== 'labels' && at < 0 && !base) throw new Error(`layer before ${before}`);
       if (at >= 0) this.layers.splice(at, 0, l);
+      else if (base) this.layers.unshift(l);       // under the map's own roads: under all of the app's
       else this.layers.push(l);
     }
     easeTo(o) { calls.push(['easeTo', o]); Object.assign(this.cam, { ...o, center: o.center || this.cam.center }); this.draw(); }

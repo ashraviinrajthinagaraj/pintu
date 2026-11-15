@@ -59,6 +59,7 @@ import { inApp, nativePlugin } from './native.js';
 import * as voice from './voice.js';
 import { LABEL_BOX, clearOf, clearOfBoxes, labelSize, labelSpots, trafficBar, trafficGradient } from './route-labels.js';
 import { loadStates, shapesOf, stretchIn } from './states.js';
+import { arrowFor, turnArrow } from './turn-arrow.js';
 
 const $ = (id) => document.getElementById(id);
 // Bahasa Melayu, English, Chinese and Tamil. The characters' jokes and the human
@@ -115,7 +116,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, camerasMap: true, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, camerasMap: true, satellite: false, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -457,6 +458,11 @@ function applyStaticText() {
   $('search-google-icon').innerHTML = UI.external;
   $('search-google-hint').textContent = t('googleHint');
   renderCharacters();
+  $('set-look-title').textContent = t('setLook');
+  $('look-map').textContent = t('lookMap');
+  $('look-sat').textContent = t('lookSat');
+  $('look-note').textContent = t('lookNote');
+  label($('btn-sat'), t('satBtn'), UI.satellite);
   $('set-theme-title').textContent = t('setTheme');
   $('theme-auto').textContent = t('themeAuto');
   $('theme-day').textContent = t('themeDay');
@@ -484,6 +490,7 @@ function applyStaticText() {
   $('veh-save').textContent = t('vehSave');
   $('veh-remove').textContent = t('vehRemove');
   render3DButtons();
+  renderSatButton();
   renderMute();
   renderVoiceStatus();
   renderInstall();
@@ -504,6 +511,22 @@ function renderMute() {
   label($('btn-mute'), t(m ? 'unmute' : 'mute'), m ? UI.soundOff : UI.sound);
   $('btn-mute').classList.toggle('is-off', m);
   $('btn-mute').setAttribute('aria-pressed', String(m));
+}
+
+// Photos from above for the map, through Pintu's server (TomTom's, from Maxar).
+function setSatellite(on) {
+  setSetting('satellite', !!on && !!CONFIG.server);
+  mapView?.setSatellite(S.settings.satellite);
+  renderSatButton();
+  renderSegments();
+  renderMapExtras();
+}
+
+function renderSatButton() {
+  const b = $('btn-sat');
+  b.hidden = !CONFIG.server;
+  b.classList.toggle('is-on', !!S.settings.satellite);
+  b.setAttribute('aria-pressed', String(!!S.settings.satellite));
 }
 
 function render3DButtons() {
@@ -587,6 +610,8 @@ function renderSegments() {
   for (const l of LANGS) set(`lang-${l}`, S.settings.lang === l);
   $('lang-note').textContent = t('langNote');
   $('lang-note').hidden = !t('langNote');
+  set('look-map', !S.settings.satellite);
+  set('look-sat', !!S.settings.satellite);
   set('theme-auto', S.settings.theme === 'auto');
   set('theme-day', S.settings.theme === 'day');
   set('theme-night', S.settings.theme === 'night');
@@ -1036,7 +1061,7 @@ function toggle3D() {
   render3DButtons();
   mapView?.setView3D(on);
   mapView?.setCarOn(on);
-  mapView?.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && on);
+  mapView?.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && (on || !!S.settings.satellite));
   S.carDirty = true;
   if (S.view === 'idle') mapView?.tilt(on, S.fix ? [S.fix.lng, S.fix.lat] : null);
   S.poseStale = true;
@@ -1840,7 +1865,8 @@ function clearOfLabels(points) {
 
 function renderMapExtras() {
   if (!mapView) return;
-  mapView.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && !!S.settings.view3d);
+  mapView.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && (!!S.settings.view3d || !!S.settings.satellite));
+  if (S.view !== 'nav') renderTurnArrow(null);
   if (S.view !== 'nav') renderRoadSigns({ onRoute: false });
   renderMapLabels();
   renderMapCameras();
@@ -3270,6 +3296,7 @@ function onNavFix(fix, takenAt) {
   renderCamera(st, fix);
   renderRoadFeature(st, fix);
   renderRoadSigns(st);
+  renderTurnArrow(st);
   notePaidTolls(st);
   noteStop(st, fix);
   renderRoadReport(st, fix);
@@ -3531,6 +3558,15 @@ function renderRoadNow(st) {
   $('road-now-name').textContent = name || ref;
   $('road-now-ref').textContent = name ? ref : '';
   $('road-now-ref').hidden = !(name && ref);
+}
+
+// The arrow painted on the road at the next turn, once it's close.
+function renderTurnArrow(st) {
+  const pick = st && S.view === 'nav' && S.mode !== 'walk' ? arrowFor(S.route, st) : null;
+  const key = pick ? `${S.route.id}|${pick.index}` : '';
+  if (key === S.turnKey) return;
+  S.turnKey = key;
+  mapView?.setTurnArrow(pick ? turnArrow(S.route, pick.at) : null);
 }
 
 // Lights, humps and crossings standing on the road ahead, the next few.
@@ -5627,6 +5663,12 @@ function wire() {
   $('voice-test').addEventListener('click', trySample);
   $('voice-check').addEventListener('click', checkVoiceNow);
   for (const b of document.querySelectorAll('#voice-try button')) b.addEventListener('click', () => tryMoment(b.dataset.moment));
+  $('look-map').addEventListener('click', () => setSatellite(false));
+  $('look-sat').addEventListener('click', () => setSatellite(true));
+  $('btn-sat').addEventListener('click', () => {
+    setSatellite(!S.settings.satellite);
+    toast(t(S.settings.satellite ? 'satOn' : 'satOff'));
+  });
   for (const theme of ['auto', 'day', 'night']) {
     $(`theme-${theme}`).addEventListener('click', () => {
       setSetting('theme', theme);
@@ -6670,6 +6712,8 @@ async function startMap() {
       onPlaceTap,
       onPuckTap: () => { if (S.view === 'idle' && !S.overlay) openCar(); },
       trafficTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
+      satelliteTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
+      satellite: S.settings.satellite,
     });
     await mapView.init();
     mapView.setSaver(S.saving);

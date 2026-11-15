@@ -1745,3 +1745,7 @@ a { color: inherit; }
   /* Over the road, clear of the panel on the left and the buttons along the bottom. */
   .road-now { left: calc(370px + (100% - 370px) / 2); bottom: auto; top: calc(10px + var(--safe-t)); max-width: calc(100% - 370px - 2 * 92px); }
 }
+
+/* The satellite map switch, above the settings button */
+.round-sat.is-on { background: #2E7D4F; color: #fff; border-color: rgba(255, 255, 255, .6); }
+.round-sat[hidden] { display: none; }

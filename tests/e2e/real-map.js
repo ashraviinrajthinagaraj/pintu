@@ -114,6 +114,42 @@ const STREETS = (() => {
   out.push({ id: id++, line: [[101.7085, 3.1440], [101.7165, 3.1520]], props: { class: 'trunk', brunnel: 'bridge', oneway: 1 } });
   return out;
 })();
+// A stand-in for photos from above: fields, trees and roofs, the same for the
+// same tile, as a PNG made here (the browser reads it whatever it's called).
+import { deflateSync } from 'node:zlib';
+const CRC = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crc32 = (buf) => { let c = 0xffffffff; for (const b of buf) c = CRC[(c ^ b) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+function png(w, h, rgb) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) { raw[y * (w * 3 + 1)] = 0; rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3); }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+function fakePhoto(z, x, y) {
+  let seed = (z * 73856093) ^ (x * 19349663) ^ (y * 83492791);
+  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rgb = Buffer.alloc(256 * 256 * 3);
+  for (let i = 0; i < 256 * 256; i++) {
+    const n = rand() * 26;
+    rgb[i * 3] = 52 + n; rgb[i * 3 + 1] = 78 + n; rgb[i * 3 + 2] = 44 + n * 0.6;
+  }
+  for (let k = 0; k < 14; k++) {
+    const [bx, by, bw, bh] = [rand() * 230, rand() * 230, 12 + rand() * 40, 10 + rand() * 30];
+    const roof = rand() < 0.5 ? [150, 72, 58] : [170, 172, 176];
+    for (let yy = by | 0; yy < Math.min(256, by + bh); yy++) for (let xx = bx | 0; xx < Math.min(256, bx + bw); xx++) {
+      const i = (yy * 256 + xx) * 3; rgb[i] = roof[0]; rgb[i + 1] = roof[1]; rgb[i + 2] = roof[2];
+    }
+  }
+  return png(256, 256, rgb);
+}
+
 const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, {
   poi: POIS.filter((p) => {
     const [tx, ty] = lngLatToTile(p.lng, p.lat, z);
@@ -122,7 +158,7 @@ const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, {
   transportation: STREETS,
 });
 
-async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null, roadThings = null }) {
+async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null, roadThings = null, satellite = false }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: 'block', locale: 'ms-MY', timezoneId: 'Asia/Kuala_Lumpur' });
   const errors = [];
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -152,6 +188,12 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
         const layers = traffic?.[t[1]]?.({ z, x, y });
         if (!layers) return route.fulfill({ status: 204, headers: CORS });
         return route.fulfill({ body: Buffer.from(encodeTile({ z, x, y }, layers)), contentType: 'application/x-protobuf', headers: CORS });
+      }
+      const sat = path.match(/^\/tiles\/sat\/(\d+)\/(\d+)\/(\d+)\.jpg$/);
+      if (sat) {
+        if (!satellite) return route.fulfill({ status: 204, headers: CORS });
+        const [z, x, y] = sat.slice(1).map(Number);
+        return route.fulfill({ body: fakePhoto(z, x, y), contentType: 'image/jpeg', headers: CORS });
       }
       if (path === '/traffic') return route.fulfill({ json: { delay: 0, jams: [] }, headers: CORS });
       return route.fulfill({ status: 503, json: { error: 'no key' }, headers: CORS });
@@ -442,6 +484,36 @@ await check('driving in 3D: the roads around drawn with their lanes, a light sta
     // Out of 3D, the plain map again.
     await page.click('#btn-3d');
     assert.equal(await page.evaluate(() => window.__map.getLayoutProperty('pintu-jr-surface', 'visibility')), 'none');
+    await ctx.close();
+    assert.deepEqual(errors, []);
+  }
+});
+
+await check('satellite: photos under the roads and names, no drawn buildings, and an arrow on the road at the turn', async () => {
+  const trip = prepareTrip(cityTrip());
+  const turn = trip.maneuvers.find((m) => m.type === 10).beginDist;
+  for (const theme of ['day', 'night']) {
+    const { ctx, page, errors } = await open(browser, {
+      // By day an ordinary road, so the arrow shows; by night the lanes, which carry their own.
+      styleFor: async (n) => demoCity(n === 'dark' ? 'night' : 'day'), theme, laneCount: theme === 'day' ? 1 : 3, tiles: true, satellite: true,
+      storage: { 'pintu.settings': { theme, view3d: true, satellite: true } },
+      routeResponse: () => ({ trip: cityTrip() }),
+    });
+    const seen = () => page.evaluate(() => ({
+      sat: window.__map.getLayoutProperty('pintu-sat', 'visibility'),
+      buildings: window.__map.getLayoutProperty('pintu-3d', 'visibility'),
+      under: (() => { const ids = window.__map.getStyle().layers.map((l) => l.id); return ids.indexOf('pintu-sat') < ids.indexOf('pintu-route'); })(),
+    }));
+    assert.deepEqual(await seen(), { sat: 'visible', buildings: 'none', under: true });
+    await toPreview(page);
+    await page.click('#start');
+    await page.waitForSelector('#nav-bar');
+    await drive(page, cityTrip(), { to: turn - 110, kph: 40, liveMs: 12 });
+    await settle(page, 2500);
+    const turnData = await page.evaluate(() => { const d = window.__map.getSource('pintu-turn')?._data; return (d?.geojson || d)?.features?.map((f) => f.properties.part) ?? null; });
+    assert.deepEqual(turnData, ['line', 'head'], 'the arrow at the turn');
+    assert.equal(await page.evaluate(() => window.__map.getLayoutProperty('pintu-turn-line', 'visibility')), theme === 'day' ? 'visible' : 'none');
+    await page.screenshot({ path: `${shots}/real-${theme}-6-satellite.png` });
     await ctx.close();
     assert.deepEqual(errors, []);
   }

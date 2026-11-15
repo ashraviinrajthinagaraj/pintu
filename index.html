@@ -52,7 +52,10 @@
     </div>
   </div>
   <div class="float-row">
-    <button id="btn-settings" class="round" type="button"></button>
+    <div class="float-col">
+      <button id="btn-sat" class="round round-sat" type="button" aria-pressed="false" hidden></button>
+      <button id="btn-settings" class="round" type="button"></button>
+    </div>
     <div class="float-col">
       <button id="btn-traffic" class="round round-traffic" type="button" aria-pressed="false" hidden></button>
       <button id="btn-3d-idle" class="round round-text" type="button"></button>
@@ -840,6 +843,14 @@
         <button id="saver-off" type="button" role="radio"></button>
       </div>
       <p id="saver-now" class="tip" hidden></p>
+    </div>
+    <div class="setting">
+      <h3 id="set-look-title"></h3>
+      <div class="segmented" role="radiogroup">
+        <button id="look-map" type="button" role="radio"></button>
+        <button id="look-sat" type="button" role="radio"></button>
+      </div>
+      <p id="look-note" class="tip"></p>
     </div>
     <div class="setting">
       <h3 id="set-theme-title"></h3>
