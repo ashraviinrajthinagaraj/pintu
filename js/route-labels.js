@@ -6,7 +6,7 @@
 
 const M_PER_DEG = 111320;
 const SAMPLES = 160;          // points kept from each other line, to compare against
-const FROM = 0.2, TO = 0.8, STEP = 0.025;
+const FROM = 0.1, TO = 0.9, STEP = 0.025;
 
 // Metres between two points close enough that the earth is flat between them.
 function flatMetres(a, b, k) {
@@ -45,30 +45,56 @@ export function pointAlong(coords, share) {
   return coords[coords.length - 1];
 }
 
-// One spot per line. Each is as far as it can be from the other lines and from
-// the labels already placed; among equals, the one nearest the middle.
-export function labelSpots(lines) {
+// How big the whole picture is, in metres: the routes are fitted to the screen,
+// so this says how far apart things must be to look apart.
+function spanOf(lines, k) {
+  let w = Infinity, e = -Infinity, so = Infinity, n = -Infinity;
+  for (const c of lines) {
+    if (!c) continue;
+    for (const [lng, lat] of c) {
+      if (lng < w) w = lng;
+      if (lng > e) e = lng;
+      if (lat < so) so = lat;
+      if (lat > n) n = lat;
+    }
+  }
+  return Number.isFinite(w) ? Math.max((e - w) * k, n - so) * M_PER_DEG : 0;
+}
+
+// One spot per line. Above all, labels mustn't cover each other; then each is
+// best away from the other routes, and near the middle of its own. This is
+// worked out on the screen as it will be once the routes are fitted to it:
+// `pxPerM` says how many pixels a metre will be (by default, the whole picture
+// about 300 px across), and `label` how big a label is.
+export const LABEL_PX = { w: 104, h: 58, lift: 8 };
+export function labelSpots(lines, { pxPerM = null, label = LABEL_PX } = {}) {
   const valid = (lines || []).map((c) => (Array.isArray(c) && c.length ? c : null));
   const lat0 = valid.find(Boolean)?.[0]?.[1] ?? 0;
   const k = Math.cos((lat0 * Math.PI) / 180);
-  const thinned = valid.map((c) => (c ? thin(c) : null));
-  const spots = [];
+  const scale = pxPerM || 300 / Math.max(300, spanOf(valid, k));
+  // To pixels, with up as up.
+  const px = ([lng, lat]) => [lng * k * M_PER_DEG * scale, lat * M_PER_DEG * scale];
+  const thinned = valid.map((c) => (c ? thin(c).map(px) : null));
+  const spots = [], boxes = [];
   valid.forEach((coords, i) => {
     if (!coords) { spots.push(null); return; }
     let best = null;
     for (let share = FROM; share <= TO + 1e-9; share += STEP) {
       const p = pointAlong(coords, share);
-      let near = Infinity;
+      const [x, y] = px(p);
+      // How far this label's box is from each one already placed (below 0: they overlap).
+      let gap = Infinity;
+      for (const [bx, by] of boxes) gap = Math.min(gap, Math.max(Math.abs(x - bx) - label.w, Math.abs(y - by) - label.h));
+      let nearLine = Infinity;
       thinned.forEach((other, j) => {
         if (j === i || !other) return;
-        for (const q of other) near = Math.min(near, flatMetres(p, q, k));
+        for (const [qx, qy] of other) nearLine = Math.min(nearLine, Math.hypot(x - qx, y - qy));
       });
-      for (const s of spots) if (s) near = Math.min(near, flatMetres(p, s, k));
-      // Beyond a few hundred metres apart, every spot is as clear as the next.
-      const score = Math.min(near, 3000) - Math.abs(share - 0.5) * 100;
-      if (!best || score > best.score) best = { score, p };
+      const score = (gap < 0 ? gap * 10 : Math.min(gap, 24) * 2) + Math.min(nearLine, 40) - Math.abs(share - 0.5) * 20;
+      if (!best || score > best.score) best = { score, p, at: [x, y] };
     }
     spots.push(best.p);
+    boxes.push(best.at);
   });
   return spots;
 }

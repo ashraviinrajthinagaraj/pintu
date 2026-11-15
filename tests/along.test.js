@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareTrip } from '../js/routing.js';
-import { alongQuery, alongRoute, fetchAlong, clearAlongCache, linePoints, parseAlong, restsOnRoute, REST_OFF_M } from '../js/along.js';
+import { alongQuery, alongRoute, fetchAlong, findAlong, clearAlongCache, linePoints, parseAlong, restsOnRoute, routeBoxes, REST_OFF_M } from '../js/along.js';
 import { FARES, fareAt, priceTolls, tollTotal } from '../js/toll-fares.js';
 import { buildTrip, P, along } from './helpers/fixtures.js';
 
@@ -25,13 +25,27 @@ test('every fare says where it was announced and since when', () => {
   }
 });
 
-test('one request covers every route, and asks only for what is needed', () => {
+test('one request covers every route, in small boxes along them, and asks only for what is needed', () => {
   const r = highwayTrip();
+  const boxes = routeBoxes([r], 150);
+  // Boxes along the route, every point of it inside one.
+  for (const [lng, lat] of r.coords) assert.ok(boxes.some(([s, w, n, e]) => lat >= s && lat <= n && lng >= w && lng <= e), `${lng},${lat}`);
+  // Not one big box over everything: 20 km of route in about 2 km squares.
+  const area = boxes.reduce((sum, [s, w, n, e]) => sum + (n - s) * (e - w), 0);
+  assert.ok(area < 0.03, `${area} square degrees`);
+  // The same road twice doesn't ask twice.
+  assert.deepEqual(routeBoxes([r, r], 150), boxes);
   const q = alongQuery([r, r]);
-  assert.equal(q.match(/"barrier"="toll_booth"/g).length, 2);
-  assert.match(q, /"highway"="speed_camera"/);
-  assert.match(q, /"highway"~"\^\(services\|rest_area\)\$"/);
-  assert.ok(linePoints(r).length <= 222);
+  assert.equal(q.match(/"barrier"="toll_booth"/g).length, boxes.length);
+  assert.match(q, /node\["highway"="speed_camera"\]\(3\.\d+,101\.\d+,3\.\d+,101\.\d+\);/);
+  assert.match(q, /nwr\["highway"="services"\]\(/);
+  assert.match(q, /nwr\["highway"="rest_area"\]\(/);
+  assert.doesNotMatch(q, /around:/, 'no "within so many metres of a line": the servers take most of a minute over it');
+  assert.doesNotMatch(q, /"highway"~/, 'no patterns on the highway key: they make the server slow');
+  const quick = alongQuery([r], { features: false, timeout: 15 });
+  assert.match(quick, /^\[out:json\]\[timeout:15\]/);
+  assert.doesNotMatch(quick, /traffic_signals|level_crossing|traffic_calming/);
+  assert.match(alongQuery([r], { tolls: false, cameras: false, rests: false }), /traffic_signals[\s\S]*traffic_calming[\s\S]*level_crossing/);
   assert.ok(q.length < 60000, 'small enough to send');
 });
 
@@ -120,4 +134,107 @@ test('a fare drivers paid fills a gap: from the same entry, or agreed by all', a
   const priced = priceTolls(r, tolls, { 'node/3': [{ prev: 'node/1', rm: 5.5 }] });
   assert.deepEqual(priced.map((t) => [t.fare, t.byDrivers || false]), [[2.1, false], [5.5, true]]);
   assert.deepEqual(tollTotal(priced), { plazas: 2, priced: 2, unknown: 0, total: 7.6, roads: ['LDP'], byDrivers: 1 });
+});
+
+test('no more than two map-data requests at a time; the rest wait their turn', async () => {
+  const { overpass, overpassBusy, AT_ONCE } = await import('../js/places.js');
+  assert.equal(AT_ONCE, 2);
+  const pending = [];
+  const fetchImpl = (url, { signal }) => new Promise((resolve, reject) => {
+    pending.push({ url, answer: () => resolve(new Response(JSON.stringify({ elements: [] }))) });
+    signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')));
+  });
+  const servers = ['https://a.test/api', 'https://b.test/api'];
+  const waits = { server: 5000 };
+  const first = overpass('q1', { fetchImpl, servers, waits });
+  const second = overpass('q2', { fetchImpl, servers, waits });
+  const ctrl = new AbortController();
+  const third = overpass('q3', { fetchImpl, servers, waits, signal: ctrl.signal });
+  const fourth = overpass('q4', { fetchImpl, servers, waits });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(pending.length, 4, 'two requests, each to two servers');
+  assert.deepEqual(overpassBusy(), { running: 2, waiting: 2 });
+  // One given up while waiting is never sent.
+  ctrl.abort();
+  assert.equal(await third, null);
+  pending[0].answer();
+  assert.deepEqual(await first, { elements: [] });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(pending.length, 6, 'the next in line goes once one is done');
+  for (const p of pending.slice(2)) p.answer();
+  await Promise.all([second, fourth]);
+  assert.deepEqual(overpassBusy(), { running: 0, waiting: 0 });
+});
+
+/* ---------- The copy kept with the app ---------- */
+
+import { readFile } from 'node:fs/promises';
+import { dataNear, expand, forgetAlongData, loadAlongData, nearRoute } from '../js/along-data.js';
+import { compact, serialise } from '../scripts/along-data.mjs';
+
+const kept = async () => JSON.parse(await readFile(new URL('../data/along.json', import.meta.url), 'utf8'));
+
+test('the kept copy is from OpenStreetMap, recent, and of a sensible size', async () => {
+  const json = await kept();
+  assert.match(json.source, /OpenStreetMap/);
+  assert.match(json.updated, /^\d{4}-\d\d-\d\d$/);
+  const data = expand(json);
+  assert.ok(data.tolls.length >= 300 && data.cameras.length >= 20 && data.rests.length >= 100);
+  for (const x of [...data.tolls, ...data.cameras, ...data.rests]) {
+    assert.match(x.id, /^(node|way|relation)\/\d+$/);
+    assert.ok(x.lat > 0.5 && x.lat < 7.6 && x.lng > 99.5 && x.lng < 119.5, x.id);
+  }
+});
+
+test('built from the map server’s answer, and read back the same as one', () => {
+  const answer = { elements: [
+    node(1, Q.a, { barrier: 'toll_booth', name: 'Plaza Tol Penchala' }),
+    node(2, Q.b, { highway: 'toll_gantry' }),
+    node(3, Q.c, { highway: 'speed_camera', maxspeed: '90' }),
+    { type: 'way', id: 4, center: { lat: 3.12, lon: 101.63 }, tags: { highway: 'services', name: 'R&R Awan Besar' } },
+    node(5, Q.d, { highway: 'rest_area' }),
+    node(6, Q.e, { amenity: 'fuel' }),
+  ] };
+  const fromKept = expand(JSON.parse(serialise(compact(answer, '2026-11-15'))));
+  const fromServer = parseAlong(answer);
+  assert.deepEqual(fromKept.tolls, fromServer.tolls);
+  assert.deepEqual(fromKept.cameras, fromServer.cameras);
+  assert.deepEqual([...fromKept.rests].sort((a, b) => a.id.localeCompare(b.id)), [...fromServer.rests].sort((a, b) => a.id.localeCompare(b.id)));
+  assert.throws(() => expand({ elements: [] }));
+});
+
+test('only what is near the route is kept, and a route by Sungai Besi finds its plaza', async () => {
+  const data = expand(await kept());
+  // Up the Besraya past the SMART Sungai Besi plaza.
+  const r = prepareTrip(buildTrip([101.7040, 3.0950], [{ to: [101.7000, 3.1200], type: 1, street: ['E9', 'Lebuhraya Besraya'], kph: 80, toll: true, highway: true }], { has_toll: true }));
+  const near = nearRoute(r);
+  assert.equal(near({ lng: 101.7020, lat: 3.1080 }), true);
+  assert.equal(near({ lng: 101.80, lat: 3.30 }), false);
+  const found = dataNear(data, [r]);
+  assert.ok(found.tolls.length > 0 && found.tolls.length < 40, `${found.tolls.length}`);
+  assert.ok(found.tolls.some((t) => /Sungai Besi/.test(t.name)));
+  assert.ok(alongRoute(r, found).tolls.length >= 1);
+});
+
+test('the kept copy first; a map server only if it can’t be had', async () => {
+  forgetAlongData();
+  clearAlongCache();
+  const r = highwayTrip();
+  const asked = [];
+  const json = serialise(compact({ elements: [node(1, along(Q.b, Q.c, 0.5), { barrier: 'toll_booth', name: 'Plaza Kept' })] }, '2026-11-15'));
+  const fetchImpl = async (u) => {
+    asked.push(String(u));
+    if (String(u).endsWith('data/along.json')) return new Response(json);
+    return new Response(JSON.stringify({ elements: [node(2, along(Q.b, Q.c, 0.5), { barrier: 'toll_booth', name: 'Plaza From Server' })] }));
+  };
+  const a = await findAlong([r], { fetchImpl, servers: ['https://a.test/api'] });
+  assert.equal(a.fromData, true);
+  assert.deepEqual(a.tolls.map((t) => t.name), ['Plaza Kept']);
+  assert.deepEqual(asked, ['./data/along.json']);
+
+  forgetAlongData();
+  const missing = async (u) => (String(u).endsWith('data/along.json') ? new Response('', { status: 404 }) : fetchImpl(u));
+  const b = await findAlong([r], { fetchImpl: missing, servers: ['https://a.test/api'] });
+  assert.deepEqual(b.tolls.map((t) => t.name), ['Plaza From Server']);
+  forgetAlongData();
 });

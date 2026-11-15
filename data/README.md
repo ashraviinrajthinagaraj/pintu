@@ -8,3 +8,8 @@ ADM1 release, which is drawn from OpenStreetMap.
 [Open Database License](https://opendatacommons.org/licenses/odbl/1-0/); see
 <https://www.openstreetmap.org/copyright>. This simplified copy is offered under the same licence.
 Each state keeps only its name.
+
+`along.json`: every toll plaza booth, toll gantry, speed camera, R&R and lay-by in Malaysia that
+OpenStreetMap has, as short lists (`[id, lat, lng, …]`, the id's first letter for node, way or
+relation). Rebuilt every Monday by `scripts/along-data.mjs` through
+`.github/workflows/along-data.yml`. © OpenStreetMap contributors, under the same licence.

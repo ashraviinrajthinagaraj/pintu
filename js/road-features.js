@@ -9,7 +9,7 @@ export const NEAR_M = 60;                                   // asked for this wi
 const OFF_M = { light: 15, bump: 8, rail: 15 };             // how close to your line it must be
 const SAME_M = { light: 70, bump: 20, rail: 60 };           // one junction's lights count once
 const BEHIND_M = 15;
-const BUMPS = '^(bump|hump|table|cushion|yes)$';
+export const BUMPS = '^(bump|hump|table|cushion|yes)$';
 
 // The three questions, around a line of points.
 export function featureStatements(line, radius = NEAR_M) {

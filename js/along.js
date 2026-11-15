@@ -5,7 +5,8 @@ import { CONFIG } from './config.js';
 import { camerasOnRoute } from './cameras.js';
 import { overpass, placeOnRoute } from './places.js';
 import { tollsOnRoute } from './tolls.js';
-import { featureStatements, featuresOnRoute, parseFeature } from './road-features.js';
+import { BUMPS, featuresOnRoute, parseFeature } from './road-features.js';
+import { dataNear, loadAlongData, nearRoute } from './along-data.js';
 
 const MAX_POINTS = 220;       // per route, to keep one request a sensible size
 const TOLL_NEAR_M = 120;
@@ -15,6 +16,10 @@ export const REST_OFF_M = 450;
 const SAME_REST_M = 400;
 const ON_ROAD_M = 25;         // closer than this, it's on the road whichever side
 const WAITS = { server: 22000 };
+// The tolls, cameras and R&Rs come first and quickly; lights and bumps, which
+// are many more and slower to find, are asked for separately afterwards.
+export const QUICK_WAITS = { server: 15000 };
+export const SLOW_WAITS = { server: 25000 };
 
 // The route as a line of points, spaced to suit its length.
 export function linePoints(route, max = MAX_POINTS) {
@@ -33,18 +38,52 @@ export function linePoints(route, max = MAX_POINTS) {
   return out;
 }
 
+// The squares of a grid (about 2 km) that the routes pass through, with a
+// margin, joined along each row: [south, west, north, east] boxes.
+const CELL_DEG = 0.02;
+export function routeBoxes(routes, marginM) {
+  const m = marginM / 111320;
+  const rows = new Map();
+  for (const route of routes) {
+    for (const [lng, lat] of linePoints(route, Infinity)) {
+      for (const dx of [-m, m]) {
+        for (const dy of [-m, m]) {
+          const col = Math.floor((lng + dx) / CELL_DEG), row = Math.floor((lat + dy) / CELL_DEG);
+          if (!rows.has(row)) rows.set(row, new Set());
+          rows.get(row).add(col);
+        }
+      }
+    }
+  }
+  const boxes = [];
+  const deg = (n) => +(n * CELL_DEG).toFixed(4);
+  for (const row of [...rows.keys()].sort((a, b) => a - b)) {
+    const cols = [...rows.get(row)].sort((a, b) => a - b);
+    let from = cols[0], to = cols[0];
+    for (const col of [...cols.slice(1), Infinity]) {
+      if (col === to + 1) { to = col; continue; }
+      boxes.push([deg(row), deg(from), deg(row + 1), deg(to + 1)]);
+      from = to = col;
+    }
+  }
+  return boxes;
+}
+
 // Only what's wanted: no tolls for a motorcycle, no cameras if their warning is off.
-// Traffic lights, bumps and railway crossings come too, for counting and for the drive.
-export function alongQuery(routes, { tolls = true, cameras = true, rests = true, features = true } = {}) {
-  const parts = routes.map((route) => {
-    const line = linePoints(route).map(([lng, lat]) => `${lat.toFixed(5)},${lng.toFixed(5)}`).join(',');
-    return (tolls ? `nwr["barrier"="toll_booth"](around:${TOLL_NEAR_M},${line});`
-        + `node["highway"="toll_gantry"](around:${TOLL_NEAR_M},${line});` : '')
-      + (cameras ? `node["highway"="speed_camera"](around:${CAMERA_NEAR_M},${line});` : '')
-      + (rests ? `nwr["highway"~"^(services|rest_area)$"](around:${REST_NEAR_M},${line});` : '')
-      + (features ? featureStatements(line) : '');
-  });
-  return `[out:json][timeout:25];(${parts.join('')});out center tags 4000;`;
+// Each kind is asked for by its exact name within small boxes along the routes,
+// which a map server answers in seconds; the distance from each route is
+// measured here afterwards. (Asking for "within so many metres of this line"
+// instead took the servers most of a minute on a long trip.)
+export function alongQuery(routes, { tolls = true, cameras = true, rests = true, features = true, timeout = 25 } = {}) {
+  const near = routeBoxes(routes, CAMERA_NEAR_M);
+  const wide = rests ? routeBoxes(routes, REST_NEAR_M) : [];
+  const each = (filter, boxes) => boxes.map((b) => `${filter}(${b.join(',')});`).join('');
+  const parts = (tolls ? each('nwr["barrier"="toll_booth"]', near) + each('node["highway"="toll_gantry"]', near) : '')
+    + (cameras ? each('node["highway"="speed_camera"]', near) : '')
+    + (rests ? each('nwr["highway"="services"]', wide) + each('nwr["highway"="rest_area"]', wide) : '')
+    + (features ? each('node["highway"="traffic_signals"]', near) + each(`node["traffic_calming"~"${BUMPS}"]`, near)
+      + each('node["railway"="level_crossing"]', near) : '');
+  return `[out:json][timeout:${timeout}];(${parts});out center tags 6000;`;
 }
 
 export function parseAlong(json) {
@@ -95,21 +134,36 @@ export function restsOnRoute(route, rests) {
 }
 
 export function alongRoute(route, found) {
+  // Anything not even near this route is left out before it's measured against it.
+  const near = nearRoute(route);
   return {
-    tolls: tollsOnRoute(route, found.tolls),
-    cameras: camerasOnRoute(route, found.cameras),
-    rests: restsOnRoute(route, found.rests),
-    features: featuresOnRoute(route, found.features || []),
+    tolls: tollsOnRoute(route, found.tolls.filter(near)),
+    cameras: camerasOnRoute(route, found.cameras.filter(near)),
+    rests: restsOnRoute(route, found.rests.filter(near)),
+    features: featuresOnRoute(route, (found.features || []).filter(near)),
   };
 }
 
 const cache = new Map();
 export const clearAlongCache = () => cache.clear();
 
+// Tolls, cameras and R&Rs: from the copy kept with the app, or, if that can't be
+// had, from a map server. Lights, bumps and crossings always come from a server.
+export async function findAlong(routes, { tolls = true, cameras = true, rests = true, ...opts } = {}) {
+  try {
+    const data = await loadAlongData(opts);
+    return { ...dataNear(data, routes, { tolls, cameras, rests }), fromData: true };
+  } catch (err) {
+    if (opts.signal?.aborted) throw err;
+  }
+  return fetchAlong(routes, { ...opts, tolls, cameras, rests, features: false });
+}
+
 export async function fetchAlong(routes, { signal, fetchImpl, servers = CONFIG.overpass, waits = WAITS, tolls = true, cameras = true, rests = true, features = true } = {}) {
   const key = `${routes.map((r) => r.id).join(',')}|${tolls}|${cameras}|${rests}|${features}`;
   if (cache.has(key)) return cache.get(key);
-  const json = await overpass(alongQuery(routes, { tolls, cameras, rests, features }), { signal, fetchImpl, servers, waits });
+  const timeout = Math.max(5, Math.round((waits.server || 22000) / 1000));
+  const json = await overpass(alongQuery(routes, { tolls, cameras, rests, features, timeout }), { signal, fetchImpl, servers, waits });
   if (!json) throw new Error('no server answered');
   const found = parseAlong(json);
   cache.set(key, found);

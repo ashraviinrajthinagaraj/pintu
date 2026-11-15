@@ -18,7 +18,8 @@ import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
 import { checkRouteWeather } from './weather.js';
 import { cameraAhead, camerasOnRoute, fetchCameras } from './cameras.js';
 import { fetchTolls, tollAhead, tollsOnRoute } from './tolls.js';
-import { alongRoute, fetchAlong, restsOnRoute } from './along.js';
+import { QUICK_WAITS, SLOW_WAITS, alongRoute, fetchAlong, findAlong, restsOnRoute } from './along.js';
+import { dataNear, loadAlongData } from './along-data.js';
 import { nextRest } from './rest-stop.js';
 import { MARK_KINDS, fetchMarks, markCameras, markFeatures, marksBox, sendMark } from './marks.js';
 import { StopWatch, lightsToAsk, rememberStop, settleSpot } from './stop-learn.js';
@@ -1691,6 +1692,23 @@ function mapTollNote(route, tolls) {
   return t('tollStill');
 }
 
+// Pixels a metre will be once these lines are fitted to the map, as fitRoutes does.
+function fittedScale(lines) {
+  let w = Infinity, e = -Infinity, so = Infinity, n = -Infinity;
+  for (const c of lines) for (const [lng, lat] of c) {
+    if (lng < w) w = lng;
+    if (lng > e) e = lng;
+    if (lat < so) so = lat;
+    if (lat > n) n = lat;
+  }
+  if (!Number.isFinite(w)) return null;
+  const pad = mapPadding();
+  const k = Math.cos((((so + n) / 2) * Math.PI) / 180);
+  const across = Math.max(1, (e - w) * k * 111320), down = Math.max(1, (n - so) * 111320);
+  const room = [Math.max(80, innerWidth - pad.left - pad.right), Math.max(80, innerHeight - pad.top - pad.bottom)];
+  return Math.min(room[0] / across, room[1] / down);
+}
+
 function renderMapLabels() {
   const ready = S.view === 'preview' && !S.overlay && S.routeState === 'ready' && S.routes.length > 0;
   if (!ready) {
@@ -1702,7 +1720,7 @@ function renderMapLabels() {
   const other = otherChoice(S.routes[S.selected]);
   const lines = [...S.routes.map((r) => r.coords), ...(other ? [other.route.coords] : [])];
   const key = [...S.routes.map((r) => r.id), other ? other.route.id : ''].join(',');
-  if (S.labelSpots?.key !== key) S.labelSpots = { key, spots: labelSpots(lines) };
+  if (S.labelSpots?.key !== key) S.labelSpots = { key, spots: labelSpots(lines, { pxPerM: fittedScale(lines) }) };
   const spots = S.labelSpots.spots;
   const labels = S.routes.map((r, i) => ({
     key: r.id,
@@ -1938,6 +1956,7 @@ function renderPlanFuel(route) {
 
 const ALONG_RAIL_MAX = 40;
 const ALONG_WAIT_MS = 500;
+const ALONG_SLOW_MS = 8000;      // still looking after this long: say the map server is slow
 const SHOW_LOADING_KM = 30;
 
 // One request for every route on offer, a moment after they arrive.
@@ -1960,22 +1979,48 @@ function loadAlong() {
   S.alongPick = null;
   S.alongTimer = setTimeout(() => {
     const marks = togetherReady() ? fetchMarks(marksBox(routes), { signal: ctrl.signal }).catch(() => []) : Promise.resolve([]);
-    Promise.all([fetchAlong(routes, { signal: ctrl.signal, ...opts }), marks]).then(([found, fixes]) => {
+    // Taking a while: the map's servers are busy, and it's worth saying so.
+    setTimeout(() => {
+      if (S.along?.key !== key || S.along.state !== 'loading') return;
+      S.along.slow = true;
+      if (S.view === 'preview') renderRoutes();
+    }, ALONG_SLOW_MS);
+    // First what matters before setting off: tolls, cameras and R&Rs. Lights,
+    // bumps and crossings, which are many more, are asked for after.
+    Promise.all([findAlong(routes, { signal: ctrl.signal, waits: QUICK_WAITS, ...opts }), marks]).then(([found, fixes]) => {
       if (S.along?.key !== key) return;
       S.marks = fixes;
-      const fixed = { ...found, features: markFeatures(found.features, fixes), cameras: markCameras(found.cameras, fixes) };
+      const fixed = { ...found, features: [], cameras: markCameras(found.cameras, fixes) };
       const byRoute = new Map(routes.map((r) => {
         const on = alongRoute(r, fixed);
         return [r.id, { ...on, plazas: on.tolls, tolls: priceTolls(r, on.tolls, S.driverFares) }];
       }));
-      S.along = { key, state: 'ready', byRoute, found };
+      S.along = { key, state: 'ready', byRoute, found: { ...found, features: [] }, features: 'loading' };
       askDriverFares(routes, key);
+      loadAlongFeatures(routes, key, ctrl);
     }).catch(() => {
       if (S.along?.key === key && !ctrl.signal.aborted) S.along = { key, state: 'error', byRoute: new Map() };
     }).finally(() => {
       if (S.along?.key === key && S.view === 'preview') renderRoutes();
     });
   }, ALONG_WAIT_MS);
+}
+
+// Lights, bumps and railway crossings along each route, once the tolls are in.
+function loadAlongFeatures(routes, key, ctrl) {
+  fetchAlong(routes, { signal: ctrl.signal, waits: SLOW_WAITS, tolls: false, cameras: false, rests: false, features: true })
+    .then((got) => {
+      if (S.along?.key !== key) return;
+      S.along.found = { ...S.along.found, features: got.features };
+      const feats = markFeatures(got.features, S.marks || []);
+      for (const r of routes) {
+        const on = S.along.byRoute.get(r.id);
+        if (on) on.features = featuresOnRoute(r, feats);
+      }
+      S.along.features = 'ready';
+    })
+    .catch(() => { if (S.along?.key === key) S.along.features = 'error'; })
+    .finally(() => { if (S.along?.key === key && S.view === 'preview') renderRoutes(); });
 }
 
 // What Pintu's drivers paid at plazas with no announced fare, asked once per plaza.
@@ -2033,7 +2078,7 @@ function renderPlanToll(route) {
   const canOpen = state === 'ready' && tolls.length > 0;
   if (state === 'loading') {
     title.textContent = t('tollCardTitle');
-    detail.textContent = t('tollCardLoading');
+    detail.textContent = t(S.along.slow ? 'tollCardSlow' : 'tollCardLoading');
   } else if (state === 'error') {
     title.textContent = t('tollCardTitle');
     detail.textContent = t('tollCardFailed');
@@ -2099,7 +2144,7 @@ function loadOtherWay() {
       if (!route) throw new Error('no route');
       let tolls = null;
       if (!wantFree && route.hasToll) {
-        const found = await fetchAlong([route], { signal: ctrl.signal, tolls: true, cameras: false, rests: false, features: false }).catch(() => null);
+        const found = await findAlong([route], { signal: ctrl.signal, tolls: true, cameras: false, rests: false }).catch(() => null);
         tolls = found ? priceTolls(route, alongRoute(route, found).tolls) : null;
       }
       finish({ key, state: 'ready', free: wantFree, route, tolls });
@@ -3026,6 +3071,9 @@ function startGuidance({ simulate }) {
     S.alongCtrl?.abort();
     clearTimeout(S.alongTimer);
     S.along = null;
+  } else if (S.along?.features === 'loading') {
+    // The lights are looked for along this one route instead, below.
+    S.alongCtrl?.abort();
   }
   S.guidance = new Guidance(S.route, { walking: S.mode === 'walk' });
   S.greeted = false;
@@ -3069,18 +3117,19 @@ function startGuidance({ simulate }) {
   S.featuresSaid = new Set();
   S.bumpSaidAt = -Infinity;
   const planned = S.along?.state === 'ready' ? S.along.found : null;
-  S.featurePool = planned?.features || [];
+  const plannedFeatures = !!planned && S.along.features === 'ready';
+  S.featurePool = plannedFeatures ? planned.features : [];
   S.restPool = planned?.rests || [];
   S.tollsPaid = new Map();
   S.lastPlaza = null;
   S.unpriced = [];
   hideRest();
-  S.featureFetchedAt = planned ? Date.now() : 0;
+  S.featureFetchedAt = plannedFeatures ? Date.now() : 0;
   S.features = placeFeatures(S.route);
   S.stopWatch = simulate ? null : new StopWatch();
   S.tripSpots = [];
   if (!S.marks && togetherReady()) loadMarks(S.route);
-  if (!planned) loadFeatures(S.route);
+  if (!plannedFeatures) loadFeatures(S.route);
   warnTng();
   // Traffic looked up while choosing the route needn't be asked for again yet.
   S.traffic = S.route.traffic?.from === 0 && S.mode !== 'walk' ? S.route.traffic : null;
@@ -3453,6 +3502,12 @@ function renderSpeed(fix, st) {
 
 /* ---------- Speed cameras ---------- */
 
+// Cameras or toll booths near the route, from the copy kept with the app.
+async function fromData(route, kind) {
+  const near = dataNear(await loadAlongData(), [route], { tolls: kind === 'tolls', cameras: kind === 'cameras', rests: false });
+  return near[kind];
+}
+
 function loadCameras(route) {
   S.cameraCtrl?.abort();
   if (!S.settings.speedCameras || S.mode === 'walk') return;
@@ -3460,7 +3515,7 @@ function loadCameras(route) {
   S.cameraCtrl = ctrl;
   S.cameraFetchedAt = Date.now();
   const timer = setTimeout(() => ctrl.abort(), 30000);
-  fetchCameras(route, { signal: ctrl.signal }).then((found) => {
+  fromData(route, 'cameras').catch(() => fetchCameras(route, { signal: ctrl.signal })).then((found) => {
     S.cameraPool = found;
     if (S.view === 'nav' && S.route) S.cameras = placeCameras(S.route);
     renderMapCameras();
@@ -3609,7 +3664,7 @@ function loadTolls(route) {
   S.tollCtrl = ctrl;
   S.tollFetchedAt = Date.now();
   const timer = setTimeout(() => ctrl.abort(), 30000);
-  fetchTolls(route, { signal: ctrl.signal }).then((found) => {
+  fromData(route, 'tolls').catch(() => fetchTolls(route, { signal: ctrl.signal })).then((found) => {
     S.tollPool = found;
     if (S.view === 'nav' && S.route) S.tolls = tollsOnRoute(S.route, found);
   }).catch(() => { /* the HUD just won't mention plazas */ })
@@ -3652,9 +3707,12 @@ function loadFeatures(route) {
   S.featureCtrl = ctrl;
   S.featureFetchedAt = Date.now();
   const timer = setTimeout(() => ctrl.abort(), 30000);
-  fetchAlong([route], { signal: ctrl.signal, tolls: false, cameras: false, rests: true, features: true }).then((found) => {
+  // R&Rs from the copy kept with the app; lights and bumps from a map server.
+  findAlong([route], { signal: ctrl.signal, tolls: false, cameras: false, rests: true }).then((found) => {
+    if (S.featureCtrl === ctrl) S.restPool = found.rests;
+  }).catch(() => {});
+  fetchAlong([route], { signal: ctrl.signal, waits: SLOW_WAITS, tolls: false, cameras: false, rests: false, features: true }).then((found) => {
     S.featurePool = found.features;
-    S.restPool = found.rests;
     if (S.view === 'nav' && S.route) S.features = placeFeatures(S.route);
   }).catch(() => { /* nothing known is nothing to warn about */ })
     .finally(() => clearTimeout(timer));

@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { Hub } from '../../server/hub.js';
+import { compact, serialise } from '../../scripts/along-data.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -77,15 +78,24 @@ function solatMonth(times) {
   };
 }
 
-async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, solat, traffic, tomtom, fuel, init, hub } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, alongData, solat, traffic, tomtom, fuel, init, hub } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, fossgis: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
+  const log = { stadia: 0, alongData: 0, fossgis: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
     const server = appServer || traffic || tomtom || fuel || hub ? "'https://pintu.test'" : 'null';
     const config = original.replace(/server: [^,]+,/, `server: ${server},`).replace(/humanVoices: [^,]+,/, `humanVoices: ${humanVoices},`);
     route.fulfill({ contentType: 'text/javascript', body: config });
+  });
+  // The tolls, cameras and R&Rs kept with the app: by default, what this test's
+  // stand-in map server knows, so each test decides what's on its routes.
+  await ctx.route('**/data/along.json', async (route) => {
+    log.alongData++;
+    if (alongData === false || log.overpassFail || log.alongDataFail) return route.fulfill({ status: 404, body: 'not found' });
+    const answer = typeof alongData === 'function' ? alongData()
+      : typeof overpass === 'function' ? overpass('toll_booth toll_gantry speed_camera services rest_area') : overpass;
+    return route.fulfill({ contentType: 'application/json', body: serialise(compact(answer, '2026-11-15')) });
   });
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
     const url = route.request().url();

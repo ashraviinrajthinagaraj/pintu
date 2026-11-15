@@ -22,7 +22,8 @@ folder as it is.
 | State boundaries | `data/states.json`, simplified from [geoBoundaries](https://www.geoboundaries.org/) Malaysia ADM1, which comes from OpenStreetMap | © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright). Kept with the app |
 | Pump prices | [data.gov.my fuel prices](https://data.gov.my/data-catalogue/fuelprice), through the small server | Set weekly. 4 requests a minute, so the server keeps the answer 6 hours |
 | Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
-| Toll plazas, cameras and R&Rs before you set off | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), one request for all routes | Toll fares are a short list in the app, see Tolls |
+| Toll plazas, cameras and R&Rs | `data/along.json`, kept with the app and refreshed from OpenStreetMap every Monday by a GitHub workflow (`scripts/along-data.mjs`) | © OpenStreetMap contributors, ODbL. If the file can't be loaded, the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) is asked instead. Toll fares are a short list in the app, see Tolls |
+| Traffic lights, bumps and railway crossings | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), asked after the tolls, in small boxes along the routes | Too many to keep with the app. No more than two requests at a time |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
 ### Routing
@@ -102,8 +103,9 @@ speed turns red and Pintu says so once.
 
 ## Speed cameras
 
-AES and AwAS cameras come from OpenStreetMap (`highway=speed_camera`), asked for once along the
-whole route when a trip starts (`js/cameras.js`). A camera counts if it's mapped within 18 m of the
+AES and AwAS cameras come from OpenStreetMap (`highway=speed_camera`), from the copy kept with the
+app (`data/along.json`), or asked for along the whole route if that can't be loaded
+(`js/cameras.js`). A camera counts if it's mapped within 18 m of the
 route. The warning shows from 300 to 800 m ahead, depending on speed, and is said once. Only mapped
 cameras are known, so no warning never means no camera.
 
@@ -243,6 +245,11 @@ highways with one fixed car fare are in the app (see Tolls); the rest fill in as
 say what they paid.
 
 ## Along the way
+
+Toll plazas, cameras, R&Rs and lay-bys come from `data/along.json`, so they show as soon as the
+routes do. Asking a public map server for them along a long trip took 40 seconds to a minute
+when tested, and often timed out. The copy is rebuilt from OpenStreetMap every Monday; a plaza
+or camera added to OpenStreetMap shows in Pintu within a week.
 
 The plan shows a line of the R&Rs (`highway=services`) and lay-bys (`highway=rest_area`) you can
 pull into, with speed cameras if their warning is on. Malaysia drives on the left, so one mapped

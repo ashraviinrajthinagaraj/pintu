@@ -41,6 +41,13 @@ test('each label goes where its route is clear of the others', () => {
   // One route alone: its label sits near the middle.
   const [only] = labelSpots([south]);
   assert.ok(Math.abs(only[0] - 101.70) < 0.02);
+  // Two routes on nearly the same roads, 100 km long, fitted 300 px across: their labels
+  // still sit a label's width apart.
+  const longA = [[101.0, 3.0], [101.3, 3.0], [101.6, 3.0], [101.9, 3.0]];
+  const longB = [[101.0, 3.0], [101.3, 3.002], [101.6, 3.002], [101.9, 3.0]];
+  const pxPerM = 300 / 100000;
+  const [la, lb] = labelSpots([longA, longB], { pxPerM });
+  assert.ok(haversine(la, lb) * pxPerM >= 104, `only ${Math.round(haversine(la, lb) * pxPerM)} px apart`);
   // Nothing to place: nothing placed.
   assert.deepEqual(labelSpots([south, null]).map(Boolean), [true, false]);
 });

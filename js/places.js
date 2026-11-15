@@ -226,11 +226,45 @@ function askServer(server, body, signal, fetchImpl, waits) {
   });
 }
 
+// No more than two requests at a time from Pintu. Each goes to two servers, and
+// a server gives each phone only two places at once: more than that is refused,
+// and a refused server is left alone for a minute, which makes everything slower.
+export const AT_ONCE = 2;
+let running = 0;
+const queue = [];
+function takeTurn(signal) {
+  if (running < AT_ONCE) { running++; return Promise.resolve(true); }
+  return new Promise((resolve) => {
+    const entry = () => resolve(true);
+    queue.push(entry);
+    signal.addEventListener('abort', () => {
+      const i = queue.indexOf(entry);
+      if (i >= 0) { queue.splice(i, 1); resolve(false); }
+    }, { once: true });
+  });
+}
+function endTurn() {
+  const next = queue.shift();
+  if (next) next();
+  else running = Math.max(0, running - 1);
+}
+export const overpassBusy = () => ({ running, waiting: queue.length });
+
 // Two different servers at once and the first good answer wins. Each only ever
 // gets one request, and one that fails isn't asked again for a while, because
 // these servers ban clients that keep asking after being told to stop.
-export async function overpass(query, {
-  signal = new AbortController().signal,
+export async function overpass(query, opts = {}) {
+  const signal = opts.signal || new AbortController().signal;
+  if (signal.aborted || !(await takeTurn(signal))) return null;
+  try {
+    return await overpassNow(query, { ...opts, signal });
+  } finally {
+    endTurn();
+  }
+}
+
+async function overpassNow(query, {
+  signal,
   fetchImpl = (...a) => fetch(...a),
   servers = CONFIG.overpass,
   waits = WAITS,
