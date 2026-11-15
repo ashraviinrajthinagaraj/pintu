@@ -101,6 +101,10 @@
 </section>
 
 <!-- Route preview -->
+<!-- On the map while you look at the routes -->
+<div id="map-tools" class="map-tools" hidden>
+  <button id="btn-cams" class="round round-cams" type="button" aria-pressed="true"></button>
+</div>
 <section id="preview" class="sheet" hidden>
   <div class="sheet-grip" aria-hidden="true"></div>
   <div class="sheet-head trip-head">
@@ -134,6 +138,12 @@
   <div id="preview-strip" class="strip strip-preview" aria-hidden="true" hidden></div>
 
   <div id="plan" class="plan" hidden>
+    <!-- An official weather warning for somewhere the route goes -->
+    <button id="plan-warn" class="plan-row plan-warn" type="button" hidden>
+      <span id="plan-warn-icon" class="plan-icon"></span>
+      <span class="plan-main"><strong id="plan-warn-title"></strong><span id="plan-warn-detail"></span><span id="plan-warn-where" class="plan-warn-where"></span></span>
+      <span id="plan-warn-chev" class="plan-chev"></span>
+    </button>
     <div id="plan-stops" class="plan-stops"></div>
     <!-- R&Rs and cameras along the way, like the services signs on an expressway -->
     <div id="plan-along" class="plan-along" hidden>

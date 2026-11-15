@@ -23,7 +23,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const shots = process.env.SHOTS || path.join(root, 'tests/e2e/shots');
 await (await import('node:fs/promises')).mkdir(shots, { recursive: true });
 
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
+const TYPES = { '.json': 'application/json', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 const server = createServer(async (req, res) => {
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (p.endsWith('/')) p += 'index.html';
@@ -2303,8 +2303,10 @@ await check('rain: shown on the plan with where and when, and official warnings 
   await toPreview(page);
   await page.waitForFunction(() => /Mungkin hujan/.test(document.getElementById('plan-weather-title').textContent));
   assert.match(await text(page, '#plan-weather-title'), /Mungkin hujan .*lagi, sekitar/);
-  await page.waitForFunction(() => /amaran rasmi/.test(document.getElementById('plan-weather-detail').textContent));
-  assert.match(await text(page, '#plan-weather-detail'), /^1 amaran/, 'only the one for this route, and not the sea');
+  await page.waitForSelector('#plan-warn:not([hidden])');
+  assert.equal(await text(page, '#plan-warn-title'), 'Amaran Hujan Berterusan di kawasan laluan anda');
+  assert.match(await text(page, '#plan-warn-detail'), /^Sehingga .* · MET Malaysia$/, 'only the one for this route, and not the sea');
+  assert.equal(await page.locator('#plan-warn.is-danger').count(), 1, 'a danger warning looks it');
   await page.locator('#plan-weather').scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${shots}/33-plan-rain.png` });
   await page.click('#plan-weather');
@@ -4988,6 +4990,131 @@ await check('route plan: your car, the tolls with known fares, and R&Rs along th
   await page.waitForFunction(() => /R&R Ujian/.test(document.getElementById('plan-stops').textContent));
   assert.deepEqual(log.errors, []);
   await ctx.close();
+});
+
+// The way round without tolls: south, slower, and free.
+const southFree = () => buildTrip(P.a, [
+  { to: [101.7000, 3.1440], type: 1, street: 'Jalan Bukit Bintang', kph: 30 },
+  { to: [101.7180, 3.1440], type: 10, street: 'Jalan Pudu', kph: 30 },
+  { to: P.d, type: 10, street: 'Jalan Imbi', kph: 30 },
+]);
+const MET_STORM = () => [{
+  warning_issue: { issued: '2026-11-15T15:30:00', title_bm: 'Amaran Ribut Petir', title_en: 'Thunderstorms Warning' },
+  valid_from: '2026-11-15T15:00:00',
+  valid_to: soon(),
+  heading_en: 'THUNDERSTORMS WARNING',
+  text_en: 'Thunderstorms, heavy rain and strong winds are expected over the states of Perak (Kinta and Kampar) • Selangor (Petaling, Gombak and Hulu Langat) • Kuala Lumpur • Putrajaya.',
+  heading_bm: 'AMARAN RIBUT PETIR',
+  text_bm: 'Ribut petir, hujan lebat dan angin kencang dijangka berlaku di negeri Perak (Kinta dan Kampar) • Selangor (Petaling, Gombak dan Hulu Langat) • Kuala Lumpur • Putrajaya.',
+}];
+
+await check('route screen: labels on the map, cameras with a switch, the free way to compare, and a storm warning', async () => {
+  for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 568 }]) {
+    const name = `${viewport.width}x${viewport.height}`;
+    const { ctx, page, log } = await newApp(browser, {
+      ...quiet,
+      scale: 2,
+      viewport,
+      routeResponse: (b) => (b.id === 'pintu-compare' ? { trip: southFree() } : { trip: plannedTrip(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }),
+      overpass: onTheWay(),
+      forecast: dryForecast,
+      warnings: MET_STORM,
+      traffic: () => ({ delay: 240, jams: [{ from: along(P.b, P.c, 0.2), to: along(P.b, P.c, 0.8), delay: 240, speed: 9, kind: 'JAM' }] }),
+    });
+    await toPreview(page);
+    await page.waitForFunction(() => document.querySelectorAll('.route-label').length === 3);
+    await page.waitForFunction(() => /RM4\.10/.test(document.querySelector('.route-label.is-selected')?.textContent || ''));
+    const labels = await page.locator('.route-label').allInnerTexts();
+    assert.equal(await page.locator('.route-label.is-selected').count(), 1);
+    assert.match(await text(page, '.route-label.is-selected'), /min[\s\S]*RM4\.10\+/, 'time and what the tolls come to');
+    assert.match(await text(page, '.route-label.is-other'), /min[\s\S]*Tiada tol/, 'the way without tolls, to compare');
+    assert.ok(labels.some((l) => /\bTol$/m.test(l)), `a toll road with no known fare: ${labels.join(' | ')}`);
+    // Each label is beside its own route, not on top of another.
+    const boxes = await page.locator('.route-label').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => [r.left, r.top, r.right, r.bottom]));
+    // And none of them under the map's credits.
+    const credits = await page.locator('.maplibregl-ctrl-bottom-right').evaluate((e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; });
+    for (const [i, a] of boxes.entries()) assert.ok(a[2] <= credits[0] || a[3] <= credits[1] || a[1] >= credits[3], `label ${i} under the credits in ${name}`);
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const [a, b] = [boxes[i], boxes[j]];
+      assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `labels ${i} and ${j} overlap in ${name}`);
+    }
+    assert.equal(await page.evaluate(() => window.__map.sources['pintu-other'].data.features.length), 1, 'the free way drawn, dashed');
+
+    // On the route card: when you'd arrive, the quickest, cameras, and where the traffic is.
+    await page.waitForFunction(() => document.querySelectorAll('.route-bar').length === 2);
+    const first = page.locator('.route-opt').first();
+    assert.match(await first.locator('.route-via').innerText(), /^Sampai \d{1,2}[:.]\d\d.* · melalui /);
+    assert.match(await text(page, '#route-list'), /Paling cepat/);
+    assert.match(await first.locator('.route-tags').innerText(), /1 kamera/);
+    assert.match(await first.locator('.route-bar').getAttribute('style'), /linear-gradient/);
+
+    // Cameras on the map, and a switch for them.
+    await page.waitForFunction(() => window.__map.sources['pintu-cams']?.data.features.length === 1);
+    assert.equal(await vis(page, '#btn-cams'), true);
+    assert.equal(await page.getAttribute('#btn-cams', 'aria-pressed'), 'true');
+
+    // The storm warning: on the plan, and the state lit up on the map with a storm where the route enters it.
+    await page.waitForSelector('#plan-warn:not([hidden])');
+    assert.match(await text(page, '#plan-warn-title'), /^Amaran Ribut Petir di kawasan laluan anda$/);
+    assert.match(await text(page, '#plan-warn-detail'), /^Sehingga \d{1,2}[:.]\d\d.* · MET Malaysia$/);
+    assert.equal(await text(page, '#plan-warn-where'), 'Kuala Lumpur');
+    assert.equal(await text(page, '#plan-weather-detail'), '', 'not said twice');
+    await page.waitForSelector('.storm-pin');
+    // Not hidden under a label.
+    const under = await page.evaluate(() => {
+      const pin = document.querySelector('.storm-pin').getBoundingClientRect();
+      return [...document.querySelectorAll('.route-label')].some((l) => {
+        const r = l.getBoundingClientRect();
+        return !(r.right <= pin.left || pin.right <= r.left || r.bottom <= pin.top || pin.bottom <= r.top);
+      });
+    });
+    assert.equal(under, false, `the storm is under a label in ${name}`);
+    assert.deepEqual(await page.evaluate(() => window.__map.sources['pintu-warn'].data.features.map((f) => f.properties.name)), ['Kuala Lumpur']);
+
+    await noOverflow(page, `route screen ${name}`);
+    await smallTargets(page, `route screen ${name}`, ['#btn-cams', '.route-label', '#plan-warn']);
+    if (name === '390x844') {
+      // Zoomed out a little, as a phone fits the routes.
+      await page.screenshot({ path: `${shots}/82-route-screen.png` });
+      await page.evaluate(() => document.getElementById('plan-warn').scrollIntoView({ block: 'center' }));
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: `${shots}/83-route-warning.png` });
+      // Further out, the state under the warning is lit up.
+      await page.evaluate(() => window.__map.easeTo({ zoom: 9.3 }));
+      await page.waitForTimeout(100);
+      await page.screenshot({ path: `${shots}/83-route-warning-area.png` });
+      await page.evaluate(() => window.__map.easeTo({ zoom: 14.5 }));
+    } else {
+      await page.screenshot({ path: `${shots}/82-route-screen-${name}.png` });
+    }
+
+    // Cameras off the map and back; the choice is kept.
+    await page.click('#btn-cams');
+    assert.equal(await page.getAttribute('#btn-cams', 'aria-pressed'), 'false');
+    assert.equal(await page.evaluate(() => window.__map.sources['pintu-cams'].data.features.length), 0);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).camerasMap), false);
+    await page.click('#btn-cams');
+    assert.equal(await page.evaluate(() => window.__map.sources['pintu-cams'].data.features.length), 1);
+
+    // A label picks its route; the free way's label switches to avoiding tolls.
+    const alt = page.locator('.route-label:not(.is-selected):not(.is-other)');
+    await alt.click();
+    assert.equal(await page.locator('.route-opt').nth(1).getAttribute('aria-checked'), 'true');
+    await page.waitForFunction(() => document.querySelectorAll('.route-label.is-selected').length === 1);
+    assert.doesNotMatch(await text(page, '.route-label.is-selected'), /RM4\.10/, 'the label of the route now chosen');
+    await page.locator('.route-label.is-other').click();
+    assert.equal(await page.isChecked('#avoid-tolls'), true);
+
+    // Leaving the route screen takes it all off the map.
+    await page.click('#preview-back');
+    await page.waitForSelector('#preview', { state: 'hidden' });
+    assert.equal(await page.locator('.route-label').count(), 0);
+    assert.equal(await page.locator('.storm-pin').count(), 0);
+    assert.equal(await page.evaluate(() => window.__map.sources['pintu-cams'].data.features.length), 0);
+    assert.equal(await vis(page, '#map-tools'), false);
+    assert.deepEqual(log.errors, []);
+    await ctx.close();
+  }
 });
 
 await check('route plan: on a motorcycle, no tolls; with camera warnings off, no cameras; in Tamil on a small phone, it all fits', async () => {

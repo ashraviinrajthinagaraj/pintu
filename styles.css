@@ -1635,3 +1635,75 @@ a { color: inherit; }
 #mark-title { margin-top: 14px; }
 .road-alert, .camera-alert { cursor: pointer; }
 .arrival-tolls .resume-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
+
+/* ---------- Choosing a route: labels, cameras and warnings on the map ---------- */
+.route-label {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  min-width: 64px;
+  padding: 5px 10px 6px;
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid rgba(255, 255, 255, .16);
+  box-shadow: 0 3px 10px rgba(4, 10, 12, .45);
+  line-height: 1.1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.route-label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  background: inherit;
+  border: inherit;
+  border-top: 0;
+  border-left: 0;
+  transform: rotate(45deg);
+}
+.route-label strong { font-family: var(--condensed); font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.route-label span { font-size: 13px; font-weight: 600; color: var(--mute); }
+.route-label.is-selected { background: var(--blue); color: #fff; border-color: rgba(255, 255, 255, .55); }
+.route-label.is-selected span { color: #FFE08A; }
+.route-label.is-other { border-style: dashed; border-color: var(--mute); }
+.route-label.is-other::after { border-style: dashed; }
+
+.route-bar { grid-column: 1 / -1; display: block; height: 5px; margin: 5px 0 1px; border-radius: 3px; }
+.tag-cam { background: #6B3FD6; color: #fff; }
+
+.map-tools {
+  position: fixed;
+  top: calc(var(--safe-t) + 12px);
+  right: calc(var(--safe-r) + 12px);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+.map-tools[hidden] { display: none; }
+.round-cams.is-on { background: #6B3FD6; color: #fff; border-color: rgba(255, 255, 255, .6); }
+
+.plan-warn .plan-icon { background: #FF8A1F; color: #2A1500; }
+.plan-warn .plan-main strong { color: #FFB45E; }
+.plan-warn.is-danger .plan-icon { background: #E5483B; color: #fff; }
+.plan-warn.is-danger .plan-main strong { color: #FF8A80; }
+.plan-main > .plan-warn-where { color: var(--ink); }
+
+.storm-pin {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #FF8A1F;
+  color: #2A1500;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 6px rgba(255, 138, 31, .28), 0 2px 6px rgba(0, 0, 0, .5);
+}
+.storm-pin svg { width: 21px; height: 21px; }

@@ -35,6 +35,37 @@ const COLORS = {
 const EMPTY = { type: 'FeatureCollection', features: [] };
 const line = (coords, properties = {}) => ({ type: 'Feature', properties, geometry: { type: 'LineString', coordinates: coords } });
 const collection = (features) => ({ type: 'FeatureCollection', features });
+const point = (lng, lat, properties = {}) => ({ type: 'Feature', properties, geometry: { type: 'Point', coordinates: [lng, lat] } });
+
+// A speed camera on the map: a violet badge with a white camera, like the signs.
+export const CAMERA_VIOLET = '#6B3FD6';
+export function drawCameraBadge(ratio = 2) {
+  const size = 26 * ratio;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(ratio, ratio);
+  ctx.beginPath();
+  ctx.arc(13, 13, 11.5, 0, Math.PI * 2);
+  ctx.fillStyle = CAMERA_VIOLET;
+  ctx.fill();
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = '#fff';
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(6, 9.5, 10, 7, 1.6) : ctx.rect(6, 9.5, 10, 7);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(16, 12); ctx.lineTo(20.5, 9.8); ctx.lineTo(20.5, 16.2); ctx.lineTo(16, 14); ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(10.5, 13, 1.9, 0, Math.PI * 2);
+  ctx.fillStyle = CAMERA_VIOLET;
+  ctx.fill();
+  return { width: size, height: size, data: ctx.getImageData(0, 0, size, size).data, pixelRatio: ratio };
+}
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Phones with very sharp screens would otherwise draw the map at three times
@@ -54,7 +85,7 @@ export const NEAR_REFRESH_M = 1500;
 const placeName = (p = {}) => p.name || p['name:latin'] || p.name_en || p['name:en'] || '';
 
 export class MapView {
-  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onPlaceTap, onPuckTap, trafficTiles = null }) {
+  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onOtherTap, onPlaceTap, onPuckTap, trafficTiles = null }) {
     this.el = el;
     this.trafficTiles = trafficTiles;   // where TomTom's traffic tiles come from, if anywhere
     this.trafficOn = false;
@@ -65,12 +96,16 @@ export class MapView {
     this.onLongPress = onLongPress;
     this.onUserMove = onUserMove;
     this.onAltTap = onAltTap;
+    this.onOtherTap = onOtherTap;
     this.onPlaceTap = onPlaceTap;
     this.onPuckTap = onPuckTap;
     this.carPin = null;
     this.carKey = '';
     this.map = null;
-    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY };
+    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY };
+    this.routeLabels = [];
+    this.routeLabelKey = '';
+    this.stormPin = null;
     this.trim = null;       // where the often-sent part of the line ends
     this.puckHeading = null;
     this.carPose = null;
@@ -107,6 +142,7 @@ export class MapView {
       const f = e.features && e.features[0];
       if (f) this.onAltTap?.(f.properties.index);
     });
+    this.map.on('click', 'pintu-other-hit', () => this.onOtherTap?.());
     this.map.on('click', (e) => this._placeTap(e));
   }
 
@@ -124,7 +160,7 @@ export class MapView {
     if (!this.onPlaceTap || !this.map.queryRenderedFeatures) return;
     let hits = [];
     try { hits = this.map.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]]) || []; } catch { return; }
-    if (hits.some((h) => h.layer?.id === 'pintu-alt-hit')) return;
+    if (hits.some((h) => h.layer?.id === 'pintu-alt-hit' || h.layer?.id === 'pintu-other-hit')) return;
     const f = hits.find((h) => (h.sourceLayer === 'poi' || h.sourceLayer === 'aerodrome_label') && placeName(h.properties));
     if (!f) return;
     const point = f.geometry?.type === 'Point' ? f.geometry.coordinates : [e.lngLat.lng, e.lngLat.lat];
@@ -202,6 +238,13 @@ export class MapView {
       }, beforeId);
     }
 
+    // Areas under an official weather warning, softly lit, under every route.
+    if (!m.getSource('pintu-warn')) m.addSource('pintu-warn', { type: 'geojson', data: this.data.warn, tolerance: 0.6 });
+    if (!m.getLayer('pintu-warn-fill')) m.addLayer({ id: 'pintu-warn-fill', type: 'fill', source: 'pintu-warn', paint: { 'fill-color': '#FF8A1F', 'fill-opacity': 0.1 } }, beforeId);
+    if (!m.getLayer('pintu-warn-glow')) m.addLayer({ id: 'pintu-warn-glow', type: 'line', source: 'pintu-warn', layout: { 'line-join': 'round' }, paint: { 'line-color': '#FF9A2E', 'line-width': 9, 'line-blur': 7, 'line-opacity': 0.55 } }, beforeId);
+    if (!m.getLayer('pintu-warn-edge')) m.addLayer({ id: 'pintu-warn-edge', type: 'line', source: 'pintu-warn', layout: { 'line-join': 'round' }, paint: { 'line-color': '#F07A12', 'line-width': 1.6 } }, beforeId);
+
+    if (!m.getSource('pintu-other')) m.addSource('pintu-other', { type: 'geojson', data: this.data.other });
     if (!m.getSource('pintu-alts')) m.addSource('pintu-alts', { type: 'geojson', data: this.data.alts });
     if (!m.getSource('pintu-active')) m.addSource('pintu-active', { type: 'geojson', data: this.data.active });
     if (!m.getSource('pintu-far')) m.addSource('pintu-far', { type: 'geojson', data: this.data.far });
@@ -211,6 +254,10 @@ export class MapView {
     const add = (id, source, paint, look = layout) => {
       if (!m.getLayer(id)) m.addLayer({ id, type: 'line', source, layout: look, paint }, beforeId);
     };
+    // The other way, with or without tolls, dashed: it's there to compare.
+    add('pintu-other-casing', 'pintu-other', { 'line-color': c.altCasing, 'line-width': width(5, 11), 'line-opacity': 0.8 });
+    add('pintu-other', 'pintu-other', { 'line-color': c.alt, 'line-width': width(3, 7), 'line-dasharray': [1.4, 1.1] }, { 'line-cap': 'butt', 'line-join': 'round' });
+    add('pintu-other-hit', 'pintu-other', { 'line-color': '#000', 'line-opacity': 0, 'line-width': 28 });
     add('pintu-alt-casing', 'pintu-alts', { 'line-color': c.altCasing, 'line-width': width(6, 13) });
     add('pintu-alt', 'pintu-alts', { 'line-color': c.alt, 'line-width': width(3.5, 9) });
     add('pintu-alt-hit', 'pintu-alts', { 'line-color': '#000', 'line-opacity': 0, 'line-width': 28 });
@@ -225,6 +272,28 @@ export class MapView {
     add('pintu-far-route', 'pintu-far', { 'line-color': c.route, 'line-width': width(5, 11) });
     add('pintu-route', 'pintu-active', { 'line-color': c.route, 'line-width': width(5, 11) });
     this._addLaneLayers(beforeId, c);
+
+    // Speed cameras, on top of the route.
+    if (!m.getSource('pintu-cams')) m.addSource('pintu-cams', { type: 'geojson', data: this.data.cams });
+    if (!m.hasImage?.('pintu-camera')) {
+      try {
+        const img = drawCameraBadge(Math.min(3, Math.max(1, Math.round(window.devicePixelRatio || 2))));
+        if (img) m.addImage?.('pintu-camera', { width: img.width, height: img.height, data: img.data }, { pixelRatio: img.pixelRatio });
+      } catch { /* the badges are a nicety */ }
+    }
+    if (!m.getLayer('pintu-cams')) {
+      m.addLayer({
+        id: 'pintu-cams',
+        type: 'symbol',
+        source: 'pintu-cams',
+        layout: {
+          'icon-image': 'pintu-camera',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 6, 0.7, 12, 0.9, 16, 1.1],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      }, beforeId);
+    }
 
     // The car goes on top of everything.
     if (!m.getLayer('pintu-car')) {
@@ -433,6 +502,71 @@ export class MapView {
     this.data.active = EMPTY;
     this.data.alts = EMPTY;
     this._push();
+  }
+
+  // The way you'd go with (or without) tolls instead, to compare. Null takes it away.
+  setOtherWay(coords) {
+    this.data.other = collection(coords?.length > 1 ? [line(coords)] : []);
+    this.map?.getSource('pintu-other')?.setData(this.data.other);
+  }
+
+  // Labels beside each route: [{ key, lng, lat, time, note, selected, other }].
+  setRouteLabels(labels, onPick) {
+    const key = JSON.stringify((labels || []).map((l) => [l.key, l.lng.toFixed(5), l.lat.toFixed(5), l.time, l.note, l.selected, l.other, l.warn]));
+    if (key === this.routeLabelKey && this.routeLabels.length === (labels || []).length) return;
+    this.routeLabelKey = key;
+    for (const m of this.routeLabels) m.remove();
+    this.routeLabels = [];
+    if (!this.map) return;
+    for (const l of labels || []) {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = `route-label${l.selected ? ' is-selected' : ''}${l.other ? ' is-other' : ''}`;
+      el.dataset.key = l.key;
+      const time = document.createElement('strong');
+      time.textContent = l.time;
+      el.append(time);
+      if (l.note) {
+        const note = document.createElement('span');
+        note.textContent = l.note;
+        el.append(note);
+      }
+      el.addEventListener('click', (e) => { e.stopPropagation(); onPick?.(l); });
+      // Lifted by the pointer's height, so its tip touches the route.
+      const marker = new this.lib.Marker({ element: el, anchor: 'bottom', offset: [0, -8] }).setLngLat([l.lng, l.lat]).addTo(this.map);
+      // The chosen route's label sits above the rest.
+      if (l.selected) el.style.zIndex = '2';
+      this.routeLabels.push(marker);
+    }
+  }
+
+  // Where a place is on the screen, in pixels, or null before the map is up.
+  screenPoint(lng, lat) {
+    try {
+      const p = this.map?.project?.([lng, lat]);
+      return p && Number.isFinite(p.x) ? [p.x, p.y] : null;
+    } catch { return null; }
+  }
+
+  // Speed cameras: [{ lng, lat }].
+  setCameras(list) {
+    this.data.cams = collection((list || []).map((c) => point(c.lng, c.lat)));
+    this.map?.getSource('pintu-cams')?.setData(this.data.cams);
+  }
+
+  // States under an official warning (GeoJSON features), and where the route
+  // goes into one ({ lng, lat, label } or null).
+  setWarnings(features, storm) {
+    this.data.warn = collection(features || []);
+    this.map?.getSource('pintu-warn')?.setData(this.data.warn);
+    if (this.stormPin) { this.stormPin.remove(); this.stormPin = null; }
+    if (!storm || !this.map) return;
+    const el = document.createElement('div');
+    el.className = 'storm-pin';
+    el.setAttribute('role', 'img');
+    el.setAttribute('aria-label', storm.label || '');
+    el.innerHTML = UI.storm;
+    this.stormPin = new this.lib.Marker({ element: el }).setLngLat([storm.lng, storm.lat]).addTo(this.map);
   }
 
   _push() {

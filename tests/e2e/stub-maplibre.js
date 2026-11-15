@@ -56,7 +56,7 @@
     setStyle(url, o) { calls.push(['setStyle', url, o]); this.styleUrl = url; this.sources = { openmaptiles: {} }; this.layers = []; setTimeout(() => { this._fire('style.load', {}); this.draw(); }, 5); }
     addSource(id, s) { if (this.sources[id]) throw new Error(`source ${id} exists`); this.sources[id] = { ...s, setData: (d) => { this.sources[id].data = d; this.draw(); } }; }
     getSource(id) { return this.sources[id]; }
-    addImage(id, img) { (this.images ||= {})[id] = img; }
+    addImage(id, img, o = {}) { (this.images ||= {})[id] = { ...img, pixelRatio: o.pixelRatio || 1 }; }
     hasImage(id) { return !!this.images?.[id]; }
     setFilter(id, f) { calls.push(['setFilter', id, f]); (this.filters ||= {})[id] = f; }
     addLayer(l, before) {
@@ -104,21 +104,43 @@
       const oy = ((this.cam.center[1] * 40000) % step + step) % step;
       for (let x = -ox; x < w + step; x += step) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
       for (let y = oy; y < h + step; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+      const rings = (geo) => (geo.type === 'Polygon' ? geo.coordinates : geo.type === 'MultiPolygon' ? geo.coordinates.flat() : []);
+      const path = (pts) => pts.forEach((pt, i) => { const [x, y] = toXY(pt, this.cam, w, h); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
+      const num = (v, d) => (typeof v === 'number' ? v : Array.isArray(v) ? v[v.length - 1] : d);
       for (const l of this.layers) {
         const src = this.sources[l.source];
-        if (l.type !== 'line' || l.id.startsWith('pintu-lane') || !src || !src.data || l.paint['line-opacity'] === 0 || l.paint['line-blur']) continue;
-        g.strokeStyle = l.paint['line-color'];
-        const lw = l.paint['line-width'];
-        g.lineWidth = Array.isArray(lw) ? lw[lw.length - 1] : lw;
-        g.lineCap = 'round'; g.lineJoin = 'round';
-        for (const f of src.data.features) {
-          g.beginPath();
-          f.geometry.coordinates.forEach((pt, i) => {
-            const [x, y] = toXY(pt, this.cam, w, h);
-            if (i) g.lineTo(x, y); else g.moveTo(x, y);
-          });
-          g.stroke();
+        if (!src || !src.data || !src.data.features || l.id.startsWith('pintu-lane')) continue;
+        if (this.layout[l.id] === 'none') continue;
+        g.save();
+        if (l.type === 'fill') {
+          g.fillStyle = l.paint['fill-color'];
+          g.globalAlpha = num(l.paint['fill-opacity'], 1);
+          for (const f of src.data.features) { g.beginPath(); for (const r of rings(f.geometry)) path(r); g.fill('evenodd'); }
+        } else if (l.type === 'line' && l.paint['line-opacity'] !== 0) {
+          const polys = src.data.features.filter((f) => /Polygon/.test(f.geometry.type));
+          const lines = src.data.features.filter((f) => f.geometry.type === 'LineString');
+          g.strokeStyle = l.paint['line-color'];
+          g.lineWidth = num(l.paint['line-width'], 2);
+          g.globalAlpha = num(l.paint['line-opacity'], 1);
+          g.lineCap = l.layout?.['line-cap'] === 'butt' ? 'butt' : 'round'; g.lineJoin = 'round';
+          if (l.paint['line-dasharray']) g.setLineDash(l.paint['line-dasharray'].map((d) => d * g.lineWidth));
+          if (l.paint['line-blur']) { g.shadowColor = g.strokeStyle; g.shadowBlur = l.paint['line-blur'] * 2; }
+          for (const f of polys) for (const r of rings(f.geometry)) { g.beginPath(); path(r); g.closePath(); g.stroke(); }
+          if (!l.paint['line-blur']) for (const f of lines) { g.beginPath(); path(f.geometry.coordinates); g.stroke(); }
+        } else if (l.type === 'symbol' && typeof l.layout?.['icon-image'] === 'string') {
+          const img = this.images?.[l.layout['icon-image']];
+          if (img) {
+            const c2 = document.createElement('canvas');
+            c2.width = img.width; c2.height = img.height;
+            c2.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
+            const size = img.width / (img.pixelRatio || 1);
+            for (const f of src.data.features) {
+              const [x, y] = toXY(f.geometry.coordinates, this.cam, w, h);
+              g.drawImage(c2, x - size / 2, y - size / 2, size, size);
+            }
+          }
         }
+        g.restore();
       }
       for (const m of this.markers) m.place();
     }
@@ -136,7 +158,7 @@
       if (!this.map || !this.ll) return;
       const [x, y] = toXY(this.ll, this.map.cam, innerWidth, innerHeight);
       const r = this.el.getBoundingClientRect();
-      const oy = this.opts.anchor === 'bottom' ? r.height || 48 : (r.height || 44) / 2;
+      const oy = (this.opts.anchor === 'bottom' ? r.height || 48 : (r.height || 44) / 2) - (this.opts.offset?.[1] || 0);
       this.el.style.left = `${x - (r.width || 44) / 2}px`;
       this.el.style.top = `${y - oy}px`;
       if (this.opts.rotationAlignment === 'map') this.el.style.transform = `rotate(${this.rot - this.map.cam.bearing}deg)`;

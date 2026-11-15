@@ -8,7 +8,7 @@ import { describe, laneView, roadNames, speech } from './instructions.js';
 import { LaneScene, NO_LANES } from './lanes.js';
 import { Gps, SimulatedDrive } from './location.js';
 import { MapView } from './map.js';
-import { Motion } from './motion.js';
+import { Motion, pointAt } from './motion.js';
 import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
 import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, routeProviders, timeBetween } from './routing.js';
@@ -56,6 +56,8 @@ import { COMMUTE_DEFAULTS, DAY_ORDER, CommuteError, commuteOff, commuteOn, commu
 import { deviceCode, get, isCode, post } from './hub.js';
 import { inApp, nativePlugin } from './native.js';
 import * as voice from './voice.js';
+import { LABEL_BOX, clearOf, clearOfBoxes, labelSpots, trafficBar, trafficGradient } from './route-labels.js';
+import { loadStates, shapesOf, stretchIn } from './states.js';
 
 const $ = (id) => document.getElementById(id);
 // Bahasa Melayu, English, Chinese and Tamil. The characters' jokes and the human
@@ -112,7 +114,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, camerasMap: true, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -427,6 +429,9 @@ function applyStaticText() {
   $('weather-roads').href = CONFIG.weather.roadsUrl;
   $('plan-weather-icon').innerHTML = UI.rain;
   $('plan-weather-chev').innerHTML = UI.chevron;
+  $('plan-warn-icon').innerHTML = UI.storm;
+  $('plan-warn-chev').innerHTML = UI.chevron;
+  label($('btn-cams'), t('camsMapBtn'), UI.camera);
   $('plan-mall-icon').innerHTML = UI.store;
   $('plan-mall-chev').innerHTML = UI.chevron;
   $('mall-map').textContent = t('mallMap');
@@ -690,6 +695,7 @@ function render() {
   $('name-sheet').hidden = overlay !== 'name';
   $('watch').hidden = overlay !== 'watch';
   $('stops').hidden = overlay !== 'stops';
+  renderMapExtras();
   observeBottom();
 }
 
@@ -776,8 +782,11 @@ function mapPadding() {
   const landscape = matchMedia(LANDSCAPE).matches;
   const pad = { top: 70, bottom: 40, left: 40, right: 40 };
   if (S.view === 'preview') {
-    if (landscape) pad.left = $('preview').offsetWidth + 30;
+    // In landscape the map's credits sit 66 px up on the right: route labels go above them.
+    if (landscape) { pad.left = $('preview').offsetWidth + 30; pad.bottom = 92; }
     else pad.bottom = updateBottomInset() + 30;
+    // Clear of the camera switch in the top corner, which may come once the cameras are found.
+    if (S.settings.speedCameras && S.mode !== 'walk') pad.right = 92;
   }
   return pad;
 }
@@ -1370,7 +1379,8 @@ async function useMapPick() {
 }
 
 function fitRoutes() {
-  if (S.routes.length) mapView?.fit(S.routes.map((r) => r.coords), mapPadding());
+  const other = otherChoice(S.routes[S.selected]);
+  if (S.routes.length) mapView?.fit([...S.routes.map((r) => r.coords), ...(other ? [other.route.coords] : [])], mapPadding());
 }
 
 /* ---------- Route preview ---------- */
@@ -1493,6 +1503,7 @@ async function loadRoutes() {
       startGuidance({ simulate: false });
       return;
     }
+    S.previewMoved = false;
     mapView?.revealRoute(routes, 0);
     mapView?.fit(routes.map((r) => r.coords), mapPadding());
   } catch (err) {
@@ -1582,11 +1593,19 @@ function renderRoutes() {
     dist.className = 'route-dist';
     dist.textContent = fmtDistance(r.distanceKm * 1000);
     btn.append(time, dist);
-    if (r.via.length) {
-      const via = document.createElement('span');
-      via.className = 'route-via';
-      via.textContent = t('via', { road: r.via.join(', ') });
-      btn.append(via);
+    // When you'd get there, and the main roads on the way.
+    const via = document.createElement('span');
+    via.className = 'route-via';
+    const clock = arriveClock(withTraffic(r));
+    via.textContent = r.via.length ? t('arriveVia', { clock, road: r.via.join(', ') }) : t('arriveOnly', { clock });
+    btn.append(via);
+    // Where the traffic is, along the whole way.
+    if (r.traffic) {
+      const bar = document.createElement('span');
+      bar.className = 'route-bar';
+      bar.setAttribute('aria-hidden', 'true');
+      bar.style.background = trafficGradient(trafficBar(r.length, r.traffic), TRAFFIC_BAR);
+      btn.append(bar);
     }
     const tags = document.createElement('span');
     tags.className = 'route-tags';
@@ -1597,10 +1616,15 @@ function renderRoutes() {
     if (cost != null) tags.append(tag(t(pv.kind === 'ev' ? 'costEv' : 'costFuel', { cost: money(cost) }), 'tag-cost'));
     const lights = S.mode !== 'walk' && alongOf(r) ? countLights(alongOf(r).features) : 0;
     if (lights) tags.append(tag(t('lightsCount', { n: lights }), 'tag-cost'));
+    const cams = S.mode !== 'walk' && S.settings.speedCameras ? alongOf(r)?.cameras.length || 0 : 0;
+    if (cams) tags.append(tag(cams === 1 ? t('camerasOne') : t('camerasCount', { n: cams }), 'tag-cam'));
     if (r.traffic) {
       const slow = r.traffic.delay >= 120;
       tags.append(tag(slow ? t('trafficDelayTag', { time: fmtDuration(r.traffic.delay, getLang()) }) : t('trafficClearTag'), slow ? 'tag-slow' : 'tag-clear'));
-      if (S.routes.length > 1 && S.routes.every((x) => x.traffic) && i === fastestNow(S.routes)) tags.append(tag(t('fastestNow'), 'tag-best'));
+    }
+    // The quickest of the routes on offer: "now" once the traffic on each is known.
+    if (S.routes.length > 1 && i === fastestNow(S.routes)) {
+      tags.append(tag(t(S.routes.every((x) => x.traffic) ? 'fastestNow' : 'fastest'), 'tag-best'));
     }
     btn.append(tags);
     btn.addEventListener('click', () => selectRoute(i));
@@ -1614,6 +1638,7 @@ function renderRoutes() {
   $('add-stop').disabled = !ready;
   renderActions();
   renderPlan();
+  renderMapExtras();
   updateBottomInset();
 }
 
@@ -1630,6 +1655,142 @@ function selectRoute(i) {
   S.routePicked = true;
   renderRoutes();
   mapView?.showRoutes(S.routes, i);
+}
+
+// The clock time you'd arrive, leaving now.
+function arriveClock(seconds) {
+  const at = new Date(Date.now() + seconds * 1000);
+  const later = at.toDateString() !== new Date().toDateString();
+  return `${fmtClock(at, getLang())}${later ? ` ${t('tomorrow')}` : ''}`;
+}
+
+const TRAFFIC_BAR = { clear: '#2E9E5B', slow: '#F5A524', jam: '#D93025' };
+
+/* ---------- On the map while choosing: labels, cameras, warnings ---------- */
+
+// The other way (with or without tolls) only when it is a real choice.
+function otherChoice(route) {
+  const other = S.otherWay;
+  if (other?.state !== 'ready' || S.mode !== 'car' || !route) return null;
+  const differs = other.free ? !other.route.hasToll && route.hasToll : other.route.hasToll;
+  return differs ? other : null;
+}
+
+function takeOtherWay() {
+  const box = $('avoid-tolls');
+  box.checked = !!S.otherWay?.free;
+  box.dispatchEvent(new Event('change'));
+}
+
+// "RM27.10", "Tol" or "Tiada tol" beside a route on the map.
+function mapTollNote(route, tolls) {
+  if (S.mode !== 'car') return '';
+  if (!route.hasToll) return t('noTolls');
+  const sum = tolls ? tollTotal(tolls) : null;
+  if (sum?.total != null) return `RM${money(sum.total)}${sum.unknown ? '+' : ''}`;
+  return t('tollStill');
+}
+
+function renderMapLabels() {
+  const ready = S.view === 'preview' && !S.overlay && S.routeState === 'ready' && S.routes.length > 0;
+  if (!ready) {
+    mapView.setRouteLabels([]);
+    mapView.setOtherWay(null);
+    return;
+  }
+  const lang = getLang();
+  const other = otherChoice(S.routes[S.selected]);
+  const lines = [...S.routes.map((r) => r.coords), ...(other ? [other.route.coords] : [])];
+  const key = [...S.routes.map((r) => r.id), other ? other.route.id : ''].join(',');
+  if (S.labelSpots?.key !== key) S.labelSpots = { key, spots: labelSpots(lines) };
+  const spots = S.labelSpots.spots;
+  const labels = S.routes.map((r, i) => ({
+    key: r.id,
+    index: i,
+    lng: spots[i][0],
+    lat: spots[i][1],
+    time: fmtDuration(withTraffic(r), lang),
+    note: mapTollNote(r, alongOf(r)?.tolls),
+    selected: i === S.selected,
+  }));
+  if (other) {
+    const at = spots[S.routes.length];
+    labels.push({ key: 'other', other: true, lng: at[0], lat: at[1], time: fmtDuration(other.route.time, lang), note: mapTollNote(other.route, other.tolls), selected: false });
+  }
+  mapView.setRouteLabels(labels, (l) => (l.other ? takeOtherWay() : selectRoute(l.index)));
+  mapView.setOtherWay(other ? other.route.coords : null);
+}
+
+// Speed cameras on the map: on the chosen route while choosing, and on the way while driving.
+function renderMapCameras() {
+  if (!mapView) return;
+  const on = S.settings.speedCameras && S.settings.camerasMap && S.mode !== 'walk';
+  let list = [];
+  if (on && S.view === 'preview' && !S.overlay) list = alongOf(S.routes[S.selected] || {})?.cameras || [];
+  if (on && S.view === 'nav') list = S.cameras || [];
+  const key = list.map((c) => c.id ?? `${c.lng},${c.lat}`).join('|');
+  if (key === S.camerasKey) return;
+  S.camerasKey = key;
+  mapView.setCameras(list);
+}
+
+function renderMapTools() {
+  const route = S.routes[S.selected];
+  const cams = route && S.mode !== 'walk' && S.settings.speedCameras ? alongOf(route)?.cameras.length || 0 : 0;
+  $('map-tools').hidden = !(S.view === 'preview' && !S.overlay && S.routeState === 'ready' && cams > 0);
+  const btn = $('btn-cams');
+  btn.setAttribute('aria-pressed', String(!!S.settings.camerasMap));
+  btn.classList.toggle('is-on', !!S.settings.camerasMap);
+}
+
+function toggleMapCameras() {
+  setSetting('camerasMap', !S.settings.camerasMap);
+  renderMapTools();
+  renderMapCameras();
+  toast(t(S.settings.camerasMap ? 'camsShown' : 'camsHidden'));
+}
+
+// The states under an official warning that the chosen route goes through, lit
+// up, and a storm where the route goes into the first of them.
+function renderMapWarnings() {
+  const route = S.routes[S.selected];
+  const w = S.weather;
+  const names = S.view === 'preview' && !S.overlay && route && w?.routeId === route.id && w.entries && !w.pending
+    ? [...new Set((w.warnings || []).flatMap((x) => x.states))].filter((n) => w.entries.some((e) => e.name === n))
+    : [];
+  // The storm goes on the first warned stretch, clear of where you start and of the labels.
+  const stretch = names.length ? stretchIn(w.entries, names, route.length) : null;
+  const along = stretch ? Array.from({ length: 9 }, (_, i) => pointAt(route, stretch.from + ((stretch.to - stretch.from) * (i + 1)) / 10)) : [];
+  const into = stretch ? clearOfLabels(along) : null;
+  const key = names.length ? `${route.id}|${names.join(',')}|${getLang()}|${S.labelSpots?.key || ''}` : '';
+  if (key === S.warnMapKey) return;
+  S.warnMapKey = key;
+  if (!names.length) { mapView.setWarnings([], null); return; }
+  const warn = mainWarning(w.warnings);
+  const label = warn ? t('warnOnRoute', { title: warnTitle(warn) }) : '';
+  loadStates().then((states) => {
+    if (S.warnMapKey !== key) return;
+    mapView.setWarnings(shapesOf(states, names), into ? { lng: into[0], lat: into[1], label } : null);
+  }).catch(() => { /* the card still says it */ });
+}
+
+// Of points along the route, one that no label covers: worked out on the screen
+// when the map can say where things are, or by distance when it can't.
+function clearOfLabels(points) {
+  const spots = (S.labelSpots?.spots || []).filter(Boolean);
+  const px = points.map(([lng, lat]) => mapView.screenPoint(lng, lat));
+  const boxes = spots.map(([lng, lat]) => mapView.screenPoint(lng, lat));
+  if (px.some((p) => !p) || boxes.some((b) => !b)) return clearOf(points, spots);
+  const i = clearOfBoxes(px, boxes.map(([x, y]) => [x - LABEL_BOX.left, y - LABEL_BOX.up, x + LABEL_BOX.right, y + LABEL_BOX.down]));
+  return points[i];
+}
+
+function renderMapExtras() {
+  if (!mapView) return;
+  renderMapLabels();
+  renderMapCameras();
+  renderMapTools();
+  renderMapWarnings();
 }
 
 /* ---------- The plan: stops, fuel, prayer ---------- */
@@ -1944,7 +2105,12 @@ function loadOtherWay() {
       finish({ key, state: 'ready', free: wantFree, route, tolls });
     })
     .catch(() => { if (!ctrl.signal.aborted) finish({ key, state: 'error', free: wantFree }); })
-    .finally(() => { if (S.otherWay?.key === key && S.view === 'preview') renderRoutes(); });
+    .finally(() => {
+      if (S.otherWay?.key !== key || S.view !== 'preview') return;
+      renderRoutes();
+      // Its label is worth seeing too, unless you've moved the map yourself.
+      if (otherChoice(S.routes[S.selected]) && !S.previewMoved && !S.overlay) fitRoutes();
+    });
 }
 
 // "RM4.10", "at least RM4.10", or nothing when no fare is known.
@@ -1956,12 +2122,10 @@ function tollMoney(tolls) {
 
 function renderPlanOtherWay(route) {
   const row = $('plan-other');
-  const other = S.otherWay;
-  const ready = other?.state === 'ready' && S.mode === 'car';
   // Avoiding tolls may still use one; with tolls may be the same road. Neither is a choice.
-  const differs = ready && (other.free ? !other.route.hasToll && route.hasToll : other.route.hasToll);
-  row.hidden = !differs;
-  if (!differs) return;
+  const other = otherChoice(route);
+  row.hidden = !other;
+  if (!other) return;
   const lang = getLang();
   const dt = Math.round((other.route.time - route.time) / 60);
   const time = fmtDuration(Math.abs(dt) * 60, lang);
@@ -3299,6 +3463,7 @@ function loadCameras(route) {
   fetchCameras(route, { signal: ctrl.signal }).then((found) => {
     S.cameraPool = found;
     if (S.view === 'nav' && S.route) S.cameras = placeCameras(S.route);
+    renderMapCameras();
   }).catch(() => { /* none known is the same as none mapped: nothing to warn about */ })
     .finally(() => clearTimeout(timer));
 }
@@ -3534,6 +3699,7 @@ function loadMarks(route) {
     if (S.view !== 'nav' || !S.route) return;
     S.features = placeFeatures(S.route);
     S.cameras = placeCameras(S.route);
+    renderMapCameras();
   }).catch(() => { /* the map as it is, then */ });
 }
 
@@ -3563,6 +3729,7 @@ async function submitMark(kind, action, where, ref = null) {
     if (S.view === 'nav' && S.route) {
       S.features = placeFeatures(S.route);
       S.cameras = placeCameras(S.route);
+      renderMapCameras();
     }
     toast(action === 'add' ? t('markSent', { kind: t(`mark_${kind}`) }) : t('markGoneSent'));
   } catch {
@@ -3975,6 +4142,7 @@ function useRoute(route) {
   motion.setRoute(route);
   startScene(route);
   S.cameras = placeCameras(route);
+  renderMapCameras();
   if (Date.now() - (S.cameraFetchedAt || 0) > CAMERA_REFETCH_MS) loadCameras(route);
   S.tolls = tollsOnRoute(route, S.tollPool || []);
   if (Date.now() - (S.tollFetchedAt || 0) > CAMERA_REFETCH_MS) loadTolls(route);
@@ -4401,7 +4569,44 @@ function rainLine(rain, ahead) {
   return t(`${rain.kind}Ahead`, { distance: fmtDistance(ahead), clock: fmtClock(new Date(rain.at), getLang()) });
 }
 
+// The warning worth showing first: a danger one, then a storm, then the rest.
+function mainWarning(list) {
+  const rank = (w) => (w.danger ? 0 : w.storm ? 1 : 2);
+  return [...(list || [])].sort((a, b) => rank(a) - rank(b))[0] || null;
+}
+const warnTitle = (w) => w.title?.[getLang()] || w.title?.en || w.heading[getLang()] || w.heading.en;
+
+// "Selangor: Sepang, Kuala Langat" for each state on the route the warning names.
+function warnWhere(warn, entries) {
+  const on = entries ? new Set(entries.map((e) => e.name)) : null;
+  return warn.states
+    .filter((name) => !on || on.has(name))
+    .map((name) => (warn.places?.[name]?.length ? `${name}: ${warn.places[name].join(', ')}` : name))
+    .join(' · ');
+}
+
+function renderPlanWarning(route) {
+  const row = $('plan-warn');
+  const w = S.weather;
+  const warn = S.settings.weather && S.mode !== 'walk' && route && w?.routeId === route.id && !w.pending ? mainWarning(w.warnings) : null;
+  row.hidden = !warn;
+  if (!warn) return;
+  const lang = getLang();
+  $('plan-warn-title').textContent = t('warnOnRoute', { title: warnTitle(warn) });
+  const parts = [];
+  if (warn.until) parts.push(t('warnUntilShort', { clock: fmtClock(new Date(warn.until), lang) }));
+  parts.push('MET Malaysia');
+  if (w.warnings.length > 1) parts.push(t('warningsMany', { n: w.warnings.length }));
+  $('plan-warn-detail').textContent = parts.join(' · ');
+  const where = warnWhere(warn, w.entries);
+  $('plan-warn-where').textContent = where;
+  $('plan-warn-where').hidden = !where;
+  row.classList.toggle('is-danger', !!warn.danger);
+}
+
 function renderPlanWeather(route) {
+  renderPlanWarning(route);
+  if (S.view === 'preview') renderMapWarnings();
   const row = $('plan-weather');
   const w = S.weather;
   row.hidden = !S.settings.weather || S.mode === 'walk';
@@ -4420,8 +4625,8 @@ function renderPlanWeather(route) {
   }
   if (w.rain?.first) title.textContent = rainLine(w.rain.first, w.rain.first.s);
   else title.textContent = t(w.rainFailed ? 'weatherFailed' : 'weatherClear');
-  const n = w.warnings?.length || 0;
-  detail.textContent = n === 1 ? t('warningsOne') : n > 1 ? t('warningsMany', { n }) : '';
+  // The warnings have their own row above.
+  detail.textContent = '';
 }
 
 function openWeather() {
@@ -5088,11 +5293,9 @@ function wire() {
   $('car-paid-stop').addEventListener('click', stopParking);
   setInterval(checkParking, 30000);
   checkParking();
-  $('plan-other-go').addEventListener('click', () => {
-    const box = $('avoid-tolls');
-    box.checked = !!S.otherWay?.free;
-    box.dispatchEvent(new Event('change'));
-  });
+  $('plan-other-go').addEventListener('click', takeOtherWay);
+  $('btn-cams').addEventListener('click', toggleMapCameras);
+  $('plan-warn').addEventListener('click', openWeather);
   $('plan-toll').addEventListener('click', () => {
     if (S.along?.state === 'error') { retryAlong(); return; }
     if (S.along?.state !== 'ready') return;
@@ -6333,6 +6536,7 @@ async function startMap() {
       onLongPress,
       onUserMove,
       onAltTap: (i) => selectRoute(i),
+      onOtherTap: () => takeOtherWay(),
       onPlaceTap,
       onPuckTap: () => { if (S.view === 'idle' && !S.overlay) openCar(); },
       trafficTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
@@ -6348,6 +6552,7 @@ async function startMap() {
 }
 
 function onUserMove() {
+  if (S.view === 'preview') S.previewMoved = true;
   if (S.view !== 'nav') return;
   S.following = false;
   $('btn-recenter').hidden = false;

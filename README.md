@@ -18,7 +18,8 @@ folder as it is.
 | Place search | [Photon](https://photon.komoot.io/) public server | Fair use. Heavy use is throttled |
 | Routing, lane arrows and lane counts | [Stadia Maps](https://stadiamaps.com/), then the [FOSSGIS Valhalla](https://valhalla.openstreetmap.de/) public server | See below |
 | Rain forecast | [Open-Meteo](https://open-meteo.com/) | Free for non-commercial use, with credit |
-| Official warnings | [MET Malaysia via data.gov.my](https://developer.data.gov.my/realtime-api/weather) | 4 requests a minute |
+| Official warnings | [MET Malaysia via data.gov.my](https://developer.data.gov.my/realtime-api/weather) | 4 requests a minute. Open data, CC BY 4.0 |
+| State boundaries | `data/states.json`, simplified from [geoBoundaries](https://www.geoboundaries.org/) Malaysia ADM1, which comes from OpenStreetMap | © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright). Kept with the app |
 | Pump prices | [data.gov.my fuel prices](https://data.gov.my/data-catalogue/fuelprice), through the small server | Set weekly. 4 requests a minute, so the server keeps the answer 6 hours |
 | Stops along the route | The map's own tiles first, then the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) and Photon | See below. Results are cached for 15 minutes |
 | Toll plazas, cameras and R&Rs before you set off | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), one request for all routes | Toll fares are a short list in the app, see Tolls |
@@ -220,6 +221,26 @@ Terpelihara" with no permission to reuse its data, so Pintu doesn't use it.
 When a route has tolls, Pintu also asks Valhalla for the same trip without them and shows the
 difference: how much longer it takes, how much further it is, and what it saves at the plazas
 whose fare is known. With "Avoid tolls" on, it shows the other way round. One tap switches.
+The other way is also drawn on the map, dashed, with its own label.
+
+## Choosing a route
+
+- **On the map:** each route has a label beside it with its time and its tolls: the total where
+  every fare on it is known ("RM4.10"), at least that much where some aren't ("RM4.10+"), "Tol"
+  where none are, or "Tiada tol". The label goes where its route is furthest from the others
+  (`js/route-labels.js`). Tapping a label picks that route.
+- **Speed cameras** on the chosen route are drawn on the map as violet badges, and while
+  driving too. The camera button at the top right hides or shows them.
+- **On each route:** when you'd arrive, the main roads, the number of cameras, which is
+  quickest, and a bar showing where the traffic is (green clear, orange slow, red at a crawl or
+  closed), once TomTom has said.
+- **Storm warnings:** when MET Malaysia has a warning in force for a state the route goes
+  through, the plan says so at the top, with when it ends and the districts it names there, and
+  the map lights up those states with a storm on the route where it goes through them.
+
+A full toll price, like "RM27.10" from Juru to Sungai Besi, needs every plaza's fare. Only
+highways with one fixed car fare are in the app (see Tolls); the rest fill in as Pintu's drivers
+say what they paid.
 
 ## Along the way
 
@@ -369,7 +390,10 @@ from the map's tiles within 2.5 km, and from Overpass further out when there are
 
 - **Rain:** the Open-Meteo forecast at each point along the route, at the time you'd get there.
 - **Official warnings:** MET Malaysia's, through data.gov.my, kept if they name a state the route
-  passes through. Continuous rain warnings are the ones that come with a flood risk.
+  passes through. Which states that is comes from the state boundaries kept with the app
+  (`js/states.js`), checked every 2 km along the route; if they can't be loaded, from the search
+  service at four points instead. Warnings at sea are left out. Continuous rain warnings are the
+  ones that come with a flood risk.
 - **Rivers and closed roads:** one tap to JPS Public Infobanjir and JKR Bencana. Neither offers
   data a page can read, and the old data.gov.my flood endpoint was reported to have stopped
   updating in 2024, so Pintu doesn't show live river levels itself.

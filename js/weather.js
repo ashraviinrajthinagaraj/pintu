@@ -7,6 +7,7 @@ import { CONFIG } from './config.js';
 import { within } from './net.js';
 import { pointAt } from './motion.js';
 import { timeBetween } from './routing.js';
+import { loadStates, namesOf, statesAlong } from './states.js';
 
 const MAX_POINTS = 10;
 const SPACING_M = 15000;
@@ -109,6 +110,19 @@ const STATES = [
 
 export const statesIn = (text) => STATES.filter(([, re]) => re.test(text || '')).map(([name]) => name);
 
+// "Selangor (Sepang, Kuala Langat and Sabak Bernam)": the districts a warning
+// names in each state. A state named without a list means all of it.
+export function placesIn(text) {
+  const out = {};
+  for (const [name, re] of STATES) {
+    const m = new RegExp(`(?:${re.source})\\s*\\(([^)]*)\\)`, 'i').exec(text || '');
+    if (!m) continue;
+    const list = m[1].split(/,|\band\b|\bdan\b|&/i).map((x) => x.trim()).filter(Boolean);
+    if (list.length) out[name] = list;
+  }
+  return out;
+}
+
 const ON_THE_ROAD = /rain|thunderstorm|hujan|ribut petir/i;
 const AT_SEA = /\bsea|wave|ombak|laut|tsunami|earthquake|gempa/i;
 // Malaysian time, when the source doesn't say.
@@ -129,6 +143,9 @@ export function parseWarnings(json, now = Date.now()) {
     out.push({
       heading: { ms: w.heading_bm || w.warning_issue?.title_bm || w.heading_en || '', en: w.heading_en || w.warning_issue?.title_en || w.heading_bm || '' },
       text: { ms: w.text_bm || w.text_en || '', en: w.text_en || w.text_bm || '' },
+      title: { ms: w.warning_issue?.title_bm || w.heading_bm || w.warning_issue?.title_en || '', en: w.warning_issue?.title_en || w.heading_en || w.warning_issue?.title_bm || '' },
+      places: placesIn(w.text_en || w.text_bm || ''),
+      storm: /thunderstorm|ribut petir/i.test(titles),
       until: Number.isFinite(until) ? until : null,
       states: statesIn(all),
       danger: /bahaya|danger/i.test(all),
@@ -139,6 +156,19 @@ export function parseWarnings(json, now = Date.now()) {
 }
 
 export const warningsFor = (warnings, states) => warnings.filter((w) => w.states.some((s) => states.includes(s)));
+
+// Which states the route passes through, and where it goes into each: from the
+// state boundaries kept with the app, or, failing those, asked of the search service.
+export async function routeAreas(route, fromS, opts = {}) {
+  try {
+    const states = await loadStates(opts);
+    const entries = statesAlong(states, route, fromS);
+    if (entries.length) return { names: namesOf(entries), entries };
+  } catch (err) {
+    if (opts.signal?.aborted) throw err;
+  }
+  return { names: await routeStates(route, fromS, opts), entries: null };
+}
 
 // Which states the route passes through, asked of the search service.
 export async function routeStates(route, fromS, { signal, fetchImpl = (...a) => fetch(...a) } = {}) {
@@ -196,12 +226,15 @@ export async function checkRouteWeather(route, fromS, opts = {}) {
   const now = opts.now ?? Date.now();
   if (hit && now - hit.at < CACHE_MS) return hit.result;
 
+  let entries = null;
   const [rain, warnings] = await Promise.allSettled([
     fetchRouteRain(route, fromS, opts),
     (async () => {
       const list = await fetchWarnings(opts);
       if (!list.length) return [];
-      return warningsFor(list, await routeStates(route, fromS, opts));
+      const areas = await routeAreas(route, fromS, opts);
+      entries = areas.entries;
+      return warningsFor(list, areas.names);
     })(),
   ]);
   if (opts.signal?.aborted) throw new DOMException('The request was cancelled', 'AbortError');
@@ -210,6 +243,7 @@ export async function checkRouteWeather(route, fromS, opts = {}) {
     rainFailed: rain.status !== 'fulfilled',
     warnings: warnings.status === 'fulfilled' ? warnings.value : [],
     warningsFailed: warnings.status !== 'fulfilled',
+    entries,       // where the route goes into each state, when the boundaries were at hand
   };
   // Good answers are worth keeping. A failure is worth trying again.
   if (!result.rainFailed && !result.warningsFailed) cache.set(key, { at: now, result });
