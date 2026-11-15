@@ -1,0 +1,17 @@
+# Temporary: times the along-the-route request on real routes.
+name: Probe along
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/probe-along.yml', '.github/probe/**']
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node .github/probe/along-timing.mjs
