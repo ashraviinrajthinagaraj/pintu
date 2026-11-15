@@ -1,0 +1,22 @@
+npm warn deprecated geographiclib@1.48.0: This package has been split into geographic-geodesic + geographiclib-dms; use one or both of these instead of geographiclib.  WARNING: there's a potential buffer overrun on this package.  SWITCH TO THE NEW PACKAGES NOW.
+[info] 
+========================================
+Layer:    gb
+----------------------------------------
+Type:     polygon
+Records:  16
+Bounds:   99.64049690000013,0.853821,119.26905670000008,7.3628175
+CRS:      +proj=longlat +datum=WGS84
+Source:   work/gb.geojson
+
+Attribute data
+------------+---------------------------
+ Field      | First value
+------------+---------------------------
+ shapeGroup | 'MYS'
+ shapeID    | '15666254B89722251658211'
+ shapeISO   | 'MY-10'
+ shapeName  | 'Selangor'
+ shapeType  | 'ADM1'
+------------+---------------------------
+
