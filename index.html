@@ -89,6 +89,11 @@
     </div>
     <div id="search-status" class="search-status" role="status"></div>
     <ul id="search-results" class="place-list"></ul>
+    <!-- Google Maps finds more: it opens there, and the place comes back by Share or a pasted link -->
+    <a id="search-google" class="paste-row google-row" target="_blank" rel="noopener" hidden>
+      <span id="search-google-icon"></span>
+      <span class="google-text"><strong id="search-google-label"></strong><span id="search-google-hint"></span></span>
+    </a>
     <div id="recents-wrap" hidden>
       <div class="list-head">
         <h2 id="recents-title"></h2>

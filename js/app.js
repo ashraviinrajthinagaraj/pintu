@@ -453,7 +453,9 @@ function applyStaticText() {
   renderHudMirror();
   $('arrival-walk').textContent = t('walkToDoor');
   $('search-paste-icon').innerHTML = UI.paste;
-  $('search-paste-label').textContent = t('pasteLink');
+  $('search-paste-label').textContent = t(S.backFromGoogle ? 'googleBack' : 'pasteLink');
+  $('search-google-icon').innerHTML = UI.external;
+  $('search-google-hint').textContent = t('googleHint');
   renderCharacters();
   $('set-theme-title').textContent = t('setTheme');
   $('theme-auto').textContent = t('themeAuto');
@@ -1071,6 +1073,7 @@ function setSearchPrompt() {
 
 function resetSearch() {
   setSearchPrompt();
+  S.backFromGoogle = false;
   $('search-input').value = '';
   renderSearch([]);
   $('search-status').textContent = '';
@@ -1096,6 +1099,7 @@ function placeButton(place, onPick) {
 }
 
 function renderSearch(results) {
+  S.lastResults = results;
   const pick = { stop: chooseStopFromSearch, start: chooseStartFromSearch, to: chooseToFromSearch, home: chooseSavedFromSearch, work: chooseSavedFromSearch }[S.searchFor] || chooseFromSearch;
   $('search-results').replaceChildren(...results.map((p) => placeButton(p, pick)));
   const empty = !$('search-input').value.trim();
@@ -1104,8 +1108,28 @@ function renderSearch(results) {
   $('recents').replaceChildren(...recents.map((p) => placeButton(p, pick)));
   const choosingSpot = S.searchFor === 'start' || savingPlace();
   $('search-tip').hidden = !empty || choosingSpot;
-  $('search-paste').hidden = !empty || !navigator.clipboard?.readText || savingPlace();
+  // Just back from looking on Google Maps: the link is likely on the clipboard.
+  $('search-paste').hidden = !navigator.clipboard?.readText || (!S.backFromGoogle && (!empty || savingPlace()));
+  $('search-paste-label').textContent = t(S.backFromGoogle ? 'googleBack' : 'pasteLink');
+  renderGoogleRow();
   $('search-quick').hidden = !empty || !choosingSpot;
+}
+
+// Google Maps finds places the open map data doesn't. Its results can't be shown
+// on Pintu's map (Google's terms allow them only on a Google map), so the search
+// opens there, and the place comes back by Share → Pintu, or a copied link pasted
+// here: both of which Pintu already reads.
+const GOOGLE_BACK_MS = 15 * 60e3;
+const googleMapsUrl = (q) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+
+function renderGoogleRow() {
+  const q = $('search-input').value.trim();
+  const row = $('search-google');
+  const show = q.length >= 2 && !parseLocationText(q);
+  row.hidden = !show;
+  if (!show) return;
+  row.href = googleMapsUrl(q);
+  $('search-google-label').textContent = t('googleSearch', { q: q.length > 40 ? `${q.slice(0, 39)}…` : q });
 }
 
 function onSearchInput() {
@@ -1165,6 +1189,8 @@ async function pasteLink() {
   try {
     const text = await navigator.clipboard.readText();
     if (!text.trim()) throw new Error('nothing to paste');
+    S.backFromGoogle = false;
+    S.googleAt = 0;
     $('search-input').value = text.trim();
     onSearchInput();
   } catch {
@@ -5199,6 +5225,11 @@ window.addEventListener('error', (e) => rememberError(e.message, e.filename ? `$
 window.addEventListener('unhandledrejection', (e) => rememberError(e.reason?.message || String(e.reason), 'promise'));
 
 document.addEventListener('visibilitychange', () => {
+  // Back in Pintu soon after looking on Google Maps: offer to paste what was copied there.
+  if (!document.hidden && S.googleAt && Date.now() - S.googleAt < GOOGLE_BACK_MS && !$('search').hidden) {
+    S.backFromGoogle = true;
+    renderSearch(S.lastResults || []);
+  }
   if (document.hidden) {
     S.hiddenAt = Date.now();
     if (S.view === 'nav' && !S.sim) {
@@ -5441,6 +5472,7 @@ function wire() {
   $('mode-moto').addEventListener('click', () => setMode('motorcycle'));
   $('mode-walk').addEventListener('click', () => setMode('walk'));
   $('search-paste').addEventListener('click', pasteLink);
+  $('search-google').addEventListener('click', () => { S.googleAt = Date.now(); });
   $('plan-weather').addEventListener('click', openWeather);
   $('plan-mall').addEventListener('click', openMall);
   $('weather-back').addEventListener('click', () => history.back());

@@ -1037,6 +1037,11 @@ a { color: inherit; }
 .paste-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 16px; text-align: left; font-weight: 600; border-bottom: 1px solid var(--line); }
 .paste-row svg { width: 22px; height: 22px; color: var(--sky); display: block; }
 .paste-row > span:first-child { flex: none; }
+.google-row { color: var(--ink); text-decoration: none; border-top: 1px solid var(--line); }
+.google-row[hidden] { display: none; }
+.google-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.google-text strong { font-weight: 700; overflow-wrap: anywhere; }
+.google-text span { font-size: 14px; font-weight: 500; color: var(--mute); line-height: 1.3; }
 
 /* ---------- Settings: who's talking ---------- */
 .field-gap { margin-top: 14px; }

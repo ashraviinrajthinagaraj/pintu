@@ -109,6 +109,7 @@ export const UI = {
   pin: line('<path d="M12 21.5s7.5-6.7 7.5-12a7.5 7.5 0 1 0-15 0c0 5.3 7.5 12 7.5 12Z"/><circle cx="12" cy="9.5" r="2.6"/>'),
   // A police cap, seen from the front.
   police: line('<path d="M3.5 9.5 12 5l8.5 4.5-2 3.5h-13Z"/><path d="M5.5 13c0 3.6 2.9 6 6.5 6s6.5-2.4 6.5-6"/><path d="M12 7.4v2.4" stroke-width="2.6"/>'),
+  external: line('<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
   share: line('<circle cx="17.5" cy="5.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="17.5" cy="18.5" r="2.5"/><path d="m8.7 10.8 6.6-4M8.7 13.2l6.6 4"/>'),
   people: line('<circle cx="9" cy="8" r="3.2"/><path d="M3 19.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14c2.6 0 4.5 1.8 4.5 4.5"/>'),
   bell: line('<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'),

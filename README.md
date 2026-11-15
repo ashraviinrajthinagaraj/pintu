@@ -439,6 +439,16 @@ Opening `?to=3.15,101.71&name=Rumah` goes straight to a place.
 Short links such as `maps.app.goo.gl` only say where they lead when followed, and a web page isn't
 allowed to do that, so they go through the small server below.
 
+### Searching on Google Maps
+
+Google Maps knows more shops and stalls than the open map data, so every search also offers
+"Cari … di Google Maps". It opens Google Maps (the app, on a phone) with the same words. From
+there, Share → Pintu brings the place straight back, or Copy link, and Pintu offers to paste it
+when you come back. Pintu doesn't show Google's results itself: Google's terms allow its place
+search results only on a Google map, and Pintu's map is OpenStreetMap. The link is Google's
+public [Maps URLs](https://developers.google.com/maps/documentation/urls/get-started), which
+needs no key and costs nothing.
+
 ## Walking to the door
 
 The arrival screen offers walking directions to the destination, and Walk is a mode of its own. On

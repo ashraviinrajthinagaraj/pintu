@@ -398,6 +398,39 @@ await check('search: results, safe text, Malaysia region, near you', async () =>
   await ctx.close();
 });
 
+await check('search: Google Maps for what the open map can\'t find, and the place comes back by a pasted link', async () => {
+  const { ctx, page, log } = await newApp(browser, { scale: 2 });
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: ORIGIN });
+  await page.click('#where');
+  assert.equal(await vis(page, '#search-google'), false, 'nothing typed, nothing to look for');
+  await page.fill('#search-input', 'nasi kandar pelita');
+  await page.waitForFunction(() => /Tiada hasil/.test(document.getElementById('search-status').textContent) || document.querySelector('#search-results .place'));
+  assert.equal(await vis(page, '#search-google'), true);
+  assert.equal(await text(page, '#search-google-label'), 'Cari “nasi kandar pelita” di Google Maps');
+  assert.match(await text(page, '#search-google-hint'), /Kongsi dan pilih Pintu/);
+  assert.equal(await page.getAttribute('#search-google', 'href'), 'https://www.google.com/maps/search/?api=1&query=nasi%20kandar%20pelita');
+  assert.equal(await page.getAttribute('#search-google', 'target'), '_blank');
+  await noOverflow(page, 'google row');
+  await page.screenshot({ path: `${shots}/85-search-google.png` });
+
+  // Off to Google Maps (here, a page that goes nowhere), and back.
+  const [away] = await Promise.all([ctx.waitForEvent('page'), page.click('#search-google')]);
+  await away.close();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForSelector('#search-paste:not([hidden])');
+  assert.equal(await text(page, '#search-paste-label'), 'Dari Google Maps? Tampal pautan tempat itu');
+  await page.evaluate(() => navigator.clipboard.writeText('Nasi Kandar Pelita Jalan Ampang\nhttps://www.google.com/maps/place/Nasi+Kandar+Pelita/@3.1589,101.7130,17z'));
+  await page.click('#search-paste');
+  await page.waitForSelector('#search-results .place');
+  assert.match(await page.locator('#search-results .place').first().innerText(), /Nasi Kandar Pelita/);
+  assert.equal(await vis(page, '#search-google'), false, 'a link isn\'t searched for');
+  assert.equal(await vis(page, '#search-paste'), false, 'pasted: the offer goes');
+  // Links aren't sent to the place search.
+  assert.ok(!log.photon.some((u) => /google/.test(u)));
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
 await check('debounced typing sends one search, not one per letter', async () => {
   const { ctx, page, log } = await newApp(browser);
   await page.click('#where');
