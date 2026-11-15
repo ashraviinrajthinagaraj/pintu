@@ -67,7 +67,17 @@ function spanOf(lines, k) {
 // `pxPerM` says how many pixels a metre will be (by default, the whole picture
 // about 300 px across), and `label` how big a label is.
 export const LABEL_PX = { w: 104, h: 58, lift: 8 };
-export function labelSpots(lines, { pxPerM = null, label = LABEL_PX } = {}) {
+
+// About how big a label with these words will be on the screen.
+export function labelSize(time, note) {
+  const w = Math.max(String(time || '').length * 9.4, String(note || '').length * 7.3) + 24;
+  return { w: Math.ceil(w), h: note ? 48 : 30 };
+}
+
+// Each label is placed in turn, then each placed again with the others where
+// they ended up, so the first doesn't take the only spot the rest could use.
+// `sizes` gives each label's own size; LABEL_PX is used where it doesn't.
+export function labelSpots(lines, { pxPerM = null, label = LABEL_PX, sizes = [] } = {}) {
   const valid = (lines || []).map((c) => (Array.isArray(c) && c.length ? c : null));
   const lat0 = valid.find(Boolean)?.[0]?.[1] ?? 0;
   const k = Math.cos((lat0 * Math.PI) / 180);
@@ -75,27 +85,30 @@ export function labelSpots(lines, { pxPerM = null, label = LABEL_PX } = {}) {
   // To pixels, with up as up.
   const px = ([lng, lat]) => [lng * k * M_PER_DEG * scale, lat * M_PER_DEG * scale];
   const thinned = valid.map((c) => (c ? thin(c).map(px) : null));
-  const spots = [], boxes = [];
-  valid.forEach((coords, i) => {
-    if (!coords) { spots.push(null); return; }
+  const size = (i) => sizes[i] || label;
+  const spots = valid.map(() => null), at = valid.map(() => null);
+  // A box is drawn above its point; how far apart two are (below 0: they overlap).
+  const gapBetween = ([x1, y1], s1, [x2, y2], s2) => Math.max(Math.abs(x1 - x2) - (s1.w + s2.w) / 2 - 4, Math.abs(y1 - y2) - (y1 > y2 ? s1.h : s2.h) - 4);
+  const place = (i) => {
+    const coords = valid[i];
     let best = null;
     for (let share = FROM; share <= TO + 1e-9; share += STEP) {
       const p = pointAlong(coords, share);
-      const [x, y] = px(p);
-      // How far this label's box is from each one already placed (below 0: they overlap).
+      const xy = px(p);
       let gap = Infinity;
-      for (const [bx, by] of boxes) gap = Math.min(gap, Math.max(Math.abs(x - bx) - label.w, Math.abs(y - by) - label.h));
+      at.forEach((other, j) => { if (j !== i && other) gap = Math.min(gap, gapBetween(xy, size(i), other, size(j))); });
       let nearLine = Infinity;
       thinned.forEach((other, j) => {
         if (j === i || !other) return;
-        for (const [qx, qy] of other) nearLine = Math.min(nearLine, Math.hypot(x - qx, y - qy));
+        for (const [qx, qy] of other) nearLine = Math.min(nearLine, Math.hypot(xy[0] - qx, xy[1] - qy));
       });
       const score = (gap < 0 ? gap * 10 : Math.min(gap, 24) * 2) + Math.min(nearLine, 40) - Math.abs(share - 0.5) * 20;
-      if (!best || score > best.score) best = { score, p, at: [x, y] };
+      if (!best || score > best.score) best = { score, p, xy };
     }
-    spots.push(best.p);
-    boxes.push(best.at);
-  });
+    spots[i] = best.p;
+    at[i] = best.xy;
+  };
+  for (let pass = 0; pass < 2; pass++) valid.forEach((c, i) => { if (c) place(i); });
   return spots;
 }
 

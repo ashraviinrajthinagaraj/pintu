@@ -281,7 +281,7 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
 
 const vis = (page, sel) => page.locator(sel).isVisible();
 // Overpass requests other than the one for tolls, cameras and R&Rs along the routes on offer.
-const notAlong = (log) => log.overpass.filter((b) => !/tags\+4000|tags 4000/.test(b));
+const notAlong = (log) => log.overpass.filter((b) => !/tags(\+| )\d{4}/.test(b));
 const text = (page, sel) => page.locator(sel).innerText();
 const said = (page) => page.evaluate(() => window.__said);
 
@@ -2454,8 +2454,9 @@ await check('HUD: lanes, a toll plaza ahead and a break reminder, in any colour'
       storage: { 'pintu.safetySeen': 'true', 'pintu.driveTime': { ms: 130 * 60000, at: Date.now() - 5 * 60000 } },
     });
     await toNav(page);
-    for (let i = 0; i < 60 && !log.overpass.some((b) => decodeURIComponent(b).includes('toll_booth')); i++) await page.waitForTimeout(50);
-    assert.ok(log.overpass.some((b) => decodeURIComponent(b).includes('toll_booth')), 'asked for toll plazas');
+    for (let i = 0; i < 60 && !log.alongData; i++) await page.waitForTimeout(50);
+    assert.ok(log.alongData > 0, 'toll plazas from the copy kept with the app');
+    assert.ok(!log.overpass.some((b) => decodeURIComponent(b).includes('toll_booth')), 'no map server asked for them');
     await page.waitForTimeout(150);
     await roll(page, trip, 0, 300, 22);
     await page.click('#btn-hud');
@@ -3285,8 +3286,9 @@ await check('speed cameras: a warning before one, on screen and aloud, once', as
   const { ctx, page, log } = await newApp(browser, { ...quiet, overpass: CAMERAS, scale: 2 });
   await toNav(page);
   await page.waitForFunction(() => true);
-  for (let i = 0; i < 50 && !log.overpass.some((b) => decodeURIComponent(b).includes('speed_camera')); i++) await page.waitForTimeout(50);
-  assert.ok(log.overpass.some((b) => decodeURIComponent(b).includes('speed_camera')), 'asked for cameras');
+  for (let i = 0; i < 50 && !log.alongData; i++) await page.waitForTimeout(50);
+  assert.ok(log.alongData > 0, 'cameras from the copy kept with the app');
+  assert.ok(!log.overpass.some((b) => decodeURIComponent(b).includes('speed_camera')), 'no map server asked for them');
   await page.waitForTimeout(150);
   await roll(page, trip, 0, 400, 12);
   assert.equal(await vis(page, '#camera-alert'), false, 'not yet');
@@ -3865,7 +3867,7 @@ await check('junction view: a picture of the exit before you reach it, with its 
 await check('small phone: home and work, a junction and a camera all fit', async () => {
   const trip = prepareTrip(exitTrip());
   const storage = { 'pintu.safetySeen': 'true', 'pintu.saved': { home: { name: 'Rumah Panjang Sekali Di Taman Melawati', detail: '', lng: P.d[0], lat: P.d[1] }, work: { name: 'Menara', detail: '', lng: P.c[0], lat: P.c[1] } } };
-  const { ctx, page } = await newApp(browser, { storage, viewport: { width: 320, height: 568 }, scale: 2, routeResponse: () => ({ trip: exitTrip() }), overpass: { elements: [{ type: 'node', id: 3, lat: along2(P.a, P.b, 0.5)[1], lon: along2(P.a, P.b, 0.5)[0], tags: { maxspeed: '110' } }] } });
+  const { ctx, page } = await newApp(browser, { storage, viewport: { width: 320, height: 568 }, scale: 2, routeResponse: () => ({ trip: exitTrip() }), overpass: { elements: [{ type: 'node', id: 3, lat: along2(P.a, P.b, 0.5)[1], lon: along2(P.a, P.b, 0.5)[0], tags: { highway: 'speed_camera', maxspeed: '110' } }] } });
   await page.click('#btn-locate');
   await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
   await page.waitForFunction(() => /sampai/.test(document.getElementById('saved-home-detail').textContent));
@@ -4964,7 +4966,8 @@ await check('route plan: your car, the tolls with known fares, and R&Rs along th
   const { ctx, page, log } = await newApp(browser, { scale: 2, storage, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
   await toPreview(page);
   await page.waitForFunction(() => /RM4\.10/.test(document.getElementById('plan-toll-title').textContent));
-  assert.equal(new Set(log.overpass).size, 1, 'one request for tolls, cameras and R&Rs together');
+  assert.ok(log.alongData > 0, 'tolls, cameras and R&Rs from the copy kept with the app');
+  assert.ok(!log.overpass.some((b) => /toll_booth|speed_camera|rest_area/.test(decodeURIComponent(b))), 'not from a map server');
   assert.equal(await text(page, '#plan-toll-title'), 'Tol sekurang-kurangnya RM4.10');
   assert.match(await text(page, '#plan-toll-detail'), /3 plaza · harga kereta untuk LDP, KESAS · harga 1 plaza lagi tak diketahui/);
   assert.match(await text(page, '.route-opt .route-tags'), /Tol RM4\.10\+/);
@@ -5125,6 +5128,27 @@ await check('route screen: labels on the map, cameras with a switch, the free wa
     assert.deepEqual(log.errors, []);
     await ctx.close();
   }
+});
+
+await check('route plan: without the kept copy, a map server is asked, and a slow one is said to be slow', async () => {
+  const storage = { 'pintu.safetySeen': 'true' };
+  const { ctx, page, log } = await newApp(browser, { scale: 2, storage, alongData: false, routeResponse: () => ({ trip: plannedTrip() }), overpass: onTheWay() });
+  await toPreview(page);
+  await page.waitForFunction(() => /RM4\.10/.test(document.getElementById('plan-toll-title').textContent));
+  const asked = log.overpass.map((b) => decodeURIComponent(b.replace(/\+/g, ' ')));
+  assert.ok(asked.some((q) => q.includes('toll_booth')), 'tolls from a map server instead');
+  assert.ok(asked.every((q) => !q.includes('around:') || !q.includes('toll_booth')), 'asked by boxes along the way');
+  assert.ok(asked.findIndex((q) => q.includes('toll_booth')) < asked.findIndex((q) => q.includes('traffic_signals')), 'tolls first, lights after');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+
+  // A server that doesn't answer: after a while, the plan says it's slow.
+  const slow = await newApp(browser, { scale: 2, storage, alongData: false, routeResponse: () => ({ trip: plannedTrip() }), overpass: () => new Promise(() => {}) });
+  await slow.page.route(/overpass/, () => {});
+  await toPreview(slow.page);
+  await slow.page.waitForFunction(() => /Mencari plaza tol/.test(document.getElementById('plan-toll-detail').textContent));
+  await slow.page.waitForFunction(() => /Pelayan peta lambat/.test(document.getElementById('plan-toll-detail').textContent), null, { timeout: 15000 });
+  await slow.ctx.close();
 });
 
 await check('route plan: on a motorcycle, no tolls; with camera warnings off, no cameras; in Tamil on a small phone, it all fits', async () => {

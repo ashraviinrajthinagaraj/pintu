@@ -57,7 +57,7 @@ import { COMMUTE_DEFAULTS, DAY_ORDER, CommuteError, commuteOff, commuteOn, commu
 import { deviceCode, get, isCode, post } from './hub.js';
 import { inApp, nativePlugin } from './native.js';
 import * as voice from './voice.js';
-import { LABEL_BOX, clearOf, clearOfBoxes, labelSpots, trafficBar, trafficGradient } from './route-labels.js';
+import { LABEL_BOX, clearOf, clearOfBoxes, labelSize, labelSpots, trafficBar, trafficGradient } from './route-labels.js';
 import { loadStates, shapesOf, stretchIn } from './states.js';
 
 const $ = (id) => document.getElementById(id);
@@ -1720,20 +1720,28 @@ function renderMapLabels() {
   const other = otherChoice(S.routes[S.selected]);
   const lines = [...S.routes.map((r) => r.coords), ...(other ? [other.route.coords] : [])];
   const key = [...S.routes.map((r) => r.id), other ? other.route.id : ''].join(',');
-  if (S.labelSpots?.key !== key) S.labelSpots = { key, spots: labelSpots(lines, { pxPerM: fittedScale(lines) }) };
+  const words = [
+    ...S.routes.map((r) => ({ time: fmtDuration(withTraffic(r), lang), note: mapTollNote(r, alongOf(r)?.tolls) })),
+    ...(other ? [{ time: fmtDuration(other.route.time, lang), note: mapTollNote(other.route, other.tolls) }] : []),
+  ];
+  // Placed again when the routes change, or the words make a label much wider.
+  const sizes = words.map((w) => labelSize(w.time, w.note));
+  const sizeKey = sizes.map((z) => Math.round(z.w / 16)).join(',');
+  if (S.labelSpots?.key !== key || S.labelSpots.sizeKey !== sizeKey) {
+    S.labelSpots = { key, sizeKey, spots: labelSpots(lines, { pxPerM: fittedScale(lines), sizes }) };
+  }
   const spots = S.labelSpots.spots;
   const labels = S.routes.map((r, i) => ({
     key: r.id,
     index: i,
     lng: spots[i][0],
     lat: spots[i][1],
-    time: fmtDuration(withTraffic(r), lang),
-    note: mapTollNote(r, alongOf(r)?.tolls),
+    ...words[i],
     selected: i === S.selected,
   }));
   if (other) {
     const at = spots[S.routes.length];
-    labels.push({ key: 'other', other: true, lng: at[0], lat: at[1], time: fmtDuration(other.route.time, lang), note: mapTollNote(other.route, other.tolls), selected: false });
+    labels.push({ key: 'other', other: true, lng: at[0], lat: at[1], ...words[S.routes.length], selected: false });
   }
   mapView.setRouteLabels(labels, (l) => (l.other ? takeOtherWay() : selectRoute(l.index)));
   mapView.setOtherWay(other ? other.route.coords : null);
