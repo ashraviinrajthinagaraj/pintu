@@ -421,8 +421,8 @@ await check('search: Google Maps for what the open map can\'t find, and the plac
   assert.equal(await text(page, '#search-paste-label'), 'Dari Google Maps? Tampal pautan tempat itu');
   await page.evaluate(() => navigator.clipboard.writeText('Nasi Kandar Pelita Jalan Ampang\nhttps://www.google.com/maps/place/Nasi+Kandar+Pelita/@3.1589,101.7130,17z'));
   await page.click('#search-paste');
-  await page.waitForSelector('#search-results .place');
-  assert.match(await page.locator('#search-results .place').first().innerText(), /Nasi Kandar Pelita/);
+  // The earlier results may still be there for a moment: wait for the pasted place.
+  await page.waitForFunction(() => /Nasi Kandar Pelita/.test(document.querySelector('#search-results .place')?.innerText || ''));
   assert.equal(await vis(page, '#search-google'), false, 'a link isn\'t searched for');
   assert.equal(await vis(page, '#search-paste'), false, 'pasted: the offer goes');
   // Links aren't sent to the place search.
