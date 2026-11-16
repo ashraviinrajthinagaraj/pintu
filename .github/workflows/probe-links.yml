@@ -1,4 +1,4 @@
-# Temporary: what happens to a Google Maps share link.
+# Temporary: pasting Google Maps share links into the live Pintu.
 name: Probe links
 on:
   push:
@@ -7,10 +7,15 @@ on:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node .github/probe/links.mjs
+      - run: cd .github/probe && npm init -y >/dev/null && npm i playwright@1.49.1 >/dev/null 2>&1 && npx playwright install --with-deps chromium >/dev/null 2>&1 && node links.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots
+          path: .github/probe/*.png
