@@ -175,6 +175,45 @@ test('finds a position written in all the usual ways', async () => {
   }
 });
 
+test('in a page, the place\'s own spot beats where the map was looking', async () => {
+  // As Google writes it: the view first, then the place, with ! escaped.
+  const body = await spotInPage('<link href="/maps/preview/place?pb=%211m3%211d2770995.06%212d-119.5078%213d47.2938%212m3%214m2%213d23.194647%214d-81.16556"><meta content="staticmap?center=47.2938%2C-119.5078">');
+  assert.equal(body.lat, 23.194647);
+  assert.equal(body.lng, -81.16556);
+});
+
+test('Google refusing the page after the short link still gives the place to search for', async () => {
+  const url = 'https://www.google.com/maps?q=Suria+KLCC,+Kuala+Lumpur&ftid=0x31cc37d6:0x1';
+  internet({
+    'https://maps.app.goo.gl/AbC': redirect(url),
+    [url]: () => new Response('busy', { status: 429 }),
+  });
+  const res = await ask(linkTo('https://maps.app.goo.gl/AbC'));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.lat, undefined);
+  assert.equal(body.url, url);
+  assert.equal(body.name, 'Suria KLCC, Kuala Lumpur');
+  assert.equal(body.refused, 429);
+  // But a short link that doesn't exist is an error.
+  internet({ 'https://maps.app.goo.gl/AbC': () => new Response('gone', { status: 404 }) });
+  assert.equal((await ask(linkTo('https://maps.app.goo.gl/AbC'))).status, 502);
+});
+
+test('a link can be checked from a browser: where it leads, and each step', async () => {
+  internet({
+    'https://maps.app.goo.gl/AbC': redirect('https://www.google.com/maps/place/Suria+KLCC/@3.15,101.70,17z/data=!3d3.1579!4d101.7116'),
+  });
+  const res = await ask(`/link?check=${encodeURIComponent('https://maps.app.goo.gl/AbC')}`, { origin: null });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /^Link: 3\.1579, 101\.7116 "Suria KLCC" in \d+ ms\.\n302 maps\.app\.goo\.gl\/AbC$/);
+  const asked = internet({});
+  const bad = await ask(`/link?check=${encodeURIComponent('https://evil.example/x')}`, { origin: null });
+  assert.equal(bad.status, 400);
+  assert.deepEqual(asked, [], 'and only map links');
+});
+
 test('passes on the weather warnings, and nothing else', async () => {
   const asked = internet({ 'https://api.data.gov.my/weather/warning': () => new Response(JSON.stringify([{ heading_en: 'Rain' }])) });
   const res = await ask('/warnings?u=https://evil.example');
