@@ -11,8 +11,8 @@ for (const link of LINKS) {
   console.log('== here', res.status, (await res.text()).replace(/\n/g, ' | ').slice(0, 600));
 }
 const nodes = await (await fetch('https://check-host.net/nodes/hosts', { headers: { accept: 'application/json' } })).json();
-const asia = Object.entries(nodes.nodes).filter(([, n]) => ['SG', 'MY', 'ID', 'TH', 'HK', 'JP', 'IN', 'VN', 'TW', 'KR'].includes(n.location?.[0])).map(([id, n]) => [id, n.location.join(' ')]);
-console.log('asia nodes', JSON.stringify(asia));
+const asia = Object.entries(nodes.nodes).filter(([, n]) => ['SG', 'MY', 'ID', 'TH', 'HK', 'JP', 'IN', 'VN', 'TW', 'KR'].includes(String(n.location?.[0]).toUpperCase())).map(([id, n]) => [id, n.location.join(' ')]);
+console.log('asia nodes', JSON.stringify(asia), JSON.stringify(Object.values(nodes.nodes)[0]));
 for (const link of LINKS) {
   const q = new URLSearchParams({ host: check(link) });
   for (const [id] of asia) q.append('node', id);
