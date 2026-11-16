@@ -59,7 +59,7 @@ function curve(points, y) {
   return points[points.length - 1][1];
 }
 
-class Builder {
+export class Builder {
   constructor() { this.tris = []; this.pivot = null; }
 
   tri(a, b, c, color, emissive = 0, gloss = 0.5) {

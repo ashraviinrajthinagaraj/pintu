@@ -2,7 +2,7 @@
 // its own in the vehicle panel's turning preview.
 import { FLOATS_PER_VERTEX, buildVehicle } from './car-mesh.js';
 
-const VS = `#version 300 es
+export const MESH_VS = `#version 300 es
 in vec3 a_pos;
 in vec3 a_nor;
 in vec3 a_col;
@@ -19,7 +19,7 @@ void main() {
   gl_Position = u_mvp * vec4(a_pos, 1.0);
 }`;
 
-const FS = `#version 300 es
+export const MESH_FS = `#version 300 es
 precision mediump float;
 in vec3 v_nor;
 in vec3 v_col;
@@ -77,7 +77,7 @@ void main() {
   color = vec4(u_color.rgb * a, a);
 }`;
 
-function compile(gl, vs, fs) {
+export function compile(gl, vs, fs) {
   const make = (type, src) => {
     const s = gl.createShader(type);
     gl.shaderSource(s, src);
@@ -103,7 +103,7 @@ export function multiply(a, b) {
   return o;
 }
 
-const LOOKS = {
+export const LOOKS = {
   day: { sun: [0.45, -0.35, 0.82], sky: [0.46, 0.5, 0.56], ground: [0.2, 0.2, 0.2], sunColor: [0.85, 0.82, 0.76], shadow: 0.38 },
   night: { sun: [0.3, -0.45, 0.84], sky: [0.2, 0.25, 0.34], ground: [0.09, 0.1, 0.12], sunColor: [0.5, 0.55, 0.68], shadow: 0.55 },
 };
@@ -111,7 +111,7 @@ const LOOKS = {
 export class CarRenderer {
   constructor(gl) {
     this.gl = gl;
-    this.program = compile(gl, VS, FS);
+    this.program = compile(gl, MESH_VS, MESH_FS);
     this.shadowProgram = compile(gl, SHADOW_VS, SHADOW_FS);
     this.u = {};
     for (const n of ['u_mvp', 'u_rot', 'u_sun', 'u_view', 'u_sky', 'u_ground', 'u_sunColor']) this.u[n] = gl.getUniformLocation(this.program, n);
@@ -227,7 +227,7 @@ export class CarRenderer {
   }
 }
 
-function normalize3(v) {
+export function normalize3(v) {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / l, v[1] / l, v[2] / l];
 }

@@ -26,7 +26,8 @@ function valueBytes(v) {
 }
 
 // layers: { poi: [{ id, lng, lat, props: { name, class, subclass, rank } }] }
-// A feature with `line: [[lng, lat], …]` is a line instead of a point.
+// A feature with `line: [[lng, lat], …]` is a line instead of a point, and one
+// with `ring: [[lng, lat], …]` an area (a building, say).
 export function encodeTile(tile, layers) {
   const out = [];
   for (const [name, features] of Object.entries(layers)) {
@@ -44,7 +45,18 @@ export function encodeTile(tile, layers) {
         return [Math.round((tx - tile.x) * 4096), Math.round((ty - tile.y) * 4096)];
       };
       let geom, type = 1;
-      if (f.line) {
+      if (f.ring) {
+        // An area: its outline, clockwise on the tile (y runs down), then closed.
+        type = 3;
+        let pts = f.ring.map(([lng, lat]) => at(lng, lat));
+        if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts = pts.slice(0, -1);
+        let area = 0;
+        pts.forEach(([x1, y1], i) => { const [x2, y2] = pts[(i + 1) % pts.length]; area += x1 * y2 - x2 * y1; });
+        if (area < 0) pts.reverse();
+        geom = [...varint(9), ...varint(zigzag(pts[0][0])), ...varint(zigzag(pts[0][1])), ...varint(2 | ((pts.length - 1) << 3))];
+        for (let i = 1; i < pts.length; i++) geom.push(...varint(zigzag(pts[i][0] - pts[i - 1][0])), ...varint(zigzag(pts[i][1] - pts[i - 1][1])));
+        geom.push(...varint(7 | (1 << 3)));
+      } else if (f.line) {
         // A line: move to the first point, then draw to each of the rest.
         type = 2;
         const pts = f.line.map(([lng, lat]) => at(lng, lat));

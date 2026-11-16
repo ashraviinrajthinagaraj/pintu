@@ -551,6 +551,22 @@ roughly 300 to 800 tiles, and 10 to 20 MB of mobile data, which is why it's off 
 The vehicles are general body shapes built in code (`js/car-mesh.js`), not models of any
 real car, so there's nothing to download or license.
 
+## Landmarks in 3D
+
+The map's buildings come from OpenStreetMap's outlines and heights, which stop at the
+pedestal: the Statue of Liberty was a bare stone block. A few famous statues are drawn on top
+in 3D, life size, in place and facing the way the real ones do (`js/landmarks.js`), built in
+code from their published measurements (`js/landmark-mesh.js`) like the vehicles:
+
+- The Statue of Liberty, 46 m from her feet to the torch, standing on the pedestal at 47 m,
+  in weathered copper with the flame lit gold.
+- Lord Murugan at Batu Caves, 42.7 m and gold, beside the foot of the steps with the vel
+  in his right hand.
+
+They show with the 3D buildings, rise with them as you zoom in, are hidden behind anything in
+front, and are floodlit at night. They're left out on the satellite map, which has its own
+picture of the place.
+
 ## Car figures
 
 The models in the "my car" panel are starting points, not measurements of anyone's car.

@@ -5,7 +5,7 @@ import { lngLatToTile, readPlaces } from '../../js/tiles.js';
 import { encodeTile } from '../helpers/mvt.js';
 import { pointAt } from '../../js/motion.js';
 import { createServer } from 'node:http';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -150,7 +150,38 @@ function fakePhoto(z, x, y) {
   return png(256, 256, rgb);
 }
 
+// Liberty Island's pedestal as the map's data has it, in tiers to 47 m, its
+// sides running 57° and 147°, on the star-shaped fort; and the low temple roofs
+// beside the Batu Caves steps.
+const LIBERTY = [-74.04456, 40.689257];
+function squareAt([lng, lat], across, deep, turn) {
+  const k = Math.cos((lat * Math.PI) / 180), a = (turn * Math.PI) / 180;
+  const pt = (x, y) => [lng + (x * Math.cos(a) + y * Math.sin(a)) / (111320 * k), lat + (-x * Math.sin(a) + y * Math.cos(a)) / 111320];
+  return [pt(-across / 2, -deep / 2), pt(across / 2, -deep / 2), pt(across / 2, deep / 2), pt(-across / 2, deep / 2)];
+}
+function starAt([lng, lat], outer, inner, points) {
+  const k = Math.cos((lat * Math.PI) / 180);
+  return Array.from({ length: points * 2 }, (_, i) => {
+    const a = (i / (points * 2)) * Math.PI * 2, r = i % 2 ? inner : outer;
+    return [lng + (Math.sin(a) * r) / (111320 * k), lat + (Math.cos(a) * r) / 111320];
+  });
+}
+const PALE = '#c1ba9d';
+const BUILDINGS = [
+  { id: 3296541222, ring: starAt(LIBERTY, 52, 38, 11), props: { colour: PALE, render_height: 10, render_min_height: 0 } },
+  { id: 22965114722, ring: squareAt(LIBERTY, 39.7, 39.7, 57), props: { colour: PALE, render_height: 14, render_min_height: 10 } },
+  { id: 22965114322, ring: squareAt(LIBERTY, 25.5, 25.5, 57), props: { colour: PALE, render_height: 18, render_min_height: 14 } },
+  { id: 22965114422, ring: squareAt(LIBERTY, 17.7, 19, 57), props: { colour: PALE, render_height: 26, render_min_height: 18 } },
+  { id: 22965114522, ring: squareAt(LIBERTY, 15.1, 15.7, 57), props: { colour: PALE, render_height: 47, render_min_height: 23 } },
+  { id: 22965114622, ring: squareAt(LIBERTY, 16.7, 17.1, 57), props: { colour: PALE, render_height: 47, render_min_height: 45 } },
+  { id: 21733928602, ring: squareAt([101.68345, 3.23745], 40, 30, 31), props: { render_height: 5, render_min_height: 0 } },
+];
+
 const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, {
+  building: BUILDINGS.filter((b) => {
+    const [tx, ty] = lngLatToTile(b.ring[0][0], b.ring[0][1], z);
+    return Math.floor(tx) === x && Math.floor(ty) === y;
+  }),
   poi: POIS.filter((p) => {
     const [tx, ty] = lngLatToTile(p.lng, p.lat, z);
     return Math.floor(tx) === x && Math.floor(ty) === y;
@@ -514,6 +545,78 @@ await check('satellite: photos under the roads and names, no drawn buildings, an
     assert.deepEqual(turnData, ['line', 'head'], 'the arrow at the turn');
     assert.equal(await page.evaluate(() => window.__map.getLayoutProperty('pintu-turn-line', 'visibility')), theme === 'day' ? 'visible' : 'none');
     await page.screenshot({ path: `${shots}/real-${theme}-6-satellite.png` });
+    await ctx.close();
+    assert.deepEqual(errors, []);
+  }
+});
+
+await check('landmarks: the Statue of Liberty on her pedestal, and Lord Murugan at Batu Caves, with the buildings', async () => {
+  const sharp = require('sharp');
+  const views = [
+    { name: 'liberty', at: LIBERTY, bearing: 327, zoom: 17.2, colour: ([r, g, b]) => g > r + 25 && g > 120 && b > 95 && b < g + 10 },
+    { name: 'murugan', at: [101.683981, 3.237478], bearing: 31, zoom: 18.2, colour: ([r, g, b]) => r > 150 && g > 95 && b < 80 && r > g + 30 },
+  ];
+  for (const theme of ['day', 'night']) {
+    const { ctx, page, errors } = await open(browser, {
+      styleFor: async (n) => demoCity(n === 'dark' ? 'night' : 'day'), theme, scale: 1, tiles: true,
+      storage: { 'pintu.settings': { theme, view3d: true } },
+    });
+    assert.ok(await page.evaluate(() => !!window.__map.getLayer('pintu-landmarks')), 'the landmark layer is there');
+    // Custom layers are left out of getStyle(), so the order as drawn.
+    const ids = await page.evaluate(() => window.__map.style._order);
+    assert.ok(ids.indexOf('pintu-3d') > -1 && ids.indexOf('pintu-3d') < ids.indexOf('pintu-landmarks') && ids.indexOf('pintu-landmarks') < ids.indexOf('pintu-route'), `with the buildings, under the route: ${ids.join(' ')}`);
+    for (const v of views) {
+      // From in front of each, looking back at it.
+      // Counted only where the statue stands: above its spot on the ground.
+      const count = async () => {
+        const [px, py] = await page.evaluate((at) => { const p = window.__map.project(at); return [p.x, p.y]; }, v.at);
+        const shot = await page.screenshot();
+        const { data, info } = await sharp(shot).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        let n = 0;
+        for (let y = Math.max(0, Math.round(py - 300)); y < Math.min(info.height, py + 10); y++) {
+          for (let x = Math.max(0, Math.round(px - 100)); x < Math.min(info.width, px + 100); x++) {
+            const i = (y * info.width + x) * info.channels;
+            if (v.colour([data[i], data[i + 1], data[i + 2]])) n++;
+          }
+        }
+        return { n, shot };
+      };
+      await page.evaluate(({ at, bearing, zoom }) => window.__map.jumpTo({ center: at, zoom, pitch: 62, bearing }), { at: v.at, bearing: v.bearing, zoom: v.zoom });
+      await page.waitForFunction(() => window.__map.areTilesLoaded(), null, { timeout: 15000 });
+      await settle(page, 1200);
+      const shown = await count();
+      await writeFile(`${shots}/real-${theme}-7-${v.name}.png`, shown.shot);
+      assert.ok(shown.n > 1500, `${v.name} (${theme}): ${shown.n} pixels of the statue`);
+      // Flat, or zoomed out past where buildings stand: gone.
+      await page.evaluate((at) => window.__map.jumpTo({ center: at, zoom: 13.5, pitch: 62 }), v.at);
+      await settle(page, 500);
+      const far = await count();
+      assert.ok(far.n < shown.n / 10, `${v.name} (${theme}): not drawn zoomed out: ${far.n} at zoom ${await page.evaluate(() => window.__map.getZoom())}`);
+    }
+    // 3D off: no statues either.
+    const back = () => page.evaluate(({ at, bearing, zoom }) => window.__map.jumpTo({ center: at, zoom, pitch: 62, bearing }), { at: views[0].at, bearing: views[0].bearing, zoom: views[0].zoom });
+    await back();
+    await page.click('#btn-3d-idle');
+    await settle(page, 1200);
+    await back();
+    await settle(page, 800);
+    const off = await page.evaluate(() => window.__map.getPitch());
+    assert.equal(off, 62, 'still tilted, for the check');
+    const flat = await (async () => {
+      const [px, py] = await page.evaluate((at) => { const p = window.__map.project(at); return [p.x, p.y]; }, views[0].at);
+      const { data, info } = await sharp(await page.screenshot()).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      let n = 0;
+      for (let y = Math.max(0, Math.round(py - 300)); y < Math.min(info.height, py + 10); y++) {
+        for (let x = Math.max(0, Math.round(px - 100)); x < Math.min(info.width, px + 100); x++) {
+          const i = (y * info.width + x) * info.channels;
+          if (views[0].colour([data[i], data[i + 1], data[i + 2]])) n++;
+        }
+      }
+      return n;
+    })();
+    assert.ok(flat < 100, `3D off: ${flat} statue pixels`);
+    const bad = (await page.evaluate(() => window.__mapErrors)).filter((e) => !/Failed to fetch|204|AJAXError|Unexpected end/i.test(e));
+    assert.deepEqual(bad, []);
     await ctx.close();
     assert.deepEqual(errors, []);
   }

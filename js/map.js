@@ -1,5 +1,6 @@
 import { CONFIG } from './config.js';
 import { carLayer } from './car-gl.js';
+import { landmarkLayer } from './landmarks.js';
 import { boundsOf, sliceBetween, sliceFrom } from './geo.js';
 import { INCIDENTS, drawIncident, flowFilter, flowPaint, incidentFilter, incidentImageId } from './traffic-map.js';
 import { CATEGORY_ICONS, UI, destPinSvg, puckSvg } from './icons.js';
@@ -352,6 +353,13 @@ export class MapView {
         },
       }, beforeId);
     }
+    // Famous statues on their pedestals, which the map's buildings stop short of.
+    if (m.getLayer('pintu-3d') && !m.getLayer('pintu-landmarks')) {
+      m.addLayer(landmarkLayer(this.lib, {
+        shown: () => this._buildingsShown(),
+        theme: () => this.theme,
+      }), beforeId);
+    }
 
     // Areas under an official weather warning, softly lit, under every route.
     if (!m.getSource('pintu-warn')) m.addSource('pintu-warn', { type: 'geojson', data: this.data.warn, tolerance: 0.6 });
@@ -668,6 +676,7 @@ export class MapView {
 
   _syncBuildings() {
     if (this.map?.getLayer('pintu-3d')) this.map.setLayoutProperty('pintu-3d', 'visibility', this._buildingsShown() ? 'visible' : 'none');
+    this.map?.triggerRepaint?.();
     this._syncBaseFills();
   }
 
