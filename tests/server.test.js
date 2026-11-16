@@ -175,6 +175,21 @@ test('finds a position written in all the usual ways', async () => {
   }
 });
 
+test('reads a full Google Maps link that names a place but not where it is', async () => {
+  const url = 'https://www.google.com/maps?q=Suria+KLCC&ftid=0x31cc37d6:0x1&g_st=ac';
+  internet({ [url]: page('<link href="/maps/preview/place?pb=%214m2%213d3.1579%214d101.7116">') });
+  const body = await (await ask(linkTo(url))).json();
+  assert.equal(body.lat, 3.1579);
+  assert.equal(body.lng, 101.7116);
+  assert.equal(body.name, 'Suria KLCC');
+  // Google's map pages only: not its other pages, and not look-alikes.
+  const asked = internet({});
+  for (const bad of ['https://www.google.com/search?q=x', 'https://accounts.google.com/maps', 'https://www.google.evil.example/maps', 'https://google.com.evil.example/maps', 'http://www.google.com/maps?cid=1']) {
+    assert.equal((await ask(linkTo(bad))).status, 400, bad);
+  }
+  assert.deepEqual(asked, []);
+});
+
 test('in a page, the place\'s own spot beats where the map was looking', async () => {
   // As Google writes it: the view first, then the place, with ! escaped.
   const body = await spotInPage('<link href="/maps/preview/place?pb=%211m3%211d2770995.06%212d-119.5078%213d47.2938%212m3%214m2%213d23.194647%214d-81.16556"><meta content="staticmap?center=47.2938%2C-119.5078">');

@@ -2639,6 +2639,51 @@ await check('shared links: short ones go through the server, and failures say so
   await ctx.close();
 });
 
+await check('shared links: a pasted message keeps its name for when the link fails; Enter keeps the place; Google ids go to the server', async () => {
+  const appServer = (url) => {
+    if (url.pathname !== '/link') return null;
+    const u = url.searchParams.get('u');
+    if (u.includes('good')) return { lat: 3.145, lng: 101.705, name: 'Tempat Rahsia', url: 'https://www.google.com/maps/place/x' };
+    if (u.includes('ftid=')) return { lat: 3.1579, lng: 101.7116, name: 'Suria KLCC', url: u };
+    return null;
+  };
+  const { ctx, page, log } = await newApp(browser, { ...quiet, appServer });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  // A message from Google Maps' share button, pasted: name, address, link.
+  const paste = (text) => page.evaluate((t) => {
+    const box = document.getElementById('search-input');
+    box.focus();
+    const data = new DataTransfer();
+    data.setData('text/plain', t);
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, text);
+  await paste('Kedai Rahsia\nJalan Ampang, Kuala Lumpur\nhttps://maps.app.goo.gl/bad?g_st=ac');
+  assert.equal(await page.inputValue('#search-input'), 'Kedai Rahsia Jalan Ampang, Kuala Lumpur https://maps.app.goo.gl/bad?g_st=ac', 'on one line in the box');
+  // The server can't follow it, so the place's name is looked for instead.
+  await page.waitForFunction(() => document.querySelectorAll('#search-results .place').length > 0);
+  assert.ok(log.server.some((u) => u.includes('maps.app.goo.gl%2Fbad')), log.server.join());
+  assert.ok(log.photon.at(-1).includes('q=Kedai+Rahsia'), log.photon.at(-1));
+  assert.doesNotMatch(await text(page, '#search-status'), /tak dapat dibuka/);
+  // A link that works, then Enter on the keyboard: the place stays.
+  await page.fill('#search-input', 'https://maps.app.goo.gl/good');
+  await page.waitForFunction(() => document.querySelector('#search-results .place')?.textContent.includes('Tempat Rahsia'));
+  const searches = log.photon.length;
+  await page.press('#search-input', 'Enter');
+  await page.waitForTimeout(700);
+  assert.match(await page.locator('#search-results .place').first().textContent(), /Tempat Rahsia/);
+  assert.equal(log.photon.length, searches, 'no search for the link\'s letters');
+  // A full Google link naming a place by its id, but not where it is.
+  await page.fill('#search-input', 'https://www.google.com/maps?q=Suria+KLCC&ftid=0x31cc37d6:0x1&g_st=ac');
+  await page.waitForFunction(() => document.querySelector('#search-results .place')?.textContent.includes('Suria KLCC'));
+  assert.ok(log.server.some((u) => u.includes('ftid%3D0x31cc37d6')), log.server.join());
+  await pickPlace(page);
+  await page.waitForSelector('.route-opt');
+  assert.equal(log.fossgis.at(-1).locations.at(-1).lat, 3.1579);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
 await check('shared links: opening Pintu with a link goes straight there, and the address is tidied', async () => {
   const { ctx, page, log } = await newApp(browser, { ...quiet, url: `${ORIGIN}?to=3.14,101.71&name=Rumah%20Mak` });
   await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);

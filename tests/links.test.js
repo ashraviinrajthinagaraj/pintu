@@ -103,6 +103,22 @@ test('short links are recognised, and keep the name that came with them', () => 
   assert.equal(parseLocationText('https://maps.apple.com/p/abc').kind, 'short');
 });
 
+test('a Google link to one place by its id, without where it is, goes to the server to be read', () => {
+  const ftid = 'https://www.google.com/maps?q=Suria+KLCC,+Kuala+Lumpur&ftid=0x31cc37d6f3a2d8d5:0x6a1e0ba18d2e9b38&entry=gps&g_st=ac';
+  assert.deepEqual(parseLocationText(ftid), { kind: 'short', url: ftid, name: 'Suria KLCC, Kuala Lumpur' });
+  const cid = parseLocationText('Kedai Kopi\nhttps://maps.google.com/?cid=1234567890123456789');
+  assert.equal(cid.kind, 'short');
+  assert.equal(cid.name, 'Kedai Kopi');
+  const data = parseLocationText('https://www.google.com/maps/place/Suria+KLCC/data=!4m2!3m1!1s0x31cc37d6f3a2d8d5:0x6a1e0ba18d2e9b38');
+  assert.equal(data.kind, 'short');
+  assert.equal(data.name, 'Suria KLCC');
+  // With where it is, or with nothing to find it by, nothing changes.
+  assert.equal(parseLocationText('https://www.google.com/maps/place/Suria+KLCC/@3.15,101.70,17z/data=!4m6!3m5!1s0x31cc37d6f3a2d8d5:0x6a1e0ba18d2e9b38!8m2!3d3.1579!4d101.7116').kind, 'place');
+  assert.equal(parseLocationText('https://www.google.com/maps/place/Suria+KLCC').kind, 'search');
+  // Only Google's.
+  assert.equal(parseLocationText('https://example.com/maps?cid=123'), null);
+});
+
 test('plain coordinates, with or without a comma', () => {
   near(spot('3.1579, 101.7116').lat, 3.1579);
   near(spot('3.1579 101.7116').lng, 101.7116);

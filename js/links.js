@@ -8,6 +8,9 @@ import { CONFIG } from './config.js';
 import { within } from './net.js';
 
 const SHORT_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|share\.google|maps\.apple)$/i;
+const GOOGLE_HOSTS = /^((www|maps|m)\.)?google\.[a-z.]{2,7}$/i;
+// Google's own id for a place, in a link that doesn't say where the place is.
+const GOOGLE_PLACE_ID = /[?&](cid|ftid|place_id|query_place_id)=|!1s0x[0-9a-f]+:0x[0-9a-f]+|!1sChIJ/i;
 const MAP_HOSTS = /^((www|maps|m)\.)?google\.[a-z.]{2,7}$|^(www\.)?waze\.com$|^maps\.apple\.com$|^(www\.)?openstreetmap\.org$|^(www\.)?osm\.org$/i;
 const LOOKS_LIKE_URL = /(https?:\/\/[^\s<>"]+|geo:[^\s<>"]+)/i;
 const NUMBER = '(-?\\d{1,3}(?:\\.\\d+)?)';
@@ -152,6 +155,9 @@ export function parseLocationText(text) {
     if (host && !MAP_HOSTS.test(host)) return null;
     const read = readMapUrl(link);
     if (read?.lat != null) return { kind: 'place', place: toPlace(read, before) };
+    // A Google link to one particular place, but not where it is: Google's page
+    // for it says, so the server reads that, as it does for a short link.
+    if (GOOGLE_HOSTS.test(host) && GOOGLE_PLACE_ID.test(link)) return { kind: 'short', url: link, name: before || read?.query || '' };
     if (read?.query) return { kind: 'search', query: read.query };
     return before ? { kind: 'search', query: before } : { kind: 'unknown' };
   }

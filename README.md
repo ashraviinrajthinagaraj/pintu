@@ -444,7 +444,18 @@ them, and coordinates. On Android, once installed, Pintu can also be chosen from
 Opening `?to=3.15,101.71&name=Rumah` goes straight to a place.
 
 Short links such as `maps.app.goo.gl` only say where they lead when followed, and a web page isn't
-allowed to do that, so they go through the small server below.
+allowed to do that, so they go through the small server below. So do full Google Maps links that
+name a place by Google's id (`cid=`, `ftid=`, `!1s0x…`) without saying where it is: the server reads
+Google's page for the place, preferring the place's own spot to wherever the map was looking. If
+Google won't show the page, the link's address still has the place's name to search for.
+
+A message pasted from Google Maps' share button keeps its lines while it's read, so the place's
+name on the first line is kept: it names the place, and is searched for if the link can't be
+followed at all. Pressing Enter while a link is being opened doesn't search for the link's letters.
+
+To check from a browser what the server makes of a link, open
+`https://pintu.ashraviinrajthinagaraj.workers.dev/link?check=` followed by the link: it shows where
+the link leads, how long it took and each step on the way.
 
 ### Searching on Google Maps
 

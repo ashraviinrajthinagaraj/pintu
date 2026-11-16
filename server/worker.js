@@ -42,6 +42,8 @@ const SERVER_VERSION = '2026-11-08.5';
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
 
 const START_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|share\.google|maps\.apple|maps\.apple\.com)$/i;
+// A full Google Maps link that names a place by Google's id but not where it is.
+const GOOGLE_MAPS = /^((www|maps)\.)?google\.(com|[a-z]{2}|com?\.[a-z]{2})$/i;
 const FOLLOW_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|share\.google|maps\.apple|maps\.apple\.com|consent\.google\.com|((www|maps)\.)?google\.[a-z]{2,3}(\.[a-z]{2})?)$/i;
 const MAX_HOPS = 6;
 const MAX_PAGE_BYTES = 800000;
@@ -70,6 +72,7 @@ function allowedStart(raw) {
   let url;
   try { url = new URL(raw); } catch { return null; }
   if (url.protocol !== 'https:' || url.port || url.username || url.password) return null;
+  if (GOOGLE_MAPS.test(url.hostname) && (url.pathname.startsWith('/maps') || /^maps\./i.test(url.hostname))) return url;
   if (!START_HOSTS.test(url.hostname)) return null;
   // goo.gl and g.co shorten everything. Only map links are this server's business.
   if (/^goo\.gl$/i.test(url.hostname) && !url.pathname.startsWith('/maps')) return null;

@@ -1161,8 +1161,10 @@ function renderGoogleRow() {
   $('search-google-label').textContent = t('googleSearch', { q: q.length > 40 ? `${q.slice(0, 39)}…` : q });
 }
 
-function onSearchInput() {
-  const q = $('search-input').value.trim();
+// What's in the box, unless `raw` gives what was pasted with its lines still in
+// it: a box keeps only one line, and the first is often the place's name.
+function onSearchInput(raw) {
+  const q = (typeof raw === 'string' ? raw : $('search-input').value).trim();
   clearTimeout(S.searchTimer);
   S.searchCtrl?.abort();
   if (q.length < 2) {
@@ -1197,6 +1199,12 @@ async function openShared(shared) {
       found = readResolved(await resolveShortLink(found.url, { signal: ctrl.signal }), found.name);
     } catch {
       if (ctrl.signal.aborted) return;
+      // The link couldn't be followed, but the place's name came with it.
+      if (found.name) {
+        status.textContent = t('searching');
+        runSearch(found.name);
+        return;
+      }
       status.textContent = t('linkFailed');
       return;
     }
@@ -1220,8 +1228,8 @@ async function pasteLink() {
     if (!text.trim()) throw new Error('nothing to paste');
     S.backFromGoogle = false;
     S.googleAt = 0;
-    $('search-input').value = text.trim();
-    onSearchInput();
+    $('search-input').value = oneLine(text);
+    onSearchInput(text);
   } catch {
     toast(t('pasteFailed'), 5000);
     $('search-input').focus();
@@ -1267,9 +1275,11 @@ function openIncoming() {
     return;
   }
   openSearch();
-  $('search-input').value = text;
-  onSearchInput();
+  $('search-input').value = oneLine(text);
+  onSearchInput(text);
 }
+
+const oneLine = (text) => text.split('\n').map((s) => s.trim()).filter(Boolean).join(' ');
 
 async function runSearch(q) {
   const ctrl = new AbortController();
@@ -5547,12 +5557,23 @@ function wire() {
   $('hud-range').addEventListener('click', openVehicle);
 
   $('search-back').addEventListener('click', () => history.back());
-  $('search-input').addEventListener('input', onSearchInput);
+  $('search-input').addEventListener('input', () => onSearchInput());
+  // A shared message pasted in: read with its lines, before the box joins them.
+  $('search-input').addEventListener('paste', (e) => {
+    const text = e.clipboardData?.getData('text/plain') || '';
+    if (!text.includes('\n') || !parseLocationText(text)) return;
+    e.preventDefault();
+    $('search-input').value = oneLine(text);
+    onSearchInput(text);
+  });
   $('search-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       clearTimeout(S.searchTimer);
       const q = $('search-input').value.trim();
+      // A link is already being opened: searching for its letters would only
+      // replace the place with "nothing found".
+      if (parseLocationText(q)) return;
       if (q.length >= 2) runSearch(q);
     }
   });
