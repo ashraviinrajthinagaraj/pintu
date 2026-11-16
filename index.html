@@ -388,14 +388,17 @@
   <div id="explore-status" class="route-status" role="status"></div>
 </section>
 
-<!-- A place tapped on the map -->
+<!-- A place found or tapped on the map, before going there -->
 <section id="placecard" class="sheet sheet-auto" hidden>
   <div class="sheet-grip" aria-hidden="true"></div>
   <div class="sheet-head">
     <button id="placecard-back" class="icon-btn" type="button"></button>
-    <div class="dest-title"><h2 id="placecard-name"></h2><p id="placecard-detail"></p></div>
+    <div class="dest-title"><h2 id="placecard-name"></h2><p id="placecard-detail" class="wrap"></p></div>
   </div>
   <button id="placecard-go" class="plate plate-btn sheet-action" type="button"></button>
+  <div class="car-links">
+    <button id="placecard-share" class="link-btn" type="button"></button>
+  </div>
 </section>
 
 <!-- Where the car is -->

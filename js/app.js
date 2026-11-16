@@ -345,6 +345,7 @@ function applyStaticText() {
   label($('placecard-back'), t('back'), UI.close);
   label($('explore-back'), t('back'), UI.close);
   $('placecard-go').textContent = t('goHere');
+  $('placecard-share').textContent = t('sharePlace');
   $('explore-title').textContent = t('exploreTitle');
   $('explore-row').setAttribute('aria-label', t('exploreAria'));
   for (const b of document.querySelectorAll('.explore-chip')) {
@@ -775,6 +776,9 @@ addEventListener('popstate', (e) => {
 
 // Whatever covers the bottom of the map decides where the map's own controls sit.
 const bottomObserver = 'ResizeObserver' in window ? new ResizeObserver(() => updateBottomInset()) : null;
+// Sheets slide up a little as they open, so they're measured again once in place:
+// otherwise the map's credits end up just under the sheet's top edge.
+addEventListener('animationend', (e) => { if (e.target?.classList?.contains('sheet')) updateBottomInset(); });
 function observeBottom() {
   if (bottomObserver) {
     bottomObserver.disconnect();
@@ -1297,12 +1301,13 @@ function addRecent(place) {
   save('recents', [{ name, detail, lng, lat, country }, ...rest].slice(0, RECENT_LIMIT));
 }
 
+// Like a map app: the map flies to the place and shows it first, with the way to
+// go there. Back comes back to the list, to look at another.
 function chooseFromSearch(place) {
   $('search-input').blur();
   if (!place.unnamed) addRecent(place);
-  replaceHistory('preview');
-  S.stops = [];
-  openPreview(place);
+  show('idle');
+  showPlace(place, { from: 'search' });
 }
 
 function chooseSavedFromSearch(place) {
@@ -2614,20 +2619,69 @@ function goTo(place, { remember = true } = {}) {
 
 function onPlaceTap(place) {
   if (S.view !== 'idle' || (S.overlay && S.overlay !== 'placecard')) return;
-  const lang = getLang();
-  S.tapped = { name: place.name, detail: kindLabel(place.kind, lang), lng: place.lng, lat: place.lat, country: '' };
-  $('placecard-name').textContent = place.name;
-  const far = S.fix ? haversine([S.fix.lng, S.fix.lat], [place.lng, place.lat]) : null;
-  $('placecard-detail').textContent = [S.tapped.detail, far != null ? t('placeAway', { distance: fmtDistance(far) }) : ''].filter(Boolean).join(' · ');
-  mapView?.setDestination(place);
-  if (S.overlay !== 'placecard') openOverlay('placecard');
+  showPlace({ name: place.name, detail: kindLabel(place.kind, getLang()), lng: place.lng, lat: place.lat, country: '' }, { fly: false });
 }
 
+// A place to look at before deciding: its card, its pin, and, unless it was
+// tapped where it already is on the map, the map flown there.
+function showPlace(place, { from = 'map', fly = true } = {}) {
+  // How far back the main screen is: past the search too, if it came from one.
+  // A card already open keeps its own.
+  if (S.overlay !== 'placecard') S.tappedBack = from === 'search' ? 2 : 1;
+  S.tapped = place;
+  fillPlaceCard(place);
+  mapView?.setDestination(place);
+  if (S.overlay !== 'placecard') openOverlay('placecard');
+  if (fly) {
+    S.wantCenter = false;
+    flyToCard(place);
+  }
+  if (place.unnamed) nameTapped(place);
+}
+
+function fillPlaceCard(place) {
+  const far = S.fix ? haversine([S.fix.lng, S.fix.lat], [place.lng, place.lat]) : null;
+  $('placecard-name').textContent = place.name;
+  $('placecard-detail').textContent = [place.detail, far != null ? t('placeAway', { distance: fmtDistance(far) }) : ''].filter(Boolean).join(' · ');
+}
+
+// Over the place, in the part of the map the card doesn't cover. The card is
+// measured by its size, as it may still be sliding up.
+function flyToCard(place) {
+  const card = $('placecard');
+  const offset = matchMedia(LANDSCAPE).matches
+    ? [card.offsetWidth / 2, 0]
+    : [0, (PLACE_TOP_PX - card.offsetHeight) / 2];
+  mapView?.flyToPlace(place.lng, place.lat, offset);
+}
+const PLACE_TOP_PX = 110;   // the clock and the chips across the top
+
+// Only a position: the search service can usually put a name to it.
+async function nameTapped(place) {
+  try {
+    const named = await reversePlace(place.lng, place.lat);
+    if (!named || S.tapped !== place || S.overlay !== 'placecard') return;
+    // Its name, but the exact spot.
+    S.tapped = { ...named, lng: place.lng, lat: place.lat };
+    fillPlaceCard(S.tapped);
+  } catch { /* the position still works */ }
+}
+
+// Going there: back to the main screen first, so that back from the plan comes
+// back there too, and nothing is left behind a trip.
 function goTapped() {
   const place = S.tapped;
   if (!place) return;
   S.afterBack = () => goTo(place);
-  history.back();
+  history.go(-(S.tappedBack || 1));
+}
+
+// Anyone can open it: a map link with the exact spot, and the name in the message.
+function sharePlace() {
+  const p = S.tapped;
+  if (!p) return;
+  const url = `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
+  shareLink(url, [p.name, p.detail].filter(Boolean).join(', '), p.name);
 }
 
 function openExplore(category) {
@@ -5360,6 +5414,7 @@ function wire() {
   $('arrival-car-note').addEventListener('change', (e) => setCarNote(e.target.value));
   $('placecard-back').addEventListener('click', () => history.back());
   $('placecard-go').addEventListener('click', goTapped);
+  $('placecard-share').addEventListener('click', sharePlace);
   $('explore-back').addEventListener('click', () => history.back());
   for (const b of document.querySelectorAll('.explore-chip')) b.addEventListener('click', () => openExplore(b.dataset.cat));
   $('saved-work').addEventListener('click', () => goSaved('work'));

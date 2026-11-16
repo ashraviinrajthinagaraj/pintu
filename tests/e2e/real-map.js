@@ -302,10 +302,17 @@ async function toPreview(page) {
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
 }
 
+
+// A search result, then Go on the card it opens (for a place to go to): the way
+// to a route plan. Other searches (a stop, a start) take the result straight.
+async function pickPlace(page, n = 0) {
+  await page.locator('#search-results .place').nth(n).click();
+  if (await page.locator('#placecard').isVisible()) await page.click('#placecard-go');
+}
 const settle = (page, ms = 1500) => page.waitForTimeout(ms);
 
 const results = [];
@@ -733,6 +740,30 @@ await check('real library: tapping a place on the map opens its card', async () 
   assert.equal(await page.locator('#placecard-name').innerText(), 'Petronas Dari Peta');
   assert.match(await page.locator('#placecard-detail').innerText(), /Stesen minyak/);
   await page.screenshot({ path: `${shots}/r-place-card.png` });
+  await ctx.close();
+  assert.deepEqual(errors, []);
+});
+
+await check('real library: a place found is flown to, above its card', async () => {
+  const { ctx, page, errors } = await open(browser, { styleFor: async () => demoCity('day'), tiles: true });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat), P.a);
+  await page.evaluate(() => window.__map.jumpTo({ center: [101.60, 3.05], zoom: 12, pitch: 0 }));
+  await page.click('#where');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  await page.waitForSelector('#placecard:not([hidden])');
+  await page.waitForFunction(() => !window.__map.isMoving(), null, { timeout: 10000 });
+  await settle(page, 600);
+  const seen = await page.evaluate((at) => {
+    const p = window.__map.project(at);
+    return { x: p.x, y: p.y, zoom: window.__map.getZoom(), pitch: window.__map.getPitch(), cardTop: document.getElementById('placecard').getBoundingClientRect().top, w: innerWidth };
+  }, P.d);
+  assert.ok(seen.zoom >= 16.4, `close in: zoom ${seen.zoom}`);
+  assert.ok(Math.abs(seen.pitch - 55) < 1, 'in 3D, tilted');
+  assert.ok(seen.y > 120 && seen.y < seen.cardTop - 40, `the place is in view above the card: ${seen.y} with the card at ${seen.cardTop}`);
+  assert.ok(Math.abs(seen.x - seen.w / 2) < 4, 'and in the middle');
+  await page.screenshot({ path: `${shots}/r-place-found.png` });
   await ctx.close();
   assert.deepEqual(errors, []);
 });

@@ -71,6 +71,7 @@
       else if (base) this.layers.unshift(l);       // under the map's own roads: under all of the app's
       else this.layers.push(l);
     }
+    flyTo(o) { calls.push(['flyTo', o]); Object.assign(this.cam, { ...o, center: o.center || this.cam.center }); this.draw(); }
     easeTo(o) { calls.push(['easeTo', o]); Object.assign(this.cam, { ...o, center: o.center || this.cam.center }); this.draw(); }
     fitBounds(b, o) {
       calls.push(['fitBounds', b, o]);

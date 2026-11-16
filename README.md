@@ -389,7 +389,13 @@ nearest hospitals (`amenity=hospital`: clinics are left out), each a tap away fr
 
 ## Places on the map, and nearby
 
-Tapping a named place on the map opens a card with what it is and how far, and a way to go there
+Choosing a place from search shows it before anything else, as map apps do: the map flies there,
+close and tilted in 3D, with its pin above a card saying where it is and how far, a button to go
+there and one to share it (a map link with the exact spot, which opens in any maps app). No route
+is asked for until you choose to go. Back returns to the results, to look at another; back from
+the route plan after going is the main screen.
+
+Tapping a named place on the map opens the same card, with what it is and how far
 (`_placeTap` in `js/map.js`, words from `js/kinds.js`). The chips at the top find places to visit,
 food, petrol, EV charging and hotels near you, or near the middle of the map without a position:
 from the map's tiles within 2.5 km, and from Overpass further out when there are fewer than eight

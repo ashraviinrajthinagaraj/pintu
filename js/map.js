@@ -1012,6 +1012,19 @@ export class MapView {
     }
   }
 
+  // Flown to from wherever the map was, as when you search for a place, and
+  // close enough to see it. `offset` puts it in the part the card leaves clear.
+  flyToPlace(lng, lat, offset = [0, 0]) {
+    this.map?.flyTo({
+      center: [lng, lat],
+      offset,
+      zoom: this.view3d ? 17 : 16.5,
+      pitch: this.view3d ? 55 : 0,
+      speed: 1.6,
+      maxDuration: 6000,
+    });
+  }
+
   centerOn(lng, lat, zoom = 15) {
     this.map?.easeTo({ center: [lng, lat], zoom: Math.max(zoom, this.view3d ? 16 : zoom), pitch: this.view3d ? 55 : 0, duration: 900 });
   }

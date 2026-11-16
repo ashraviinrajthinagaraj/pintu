@@ -78,6 +78,13 @@ function solatMonth(times) {
   };
 }
 
+// A search result, then Go on the card it opens (for a place to go to): the way
+// to a route plan. Other searches (a stop, a start) take the result straight.
+async function pickPlace(page, n = 0) {
+  await page.locator('#search-results .place').nth(n).click();
+  if (await page.locator('#placecard').isVisible()) await page.click('#placecard-go');
+}
+
 async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, alongData, solat, traffic, tomtom, fuel, init, hub } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
   const log = { stadia: 0, alongData: 0, fossgis: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
@@ -345,7 +352,7 @@ async function toPreview(page) {
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
 }
 
@@ -491,7 +498,7 @@ await check('no location permission explains how to fix it', async () => {
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.evaluate(() => window.__gps.deny());
   await page.waitForFunction(() => /perlukan lokasi/.test(document.getElementById('route-status').textContent));
   assert.equal(await page.locator('#start').isDisabled(), true);
@@ -505,7 +512,7 @@ await check('routing failure gives a clear message and retry works', async () =>
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForFunction(() => /Laluan tak dapat/.test(document.getElementById('route-status').textContent));
   assert.equal(await page.locator('#start').isDisabled(), true);
   log.routeFail = false;
@@ -524,7 +531,7 @@ await check('no road to the destination is explained', async () => {
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForFunction(() => /Tiada laluan jalan raya/.test(document.getElementById('route-status').textContent));
   await ctx.close();
 });
@@ -596,7 +603,7 @@ await check('toll expressway turns the sign green with its road number', async (
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
   await page.click('#start');
   await page.waitForSelector('#nav-bar');
@@ -621,7 +628,7 @@ await check('on a long trip only the next few kilometres of line are redrawn oft
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
   await page.click('#start');
   await page.waitForSelector('#nav-bar');
@@ -1458,7 +1465,7 @@ await check('stops: another place can be searched for, and back closes the panel
   await page.click('#stops-other');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').nth(1).click();
+  await pickPlace(page, 1);
   await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 1);
   await page.waitForTimeout(100);
   assert.equal(await vis(page, '#search'), false);
@@ -1635,7 +1642,7 @@ await check('solat: a prayer that comes in during the trip is mentioned before y
   await page.waitForFunction(() => localStorage.getItem('pintu.solat'));
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
   assert.match(await text(page, '#plan-prayer-title'), /Waktu Maghrib masuk/);
   assert.equal(await page.locator('#preview-strip .mark-prayer').count(), 1);
@@ -1750,7 +1757,7 @@ await check('starting point: search for one, and the buttons say what you can do
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
   assert.equal(await vis(page, '#search-quick'), false);
-  await page.locator('#search-results .place').nth(1).click();
+  await pickPlace(page, 1);
   await page.waitForFunction(() => /KLCC Park/.test(document.getElementById('from-name').textContent));
   await page.waitForSelector('.route-opt');
   assert.equal(await vis(page, '#search'), false);
@@ -1782,7 +1789,7 @@ await check('starting point: search for one, and the buttons say what you can do
   await page.click('#from-row');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').nth(1).click();
+  await pickPlace(page, 1);
   await page.waitForFunction(() => /KLCC Park/.test(document.getElementById('from-name').textContent));
   await page.click('#preview-back');
   await page.waitForSelector('#where');
@@ -1799,7 +1806,7 @@ await check('starting point: previewing it, then coming back to the same plan', 
   await page.click('#from-row');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').nth(1).click();
+  await pickPlace(page, 1);
   await page.waitForFunction(() => document.getElementById('start').textContent === 'Pratonton' && !document.getElementById('start').disabled);
   const asked = log.fossgis.length;
   await page.click('#start');
@@ -1855,7 +1862,7 @@ await check('starting point: swap the two ends, and change the destination from 
   assert.equal(await vis(page, '#search-quick'), false);
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').nth(1).click();
+  await pickPlace(page, 1);
   await page.waitForFunction(() => /KLCC Park/.test(document.getElementById('dest-name').textContent));
   await page.waitForSelector('.route-opt');
   assert.deepEqual(ends(log.fossgis.at(-1)), [P.a, [101.71, 3.14]]);
@@ -1896,14 +1903,14 @@ await check('starting point: a way forward when your location is off', async () 
   await page.click('#where');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForTimeout(50);
   await page.evaluate(() => window.__gps.deny());
   await page.waitForFunction(() => /perlukan lokasi/.test(document.getElementById('route-status').textContent));
   await page.locator('#route-status button', { hasText: 'Pilih titik mula' }).click();
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').nth(1).click();
+  await pickPlace(page, 1);
   await page.waitForSelector('.route-opt');
   assert.deepEqual(ends(log.fossgis.at(-1))[0], [101.71, 3.14]);
   assert.equal(await text(page, '#start'), 'Pratonton');
@@ -2579,7 +2586,7 @@ await check('HUD: arriving leaves it, and it follows a simulated drive', async (
 const typeAndPick = async (page, value) => {
   await page.fill('#search-input', value);
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
 };
 
@@ -3741,7 +3748,7 @@ await check('home and work: set from search, shown with the journey time, one ta
   assert.equal(await vis(page, '#search-quick'), true, 'here, or on the map');
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('#idle:not([hidden])');
   await page.waitForFunction(() => /sampai/.test(document.getElementById('saved-home-detail').textContent));
   assert.match(await text(page, '#saved-home-detail'), /min, sampai \d/);
@@ -4048,6 +4055,54 @@ await check('map: tap a place to see what it is, and go there', async () => {
   await page.click('#preview-back');
   await page.click('#where');
   assert.match(await text(page, '#recents'), /Muzium Negara/, 'remembered with the recent places');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('search: the map flies to the place found and shows it first; back to the list; go from there', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2 });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  await page.click('#where');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await page.locator('#search-results .place').first().click();
+  // The place, on the map and on its card, and no route asked for yet.
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.equal(await text(page, '#placecard-name'), 'Suria KLCC');
+  assert.match(await text(page, '#placecard-detail'), /Jalan Ampang.* · \d.* dari anda$/);
+  assert.equal(await vis(page, '#search'), false);
+  assert.equal(await vis(page, '#preview'), false);
+  assert.equal(log.fossgis.length, 0, 'no route until you choose to go');
+  const fly = await page.evaluate(() => window.__mapCalls.filter((c) => c[0] === 'flyTo').at(-1)?.[1]);
+  assert.deepEqual(fly.center, P.d, 'flown to the place');
+  assert.ok(fly.zoom >= 16.5, 'close enough to see it');
+  assert.ok(fly.offset[1] < 0, 'and above the card');
+  assert.equal(await page.locator('.dest-pin').count(), 1, 'with its pin');
+  await page.screenshot({ path: `${shots}/62-place-found.png` });
+  await noOverflow(page, 'place found');
+  // Sharing it: a map link anyone can open, with its name.
+  await page.evaluate(() => { navigator.share = async (d) => { window.__shared = d; }; });
+  await page.click('#placecard-share');
+  const shared = await page.evaluate(() => window.__shared);
+  assert.match(shared.url, /^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=3\.\d+,101\.\d+$/);
+  assert.match(shared.text, /Suria KLCC/);
+  // Back: the list again, to look at another.
+  await page.goBack();
+  await page.waitForSelector('#search:not([hidden])');
+  assert.equal(await page.locator('#search-results .place').count(), 2, 'the same results');
+  assert.equal(await page.locator('.dest-pin').count(), 0, 'its pin goes with it');
+  await page.locator('#search-results .place').nth(1).click();
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.match(await text(page, '#placecard-name'), /KLCC Park/);
+  // Going there plans the route; back from the plan is the main screen.
+  await page.click('#placecard-go');
+  await page.waitForSelector('.route-opt');
+  assert.match(await text(page, '#dest-name'), /KLCC Park/);
+  assert.ok(Math.abs(log.fossgis.at(-1).locations.at(-1).lon - 101.71) < 1e-9);
+  await page.click('#preview-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.equal(await vis(page, '#placecard'), false);
+  assert.equal(await vis(page, '#search'), false);
   assert.deepEqual(log.errors, []);
   await ctx.close();
 });
@@ -4425,7 +4480,7 @@ await check('voice search: a refused microphone says how to fix it; silence asks
   // Asking for "home" while choosing a stop looks for that word, it doesn't leave the plan.
   await page.fill('#search-input', 'klcc');
   await page.waitForSelector('#search-results .place');
-  await page.locator('#search-results .place').first().click();
+  await pickPlace(page);
   await page.waitForSelector('.route-opt');
   await page.click('#add-stop');
   await page.locator('#stops-other').click();
