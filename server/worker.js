@@ -37,7 +37,7 @@ const HUB_POSTS = ['/share/start', '/share/update', '/share/end', '/reports/add'
 const HUB_MAX_BODY = 20000;
 const hubOf = (env) => env.HUB.get(env.HUB.idFromName('pintu'));
 
-const SERVER_VERSION = '2026-11-17.1';
+const SERVER_VERSION = '2026-11-17.2';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];

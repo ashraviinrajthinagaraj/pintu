@@ -2646,6 +2646,7 @@ await check('shared links: a pasted message keeps its name for when the link fai
     if (u.includes('good')) return { lat: 3.145, lng: 101.705, name: 'Tempat Rahsia', url: 'https://www.google.com/maps/place/x' };
     if (u.includes('ftid=')) return { lat: 3.1579, lng: 101.7116, name: 'Suria KLCC', url: u };
     if (u.includes('turnedaway')) return { url: u, blocked: true };
+    if (u.includes('faraway')) return { name: 'Kedai Jauh', url: 'https://www.google.com/maps/place/Kedai+Jauh/data=!4m2!3m1!1s0x3e2e:0x1', near: { lat: 5.41, lng: 100.33 } };
     return null;
   };
   const { ctx, page, log } = await newApp(browser, { ...quiet, appServer });
@@ -2672,6 +2673,12 @@ await check('shared links: a pasted message keeps its name for when the link fai
   await page.waitForFunction(() => /tak benarkan/.test(document.getElementById('search-status').textContent));
   assert.equal(log.photon.length, before);
   assert.equal(await page.locator('#search-results .place').count(), 0);
+  // Only roughly where: the name is looked for around there, not around you.
+  await page.fill('#search-input', 'https://maps.app.goo.gl/faraway');
+  await page.waitForFunction(() => document.querySelectorAll('#search-results .place').length > 0);
+  const asked = new URL(log.photon.at(-1), 'https://x');
+  assert.equal(asked.searchParams.get('q'), 'Kedai Jauh');
+  assert.deepEqual([asked.searchParams.get('lat'), asked.searchParams.get('lon')], ['5.4100', '100.3300']);
   // A link that works, then Enter on the keyboard: the place stays.
   await page.fill('#search-input', 'https://maps.app.goo.gl/good');
   await page.waitForFunction(() => document.querySelector('#search-results .place')?.textContent.includes('Tempat Rahsia'));

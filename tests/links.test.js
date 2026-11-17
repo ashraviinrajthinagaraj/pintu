@@ -169,5 +169,9 @@ test('makes sense of the server\'s answer', () => {
   assert.deepEqual(readResolved({ url: 'https://www.google.com/maps/place/Kedai+Kopi' }), { kind: 'search', query: 'Kedai Kopi' });
   assert.deepEqual(readResolved({ url: 'https://www.google.com/maps' }, 'Nama'), { kind: 'search', query: 'Nama' });
   assert.deepEqual(readResolved({}), { kind: 'unknown' });
+  // No position, but roughly where: the name is looked for around there.
+  const shop = { name: 'Kedai Kopi', url: 'https://www.google.com/maps/place/Kedai+Kopi/data=!4m2!3m1!1s0x31cc:0x1', near: { lat: 3.15, lng: 101.71 } };
+  assert.deepEqual(readResolved(shop), { kind: 'search', query: 'Kedai Kopi', near: { lat: 3.15, lng: 101.71 } });
+  assert.deepEqual(readResolved({ ...shop, near: { lat: 95, lng: 400 } }), { kind: 'search', query: 'Kedai Kopi' }, 'not from nonsense');
   assert.deepEqual(readResolved({ lat: 200, lng: 101 }), { kind: 'unknown' });
 });

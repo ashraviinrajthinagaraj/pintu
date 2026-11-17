@@ -453,6 +453,14 @@ A message pasted from Google Maps' share button keeps its lines while it's read,
 name on the first line is kept: it names the place, and is searched for if the link can't be
 followed at all. Pressing Enter while a link is being opened doesn't search for the link's letters.
 
+A Google page is never trusted for where its map is looking: that's wherever Google thinks the one
+asking is, which for this server can be another continent. Only the place's own position counts,
+in the link's address or in the page. Google's links also carry its id for the place (`0x…:0x…`,
+or a `ChIJ…` place id), whose first part is a cell of Google's grid over the earth with the place
+in it, good to about 10 km (`googleArea` in `server/links.js`). A position far from that cell isn't
+the place's and is dropped; with none left, the place's name is searched for around that cell
+rather than around you.
+
 Google sometimes turns away the address the server reaches it from, which it shares with many
 other sites, and answers with its "unusual traffic" page instead of the place. When that happens
 the link is followed again from far away, by copies of the hub that Cloudflare places in America

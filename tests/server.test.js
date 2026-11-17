@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import worker from '../server/worker.js';
+import { googleArea } from '../server/links.js';
 import { forgetCounts } from '../server/tomtom.js';
 import { CHARACTER_IDS } from '../js/characters.js';
 
@@ -126,16 +127,44 @@ test('gives up after a sensible number of hops', async () => {
   assert.ok(asked.length <= 6, String(asked.length));
 });
 
-test('reads the position from the page when the address has none', async () => {
-  const url = 'https://www.google.com/maps/place/Kedai+Kopi/data=!4m2!3m1!1s0x0';
-  internet({
-    'https://maps.app.goo.gl/AbC': redirect(url),
-    [url]: page('<html><meta content="https://maps.google.com/maps/api/staticmap?center=3.1579%2C101.7116&zoom=15"></html>'),
-  });
+// Real ids from Google's links, with where the places really are.
+const CUBA = { id: '0x88d3a0b2d6e50081:0x71b3d83716c16d55', lat: 23.194647, lng: -81.16556 };
+const RIYADH = { id: '0x3e2ee310aa8d2a99:0x6b3c7285c552b1ac', lat: 24.7640327, lng: 46.6532401 };
+const km = (a, b) => Math.hypot((a.lng - b.lng) * Math.cos((a.lat * Math.PI) / 180), a.lat - b.lat) * 111.32;
+
+test('Google\'s id for a place says roughly where it is, within a few kilometres', () => {
+  for (const place of [CUBA, RIYADH]) {
+    for (const text of [`data=!4m2!3m1!1s${place.id}`, `?q=X&ftid=${place.id.replace(':', '%3A')}`]) {
+      const area = googleArea(text);
+      assert.ok(km(area, place) < 6, `${text}: ${km(area, place)} km`);
+    }
+  }
+  // Inside a place id: Google's own example, its old Sydney office.
+  assert.ok(km(googleArea('place_id:ChIJN1t_tDeuEmsRUsoyG83frY4'), { lat: -33.8670522, lng: 151.1957362 }) < 6);
+  for (const none of ['https://www.google.com/maps/place/Kedai', '!1s0!7e2', 'place_id:ChIJshort', '0xZZ:0x1']) assert.equal(googleArea(none), null, none);
+});
+
+test('a page\'s map looks wherever Google thinks the asker is: never taken for the place', async () => {
+  // The share link of a shop in Riyadh, followed by a server in America: the
+  // page's map is centred on America, and has no position of the shop's own.
+  const url = `https://www.google.com/maps/place/Kedai+Kopi/data=!4m2!3m1!1s${RIYADH.id}?entry=gps`;
+  const america = '<meta content="https://maps.google.com/maps/api/staticmap?center=37.4%2C-122.08&zoom=15"> @37.4,-122.08,15z !1d2770995!2d-122.08!3d37.4!2m3';
+  internet({ 'https://maps.app.goo.gl/AbC': redirect(url), [url]: page(america) });
   const body = await (await ask(linkTo('https://maps.app.goo.gl/AbC'))).json();
-  assert.equal(body.lat, 3.1579);
-  assert.equal(body.lng, 101.7116);
+  assert.equal(body.lat, undefined);
   assert.equal(body.name, 'Kedai Kopi');
+  assert.ok(km(body.near, RIYADH) < 6, 'but where to look for it by name');
+  // The place's own spot in the page is taken, if it's where the id says.
+  internet({ 'https://maps.app.goo.gl/AbC': redirect(url), [url]: page(`${america} %218m2%213d24.7640327%214d46.6532401`) });
+  const own = await (await ask(linkTo('https://maps.app.goo.gl/AbC'))).json();
+  assert.deepEqual([own.lat, own.lng], [24.7640327, 46.6532401]);
+  // But not one from the other side of the world.
+  internet({ 'https://maps.app.goo.gl/AbC': redirect(url), [url]: page('!8m2!3d37.4!4d-122.08') });
+  assert.equal((await (await ask(linkTo('https://maps.app.goo.gl/AbC'))).json()).lat, undefined);
+  // Nor one written in the address itself.
+  internet({ 'https://maps.app.goo.gl/AbC': redirect(`https://www.google.com/maps/place/Kedai+Kopi/@37.4,-122.08,15z/data=!4m2!3m1!1s${RIYADH.id}`), [url]: page('') });
+  const wrongAddress = await (await ask(linkTo('https://maps.app.goo.gl/AbC'))).json();
+  assert.equal(wrongAddress.lat, undefined);
 });
 
 test('only ever returns a position and an address, never a page', async () => {
@@ -161,16 +190,24 @@ async function spotInPage(text) {
   return (await ask(linkTo('https://maps.app.goo.gl/AbC'))).json();
 }
 
-test('finds a position written in all the usual ways', async () => {
+// The address a short link leads to, with this added, and a page with nothing.
+async function spotInAddress(extra) {
+  const url = `https://www.google.com/maps${extra}`;
+  internet({ 'https://maps.app.goo.gl/AbC': redirect(url), [url]: page('') });
+  return (await ask(linkTo('https://maps.app.goo.gl/AbC'))).json();
+}
+
+test('finds a position written in an address in all the usual ways; in a page, only the place\'s own', async () => {
   for (const text of [
-    'x!3d3.15!4d101.7y', '?q=3.15,101.7', '&ll=3.15%2C101.7', '/maps/place/3.15,101.7', '/maps/search/3.15,+101.7',
-    '@3.15,101.7,17z', 'center=3.15%2C101.7', '?destination=3.15,101.7',
+    '/x!3d3.15!4d101.7y', '?q=3.15,101.7', '?x=1&ll=3.15%2C101.7', '/place/3.15,101.7', '/search/3.15,+101.7',
+    '/@3.15,101.7,17z', '?center=3.15%2C101.7', '?destination=3.15,101.7',
   ]) {
-    const body = await spotInPage(text);
+    const body = await spotInAddress(text);
     assert.equal(body.lat, 3.15, text);
     assert.equal(body.lng, 101.7, text);
   }
-  for (const text of ['nothing here', '@95.5,300.5,17z', '@0.0,0.0,2z']) {
+  assert.equal((await spotInPage('x!3d3.15!4d101.7y')).lat, 3.15);
+  for (const text of ['nothing here', '@95.5,300.5,17z', '@0.0,0.0,2z', '@3.15,101.7,17z', 'center=3.15%2C101.7', '?q=3.15,101.7']) {
     assert.equal((await spotInPage(text)).lat, undefined, text);
   }
 });

@@ -1215,7 +1215,7 @@ async function openShared(shared) {
     renderSearch([found.place]);
   } else if (found.kind === 'search') {
     status.textContent = t('searching');
-    runSearch(found.query);
+    runSearch(found.query, { near: found.near });
   } else if (found.kind === 'blocked') {
     status.textContent = t('linkBlocked');
     renderSearch([]);
@@ -1284,15 +1284,17 @@ function openIncoming() {
 
 const oneLine = (text) => text.split('\n').map((s) => s.trim()).filter(Boolean).join(' ');
 
-async function runSearch(q) {
+// Looked for around you, or around `near` when a shared link says roughly where.
+async function runSearch(q, { near = null } = {}) {
   const ctrl = new AbortController();
   S.searchCtrl = ctrl;
+  const around = near || S.fix;
   try {
     // Places by name from the usual search, street addresses from TomTom.
     let failed = null;
-    const named = searchPlaces(q, { near: S.fix, signal: ctrl.signal }).catch((e) => { failed = e; return []; });
+    const named = searchPlaces(q, { near: around, signal: ctrl.signal }).catch((e) => { failed = e; return []; });
     const addresses = CONFIG.server && q.length >= 4 && !parseCoordinates(q)
-      ? searchAddresses(q, S.fix, { signal: ctrl.signal }).catch(() => [])
+      ? searchAddresses(q, around, { signal: ctrl.signal }).catch(() => [])
       : Promise.resolve([]);
     const [a, b] = await Promise.all([named, addresses]);
     if (ctrl.signal.aborted) return;

@@ -189,7 +189,11 @@ export function readResolved(answer, name = '') {
   }
   const read = answer?.url ? readMapUrl(answer.url) : null;
   if (read?.lat != null) return { kind: 'place', place: toPlace(read, name) };
-  if (read?.query) return { kind: 'search', query: read.query };
-  if (name) return { kind: 'search', query: name };
+  // No position, but often roughly where (from Google's id for the place): its
+  // name is looked for around there rather than around you.
+  const near = Number.isFinite(answer?.near?.lat) && Number.isFinite(answer?.near?.lng) && valid(answer.near.lat, answer.near.lng)
+    ? { lat: answer.near.lat, lng: answer.near.lng } : null;
+  const query = read?.query || answer?.name || name;
+  if (query) return near ? { kind: 'search', query, near } : { kind: 'search', query };
   return { kind: 'unknown' };
 }
