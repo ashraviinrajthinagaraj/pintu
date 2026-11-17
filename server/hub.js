@@ -11,6 +11,8 @@
 // One Durable Object holds it all in its own small SQLite database. Nothing here
 // says who anyone is: names are whatever people type, and a phone is a random code.
 
+import { allowedStart, followLink } from './links.js';
+
 // Malaysia has no summer time, so local time is always eight hours ahead.
 export const LOCAL_OFFSET_MS = 8 * 3600e3;
 
@@ -304,7 +306,21 @@ export class Hub {
       case '/marks': return this.markList(q.get('bbox'));
       case '/remind/off': return this.remindOff(body);
       case '/cron': return json(await this.cron());
+      case '/follow': return this.follow(q.get('u'));
       default: return nope('not found', 404);
+    }
+  }
+
+  /* ----- A map link, followed from wherever this copy of the hub is ----- */
+
+  async follow(raw) {
+    const start = allowedStart(raw || '');
+    if (!start) return nope('not a map link');
+    const trail = [];
+    try {
+      return json({ ...(await followLink(start, trail, this.fetchImpl)), trail });
+    } catch (err) {
+      return json({ error: err.message, trail }, 502);
     }
   }
 

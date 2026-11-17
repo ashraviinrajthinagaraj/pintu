@@ -119,6 +119,14 @@ test('a Google link to one place by its id, without where it is, goes to the ser
   assert.equal(parseLocationText('https://example.com/maps?cid=123'), null);
 });
 
+test('Google\'s "unusual traffic" page is never read as a place, and a blocked link says so', () => {
+  assert.equal(readMapUrl('https://www.google.com/sorry/index?continue=https://maps.app.goo.gl/e5Pw7&q=EgSinIgoGKa87tcG'), null);
+  assert.deepEqual(readResolved({ url: 'https://www.google.com/sorry/index?q=EgSinIgo' }), { kind: 'unknown' });
+  assert.deepEqual(readResolved({ url: 'https://maps.app.goo.gl/e5Pw7', blocked: true }), { kind: 'blocked' });
+  // With the name that came with the link, that's searched for instead.
+  assert.deepEqual(readResolved({ url: 'https://maps.app.goo.gl/e5Pw7', blocked: true }, 'Suria KLCC'), { kind: 'search', query: 'Suria KLCC' });
+});
+
 test('plain coordinates, with or without a comma', () => {
   near(spot('3.1579, 101.7116').lat, 3.1579);
   near(spot('3.1579 101.7116').lng, 101.7116);

@@ -453,9 +453,17 @@ A message pasted from Google Maps' share button keeps its lines while it's read,
 name on the first line is kept: it names the place, and is searched for if the link can't be
 followed at all. Pressing Enter while a link is being opened doesn't search for the link's letters.
 
+Google sometimes turns away the address the server reaches it from, which it shares with many
+other sites, and answers with its "unusual traffic" page instead of the place. When that happens
+the link is followed again from far away, by copies of the hub that Cloudflare places in America
+and then Europe (`AWAY` in `server/worker.js`, the following itself in `server/links.js`). If
+Google turns those away too, Pintu says so, and searches for the place's name if one came with the
+link; it never searches for the code in Google's page address.
+
 To check from a browser what the server makes of a link, open
 `https://pintu.ashraviinrajthinagaraj.workers.dev/link?check=` followed by the link: it shows where
-the link leads, how long it took and each step on the way.
+the link leads, how long it took and each step on the way. Adding `&from=wnam` (or `weur`) asks
+only that far copy.
 
 ### Searching on Google Maps
 

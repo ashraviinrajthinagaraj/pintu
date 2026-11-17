@@ -46,6 +46,24 @@ function hub({ env = {}, fetchImpl } = {}) {
   return { h, call, pushes, fetched, tick: (ms) => { now += ms; }, now: () => now };
 }
 
+test('a copy of the hub follows a map link from wherever it is, and only map links', async () => {
+  const fetched = [];
+  const { call } = hub({
+    fetchImpl: async (url) => {
+      fetched.push(String(url));
+      return new Response(null, { status: 302, headers: { location: 'https://www.google.com/maps/place/Suria+KLCC/data=!3d3.1579!4d101.7116' } });
+    },
+  });
+  const found = await call(`/follow?u=${encodeURIComponent('https://maps.app.goo.gl/e5Pw7')}`);
+  assert.equal(found.status, 200);
+  assert.equal(found.body.lat, 3.1579);
+  assert.equal(found.body.name, 'Suria KLCC');
+  assert.deepEqual(found.body.trail, ['302 maps.app.goo.gl/e5Pw7']);
+  assert.deepEqual(fetched, ['https://maps.app.goo.gl/e5Pw7']);
+  assert.equal((await call(`/follow?u=${encodeURIComponent('https://evil.example/x')}`)).status, 400);
+  assert.equal(fetched.length, 1);
+});
+
 const POS = { lng: 101.7123, lat: 3.1579, heading: 90, speed: 12 };
 const DEST = { name: 'Rumah <b>Mak</b>', lng: 101.75, lat: 3.2 };
 const DEVICE = 'abcdefghjkmnpqrs';

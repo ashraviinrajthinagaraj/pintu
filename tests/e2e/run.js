@@ -2645,6 +2645,7 @@ await check('shared links: a pasted message keeps its name for when the link fai
     const u = url.searchParams.get('u');
     if (u.includes('good')) return { lat: 3.145, lng: 101.705, name: 'Tempat Rahsia', url: 'https://www.google.com/maps/place/x' };
     if (u.includes('ftid=')) return { lat: 3.1579, lng: 101.7116, name: 'Suria KLCC', url: u };
+    if (u.includes('turnedaway')) return { url: u, blocked: true };
     return null;
   };
   const { ctx, page, log } = await newApp(browser, { ...quiet, appServer });
@@ -2665,6 +2666,12 @@ await check('shared links: a pasted message keeps its name for when the link fai
   assert.ok(log.server.some((u) => u.includes('maps.app.goo.gl%2Fbad')), log.server.join());
   assert.ok(log.photon.at(-1).includes('q=Kedai+Rahsia'), log.photon.at(-1));
   assert.doesNotMatch(await text(page, '#search-status'), /tak dapat dibuka/);
+  // Google turning the server away: said so, not searched for as gibberish.
+  const before = log.photon.length;
+  await page.fill('#search-input', 'https://maps.app.goo.gl/turnedaway');
+  await page.waitForFunction(() => /tak benarkan/.test(document.getElementById('search-status').textContent));
+  assert.equal(log.photon.length, before);
+  assert.equal(await page.locator('#search-results .place').count(), 0);
   // A link that works, then Enter on the keyboard: the place stays.
   await page.fill('#search-input', 'https://maps.app.goo.gl/good');
   await page.waitForFunction(() => document.querySelector('#search-results .place')?.textContent.includes('Tempat Rahsia'));

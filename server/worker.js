@@ -26,6 +26,7 @@
 // Shown when the server's address is opened, so it's clear which code is running.
 import { TOMTOM_POSTS, allowed, tomtomRoute, trafficCheck } from './tomtom.js';
 import { fuelCheck, fuelRoute } from './fuel.js';
+import { allowedStart, followLink } from './links.js';
 
 // The hub is a Durable Object, which Cloudflare finds by this name.
 export { Hub } from './hub.js';
@@ -36,17 +37,10 @@ const HUB_POSTS = ['/share/start', '/share/update', '/share/end', '/reports/add'
 const HUB_MAX_BODY = 20000;
 const hubOf = (env) => env.HUB.get(env.HUB.idFromName('pintu'));
 
-const SERVER_VERSION = '2026-11-08.5';
+const SERVER_VERSION = '2026-11-17.1';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
-
-const START_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|share\.google|maps\.apple|maps\.apple\.com)$/i;
-// A full Google Maps link that names a place by Google's id but not where it is.
-const GOOGLE_MAPS = /^((www|maps)\.)?google\.(com|[a-z]{2}|com?\.[a-z]{2})$/i;
-const FOLLOW_HOSTS = /^(maps\.app\.goo\.gl|goo\.gl|g\.co|share\.google|maps\.apple|maps\.apple\.com|consent\.google\.com|((www|maps)\.)?google\.[a-z]{2,3}(\.[a-z]{2})?)$/i;
-const MAX_HOPS = 6;
-const MAX_PAGE_BYTES = 800000;
 
 const WARNINGS_URL = 'https://api.data.gov.my/weather/warning';
 const MALLS = {
@@ -68,119 +62,50 @@ function reply(body, origin, status = 200, extra = {}) {
   });
 }
 
-function allowedStart(raw) {
-  let url;
-  try { url = new URL(raw); } catch { return null; }
-  if (url.protocol !== 'https:' || url.port || url.username || url.password) return null;
-  if (GOOGLE_MAPS.test(url.hostname) && (url.pathname.startsWith('/maps') || /^maps\./i.test(url.hostname))) return url;
-  if (!START_HOSTS.test(url.hostname)) return null;
-  // goo.gl and g.co shorten everything. Only map links are this server's business.
-  if (/^goo\.gl$/i.test(url.hostname) && !url.pathname.startsWith('/maps')) return null;
-  if (/^g\.co$/i.test(url.hostname) && !url.pathname.startsWith('/kgs')) return null;
-  return url;
-}
+// Google sometimes turns away the address this server reaches it from (it's
+// shared with many others), answering with its "unusual traffic" page. Then the
+// link is followed again from far away, by copies of the hub placed in America
+// and then Europe, which reach Google from other addresses.
+const AWAY = ['wnam', 'weur'];
+const awayOf = (env, where) => env.HUB.get(env.HUB.idFromName(`links-${where}`), { locationHint: where });
 
-function allowedHop(url) {
-  return url.protocol === 'https:' && !url.port && !url.username && !url.password && FOLLOW_HOSTS.test(url.hostname);
-}
-
-const validSpot = (lat, lng) => Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
-
-// A position written in a map address or page. In a page, Google's own codes are
-// often escaped (%21 for !), and the exact spot of the place beats where the map
-// was looking, which comes first.
-function findSpot(raw) {
-  const text = raw.replace(/%21/gi, '!');
-  const patterns = [
-    /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
-    /[?&](?:q|query|ll|center|destination|daddr)=(-?\d+\.\d+)(?:,|%2C)\+?(-?\d+\.\d+)/,
-    /\/maps\/(?:place|search|dir)\/(?:[^/]*\/)*(-?\d+\.\d+)(?:,|%2C)\+?(-?\d+\.\d+)/,
-    /@(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /center=(-?\d+\.\d+)(?:%2C|,)(-?\d+\.\d+)/,
-    /[?&]coordinate=(-?\d+\.\d+)(?:,|%2C)(-?\d+\.\d+)/,
-  ];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m && validSpot(Number(m[1]), Number(m[2]))) return { lat: Number(m[1]), lng: Number(m[2]) };
+// `from` asks only that far copy, for checking that it works.
+async function resolveLink(start, env, trail = null, from = null) {
+  const here = from ? { url: start.href, blocked: true } : await followLink(start, trail);
+  if (!here.blocked || !env?.HUB) return here;
+  for (const where of from ? [from] : AWAY) {
+    trail?.push(`turned away; asking from ${where}`);
+    try {
+      const res = await awayOf(env, where).fetch(new Request(`https://hub/follow?u=${encodeURIComponent(start.href)}`));
+      const away = await res.json();
+      trail?.push(...(away.trail || []));
+      if (res.ok && !away.blocked) {
+        delete away.trail;
+        return away;
+      }
+    } catch { /* the next, or give up */ }
   }
-  return null;
-}
-
-function placeName(url) {
-  const m = url.pathname.match(/\/maps\/place\/([^/]+)/);
-  if (!m) return url.searchParams.get('q') && !findSpot(url.href) ? url.searchParams.get('q') : '';
-  try { return decodeURIComponent(m[1].replace(/\+/g, ' ')); } catch { return ''; }
+  return here;
 }
 
 // For anyone checking from a browser: what a link comes to, from this server,
 // and each step on the way. 200 with a position, 206 with only an address,
 // otherwise Google's answer where it stopped, or 502.
-async function linkCheck(raw) {
+async function linkCheck(raw, env, from) {
   const text = (body, status) => new Response(body, { status, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
   const start = allowedStart(raw || '');
   if (!start) return text('Link: not a map link.', 400);
   const trail = [];
   const began = Date.now();
   try {
-    const found = await followLink(start, trail);
+    const found = await resolveLink(start, env, trail, AWAY.includes(from) ? from : null);
     const took = `${Date.now() - began} ms`;
     if (Number.isFinite(found.lat)) return text(`Link: ${found.lat}, ${found.lng} "${found.name || ''}" in ${took}.\n${trail.join('\n')}`, 200);
-    return text(`Link: no position${found.refused ? `, Google answered ${found.refused}` : ''}, in ${took}.\n${trail.join('\n')}\n${found.url}`, found.refused || 206);
+    const why = found.blocked ? ', Google turned it away' : found.refused ? `, Google answered ${found.refused}` : '';
+    return text(`Link: no position${why}, in ${took}.\n${trail.join('\n')}\n${found.url}`, found.blocked ? 429 : found.refused || 206);
   } catch (err) {
     return text(`Link: failed (${err.message}) in ${Date.now() - began} ms.\n${trail.join('\n')}`, 502);
   }
-}
-
-async function readSome(res) {
-  const reader = res.body?.getReader();
-  if (!reader) return '';
-  const decoder = new TextDecoder();
-  let text = '', size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    text += decoder.decode(value, { stream: true });
-    if (size >= MAX_PAGE_BYTES) { await reader.cancel(); break; }
-  }
-  return text;
-}
-
-// `trail`, if given, collects each step: the answer and where it was, for checking.
-async function followLink(start, trail = null) {
-  let url = start;
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
-    const res = await fetch(url.href, { redirect: 'manual', headers: { 'user-agent': AGENT, accept: 'text/html' } });
-    const next = res.headers.get('location');
-    trail?.push(`${res.status} ${url.hostname}${url.pathname.slice(0, 60)}`);
-    if (res.status >= 300 && res.status < 400 && next) {
-      const target = new URL(next, url);
-      if (!allowedHop(target)) return { url: url.href };
-      // A cookie question stands between us and the map. The answer is in its address.
-      const after = /^consent\.google\.com$/i.test(target.hostname) ? target.searchParams.get('continue') : null;
-      if (after) {
-        const carried = new URL(after);
-        if (!allowedHop(carried)) return { url: url.href };
-        url = carried;
-      } else {
-        url = target;
-      }
-      const spot = findSpot(url.href);
-      if (spot) return { ...spot, name: placeName(url), url: url.href };
-      continue;
-    }
-    if (!res.ok) {
-      // The short link itself is broken: an honest error.
-      if (hop === 0) throw new Error(`upstream ${res.status}`);
-      // Google wouldn't show the page. Its address still has the place's name
-      // or what was searched for, which Pintu can look up itself.
-      return { name: placeName(url), url: url.href, refused: res.status };
-    }
-    // Landed. The address had no position, but the page itself usually does.
-    const spot = findSpot(url.href) || findSpot(await readSome(res));
-    return { ...spot, name: placeName(url), url: url.href };
-  }
-  return { url: url.href };
 }
 
 // "UNIQLO [ G11-3 ]" with the page's tags taken out.
@@ -782,7 +707,7 @@ async function handle(request, origin, env, ctx) {
   if (url.pathname === '/link') {
     const start = allowedStart(url.searchParams.get('u') || '');
     if (!start) return reply({ error: 'not a map link' }, origin, 400);
-    return reply(await followLink(start), origin, 200, { 'cache-control': 'no-store' });
+    return reply(await resolveLink(start, env), origin, 200, { 'cache-control': 'no-store' });
   }
 
   if (url.pathname === '/warnings') {
@@ -828,7 +753,7 @@ export default {
       return new Response(`Pintu server is running. Version ${SERVER_VERSION}.`, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
     }
     if (url.pathname === '/fuel' && url.searchParams.has('check') && !origin && request.method === 'GET') return fuelCheck();
-    if (url.pathname === '/link' && url.searchParams.has('check') && !origin && request.method === 'GET') return linkCheck(url.searchParams.get('check'));
+    if (url.pathname === '/link' && url.searchParams.has('check') && !origin && request.method === 'GET') return linkCheck(url.searchParams.get('check'), env, url.searchParams.get('from'));
     if (url.pathname === '/traffic' && url.searchParams.has('check') && !origin && request.method === 'GET') {
       try { return await trafficCheck(env); } catch { return new Response('Traffic: could not reach TomTom.', { status: 502 }); }
     }

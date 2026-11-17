@@ -74,6 +74,9 @@ export function readMapUrl(raw) {
     return q ? { query: clean(q) } : null;
   }
 
+  // Google's "unusual traffic" page: its address holds a code, not a place.
+  if (/(^|\.)google\./i.test(url.hostname) && url.pathname.startsWith('/sorry')) return null;
+
   const full = url.href;
   const path = decodeURIComponent(url.pathname);
   const get = (k) => url.searchParams.get(k);
@@ -179,6 +182,8 @@ export async function resolveShortLink(url, { signal, fetchImpl = (...a) => fetc
 
 // The answer from the server, as a place or something to search for.
 export function readResolved(answer, name = '') {
+  // Google wouldn't say where it leads, to the server or anyone it asked.
+  if (answer?.blocked) return name ? { kind: 'search', query: name } : { kind: 'blocked' };
   if (Number.isFinite(answer?.lat) && Number.isFinite(answer?.lng) && valid(answer.lat, answer.lng)) {
     return { kind: 'place', place: toPlace({ lat: answer.lat, lng: answer.lng, name: answer.name || name }) };
   }

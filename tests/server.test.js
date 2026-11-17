@@ -201,7 +201,7 @@ test('Google refusing the page after the short link still gives the place to sea
   const url = 'https://www.google.com/maps?q=Suria+KLCC,+Kuala+Lumpur&ftid=0x31cc37d6:0x1';
   internet({
     'https://maps.app.goo.gl/AbC': redirect(url),
-    [url]: () => new Response('busy', { status: 429 }),
+    [url]: () => new Response('no', { status: 403 }),
   });
   const res = await ask(linkTo('https://maps.app.goo.gl/AbC'));
   assert.equal(res.status, 200);
@@ -209,10 +209,72 @@ test('Google refusing the page after the short link still gives the place to sea
   assert.equal(body.lat, undefined);
   assert.equal(body.url, url);
   assert.equal(body.name, 'Suria KLCC, Kuala Lumpur');
-  assert.equal(body.refused, 429);
+  assert.equal(body.refused, 403);
   // But a short link that doesn't exist is an error.
   internet({ 'https://maps.app.goo.gl/AbC': () => new Response('gone', { status: 404 }) });
   assert.equal((await ask(linkTo('https://maps.app.goo.gl/AbC'))).status, 502);
+});
+
+// What Google sends an address it has had too much from: its "unusual traffic" page.
+const SORRY = 'https://www.google.com/sorry/index?continue=https://maps.app.goo.gl/e5Pw7&q=EgSinIgoGKa87tcGIjDL9H313DTOiF7B2BIWItXjIgzRHUd';
+
+test('Google\'s "unusual traffic" page is said so, never read as a place to search for', async () => {
+  for (const turnAway of [redirect(SORRY), () => new Response('slow down', { status: 429 })]) {
+    internet({ 'https://maps.app.goo.gl/e5Pw7': turnAway, [SORRY]: () => new Response('sorry', { status: 429 }) });
+    const res = await ask(linkTo('https://maps.app.goo.gl/e5Pw7'));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, { url: 'https://maps.app.goo.gl/e5Pw7', blocked: true });
+  }
+});
+
+// Copies of the hub placed elsewhere, as Cloudflare would make them: each
+// answers as `answers[where]` says, and the places asked are kept.
+function awayHubs(answers) {
+  const asked = [];
+  return {
+    asked,
+    idFromName: (name) => name,
+    get: (id, options) => ({
+      fetch: async (req) => {
+        asked.push(`${id} ${options?.locationHint} ${new URL(req.url).pathname}?u=${new URL(req.url).searchParams.get('u')}`);
+        const answer = answers[options?.locationHint];
+        if (answer instanceof Error) throw answer;
+        return new Response(JSON.stringify(answer), { status: answer.error ? 502 : 200 });
+      },
+    }),
+  };
+}
+
+test('turned away by Google, the link is followed again from America, then Europe', async () => {
+  internet({ 'https://maps.app.goo.gl/e5Pw7': redirect(SORRY) });
+  const HUB = awayHubs({
+    wnam: { url: 'https://maps.app.goo.gl/e5Pw7', blocked: true, trail: ['302 maps.app.goo.gl/e5Pw7'] },
+    weur: { lat: 3.1579, lng: 101.7116, name: 'Suria KLCC', url: 'https://www.google.com/maps/place/Suria+KLCC', trail: ['302 maps.app.goo.gl/e5Pw7'] },
+  });
+  const res = await worker.fetch(new Request(`${HOME}${linkTo('https://maps.app.goo.gl/e5Pw7')}`, { headers: { origin: PINTU } }), { HUB });
+  const body = await res.json();
+  assert.deepEqual(body, { lat: 3.1579, lng: 101.7116, name: 'Suria KLCC', url: 'https://www.google.com/maps/place/Suria+KLCC' });
+  assert.deepEqual(HUB.asked, [
+    'links-wnam wnam /follow?u=https://maps.app.goo.gl/e5Pw7',
+    'links-weur weur /follow?u=https://maps.app.goo.gl/e5Pw7',
+  ]);
+  // Not turned away: nobody else is asked.
+  internet({ 'https://maps.app.goo.gl/AbC': redirect('https://www.google.com/maps/place/K/data=!3d3.2!4d101.6') });
+  const fine = awayHubs({});
+  await worker.fetch(new Request(`${HOME}${linkTo('https://maps.app.goo.gl/AbC')}`, { headers: { origin: PINTU } }), { HUB: fine });
+  assert.deepEqual(fine.asked, []);
+  // Turned away everywhere, or the others broken: still said plainly.
+  internet({ 'https://maps.app.goo.gl/e5Pw7': redirect(SORRY) });
+  // Checking a far copy on its own, from a browser.
+  const one = awayHubs({ weur: { lat: 3.2, lng: 101.6, name: 'K', url: 'u', trail: ['302 maps.app.goo.gl/e5Pw7'] } });
+  const checked = await worker.fetch(new Request(`${HOME}/link?check=${encodeURIComponent('https://maps.app.goo.gl/e5Pw7')}&from=weur`), { HUB: one });
+  assert.equal(checked.status, 200);
+  assert.match(await checked.text(), /^Link: 3\.2, 101\.6 "K".*\nturned away; asking from weur\n302 maps\.app\.goo\.gl\/e5Pw7$/s);
+  assert.deepEqual(one.asked, ['links-weur weur /follow?u=https://maps.app.goo.gl/e5Pw7']);
+  const nowhere = awayHubs({ wnam: new Error('down'), weur: { error: 'upstream 404' } });
+  const last = await (await worker.fetch(new Request(`${HOME}${linkTo('https://maps.app.goo.gl/e5Pw7')}`, { headers: { origin: PINTU } }), { HUB: nowhere })).json();
+  assert.deepEqual(last, { url: 'https://maps.app.goo.gl/e5Pw7', blocked: true });
 });
 
 test('a link can be checked from a browser: where it leads, and each step', async () => {

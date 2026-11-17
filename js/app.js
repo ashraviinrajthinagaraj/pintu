@@ -1216,6 +1216,9 @@ async function openShared(shared) {
   } else if (found.kind === 'search') {
     status.textContent = t('searching');
     runSearch(found.query);
+  } else if (found.kind === 'blocked') {
+    status.textContent = t('linkBlocked');
+    renderSearch([]);
   } else {
     status.textContent = t('linkUnknown');
     renderSearch([]);
