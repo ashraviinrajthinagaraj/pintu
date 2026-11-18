@@ -2632,14 +2632,16 @@ function goTo(place, { remember = true } = {}) {
   openPreview(place);
 }
 
+// A place tapped on the map is shown as one found by searching: its card, and
+// the map flown to it, close up, or for a town or a country, to see it whole.
 function onPlaceTap(place) {
   if (S.view !== 'idle' || (S.overlay && S.overlay !== 'placecard')) return;
-  showPlace({ name: place.name, detail: kindLabel(place.kind, getLang()), lng: place.lng, lat: place.lat, country: '' }, { fly: false });
+  showPlace({ name: place.name, detail: kindLabel(place.kind, getLang()), lng: place.lng, lat: place.lat, country: '' }, { zoom: place.zoom });
 }
 
 // A place to look at before deciding: its card, its pin, and, unless it was
 // tapped where it already is on the map, the map flown there.
-function showPlace(place, { from = 'map', fly = true } = {}) {
+function showPlace(place, { from = 'map', fly = true, zoom = null } = {}) {
   // How far back the main screen is: past the search too, if it came from one.
   // A card already open keeps its own.
   if (S.overlay !== 'placecard') S.tappedBack = from === 'search' ? 2 : 1;
@@ -2649,7 +2651,7 @@ function showPlace(place, { from = 'map', fly = true } = {}) {
   if (S.overlay !== 'placecard') openOverlay('placecard');
   if (fly) {
     S.wantCenter = false;
-    flyToCard(place);
+    flyToCard(place, zoom);
   }
   if (place.unnamed) nameTapped(place);
 }
@@ -2662,12 +2664,12 @@ function fillPlaceCard(place) {
 
 // Over the place, in the part of the map the card doesn't cover. The card is
 // measured by its size, as it may still be sliding up.
-function flyToCard(place) {
+function flyToCard(place, zoom = null) {
   const card = $('placecard');
   const offset = matchMedia(LANDSCAPE).matches
     ? [card.offsetWidth / 2, 0]
     : [0, (PLACE_TOP_PX - card.offsetHeight) / 2];
-  mapView?.flyToPlace(place.lng, place.lat, offset);
+  mapView?.flyToPlace(place.lng, place.lat, offset, { zoom });
 }
 const PLACE_TOP_PX = 110;   // the clock and the chips across the top
 

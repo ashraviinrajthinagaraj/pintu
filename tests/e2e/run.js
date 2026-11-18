@@ -4105,6 +4105,10 @@ await check('map: tap a place to see what it is, and go there', async () => {
   assert.equal(await text(page, '#placecard-name'), 'Muzium Negara');
   assert.match(await text(page, '#placecard-detail'), /^Muzium · \d.* dari anda$/);
   assert.equal(await vis(page, '#idle'), false, 'the card, not the main buttons');
+  // As with a place found by searching: the map flies to it, close up.
+  const fly = await page.evaluate(() => window.__mapCalls.filter((c) => c[0] === 'flyTo').at(-1)?.[1]);
+  assert.deepEqual(fly.center, MUZIUM);
+  assert.ok(fly.zoom >= 16.5 && fly.offset[1] < 0, 'close up, above the card');
   await page.screenshot({ path: `${shots}/62-place-card.png` });
   await noOverflow(page, 'place card');
   await page.click('#placecard-go');
@@ -4115,6 +4119,46 @@ await check('map: tap a place to see what it is, and go there', async () => {
   await page.click('#where');
   assert.match(await text(page, '#recents'), /Muzium Negara/, 'remembered with the recent places');
   assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('map: a town, a country or a peak anywhere in the world can be tapped too, and is flown to whole', async () => {
+  const { ctx, page } = await newApp(browser, { ...quiet });
+  await page.click('#btn-locate');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), P.a);
+  const NEW_YORK = [-74.006, 40.7128];
+  const lastFly = () => page.evaluate(() => window.__mapCalls.filter((c) => c[0] === 'flyTo').at(-1)?.[1]);
+  await page.evaluate(() => window.__map.jumpTo({ center: [-40, 30], zoom: 3, pitch: 0 }));
+  await tapAt(page, [{ sourceLayer: 'place', layer: { id: 'label_city' }, properties: { name: 'New York', class: 'city' }, geometry: { type: 'Point', coordinates: NEW_YORK } }]);
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.equal(await text(page, '#placecard-name'), 'New York');
+  assert.match(await text(page, '#placecard-detail'), /^Bandar raya · 15[\d,.]* km dari anda$/);
+  let fly = await lastFly();
+  assert.deepEqual(fly.center, NEW_YORK);
+  assert.deepEqual([fly.zoom, fly.pitch], [12, 0], 'the whole city, from above');
+  await page.click('#placecard-back');
+  // A country, from further out; a place to go beats a town's name beside it.
+  await page.evaluate(() => window.__map.jumpTo({ center: [-40, 30], zoom: 2, pitch: 0 }));
+  await tapAt(page, [{ sourceLayer: 'place', layer: { id: 'label_country' }, properties: { name: 'Japan', class: 'country' }, geometry: { type: 'Point', coordinates: [138, 36] } }]);
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.match(await text(page, '#placecard-detail'), /^Negara · /);
+  assert.equal((await lastFly()).zoom, 5);
+  await page.click('#placecard-back');
+  await tapAt(page, [
+    { sourceLayer: 'place', layer: { id: 'label_town' }, properties: { name: 'Gombak', class: 'town' }, geometry: { type: 'Point', coordinates: [101.68, 3.25] } },
+    { sourceLayer: 'mountain_peak', layer: { id: 'peak' }, properties: { name: 'Bukit Tabur', class: 'peak' }, geometry: { type: 'Point', coordinates: [101.75, 3.23] } },
+    { sourceLayer: 'poi', layer: { id: 'poi_r1' }, properties: { name: 'Batu Caves', class: 'attraction' }, geometry: { type: 'Point', coordinates: [101.684, 3.2375] } },
+  ]);
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.equal(await text(page, '#placecard-name'), 'Batu Caves');
+  fly = await lastFly();
+  assert.ok(fly.zoom >= 16.5);
+  await page.click('#placecard-back');
+  await tapAt(page, [{ sourceLayer: 'mountain_peak', layer: { id: 'peak' }, properties: { name: 'Gunung Tahan', class: 'peak' }, geometry: { type: 'Point', coordinates: [102.23, 4.63] } }]);
+  await page.waitForSelector('#placecard:not([hidden])');
+  assert.match(await text(page, '#placecard-detail'), /^Puncak gunung · /);
+  // Already closer than a peak needs: not zoomed out.
+  assert.ok((await lastFly()).zoom >= 16.5);
   await ctx.close();
 });
 

@@ -1,6 +1,6 @@
 // Everything Pintu depends on outside its own files lives here.
 export const CONFIG = {
-  version: '0.10.12',
+  version: '0.10.13',
 
   maplibre: {
     version: '5.24.0',

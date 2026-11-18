@@ -395,8 +395,11 @@ there and one to share it (a map link with the exact spot, which opens in any ma
 is asked for until you choose to go. Back returns to the results, to look at another; back from
 the route plan after going is the main screen.
 
-Tapping a named place on the map opens the same card, with what it is and how far
-(`_placeTap` in `js/map.js`, words from `js/kinds.js`). The chips at the top find places to visit,
+Tapping a named place on the map does the same: the card, with what it is and how far, and the map
+flown to it close up (`_placeTap` in `js/map.js`, words from `js/kinds.js`). Not only shops, sights
+and airports: the names of towns, countries, islands, peaks and seas can be tapped too, anywhere in
+the world, and are flown to as a whole (a town about zoom 12, a country 5), never further out than
+the map already is. Where a place to go and a town's name are both under your finger, the place wins. The chips at the top find places to visit,
 food, petrol, EV charging and hotels near you, or near the middle of the map without a position:
 from the map's tiles within 2.5 km, and from Overpass further out when there are fewer than eight
 (`js/nearby.js`).

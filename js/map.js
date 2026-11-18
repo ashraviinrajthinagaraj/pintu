@@ -196,6 +196,33 @@ export const NEAR_REFRESH_M = 1500;
 
 const placeName = (p = {}) => p.name || p['name:latin'] || p.name_en || p['name:en'] || '';
 
+// What can be tapped on the map: places to go (shops, sights, airports) first,
+// then the names of towns, countries, peaks and waters, as anywhere in the world.
+const TAPPABLE = ['poi', 'aerodrome_label', 'place', 'mountain_peak', 'water_name'];
+// Map words for kinds of place, as they're shown.
+const PLACE_KIND = {
+  province: 'state', hamlet: 'village', isolated_dwelling: 'village', locality: 'village',
+  quarter: 'suburb', neighbourhood: 'suburb',
+};
+// How close to show what was tapped, as a search would: a shop up close, a
+// town whole, a country on the screen. Null means as close as for a place found.
+const PLACE_ZOOM = {
+  continent: 3, country: 5, state: 7, island: 11, city: 12, town: 13, village: 14.5, suburb: 14.5,
+  ocean: 3, sea: 5, peak: 14, volcano: 14,
+};
+export function tapKind(sourceLayer, props = {}) {
+  if (sourceLayer === 'aerodrome_label') return ['aerodrome'];
+  const cls = PLACE_KIND[props.class] || props.class;
+  if (sourceLayer === 'mountain_peak') return [cls || 'peak'];
+  if (sourceLayer === 'water_name') return [cls || 'lake'];
+  return [props.subclass, cls].filter(Boolean);
+}
+export function tapZoom(sourceLayer, kind) {
+  if (sourceLayer === 'poi' || sourceLayer === 'aerodrome_label') return null;
+  for (const k of kind) if (PLACE_ZOOM[k]) return PLACE_ZOOM[k];
+  return sourceLayer === 'water_name' ? 11 : 13;
+}
+
 export class MapView {
   constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onOtherTap, onPlaceTap, onPuckTap, trafficTiles = null, satelliteTiles = null, satellite = false }) {
     this.el = el;
@@ -276,13 +303,15 @@ export class MapView {
     let hits = [];
     try { hits = this.map.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]]) || []; } catch { return; }
     if (hits.some((h) => h.layer?.id === 'pintu-alt-hit' || h.layer?.id === 'pintu-other-hit')) return;
-    const f = hits.find((h) => (h.sourceLayer === 'poi' || h.sourceLayer === 'aerodrome_label') && placeName(h.properties));
+    const named = (h) => TAPPABLE.includes(h.sourceLayer) && placeName(h.properties);
+    const f = hits.find((h) => named(h) && TAPPABLE.indexOf(h.sourceLayer) < 2) || hits.find(named);
     if (!f) return;
     const point = f.geometry?.type === 'Point' ? f.geometry.coordinates : [e.lngLat.lng, e.lngLat.lat];
-    const props = f.properties || {};
+    const kind = tapKind(f.sourceLayer, f.properties || {});
     this.onPlaceTap({
-      name: placeName(props),
-      kind: [props.subclass, props.class, f.sourceLayer === 'aerodrome_label' ? 'aerodrome' : ''].filter(Boolean),
+      name: placeName(f.properties),
+      kind,
+      zoom: tapZoom(f.sourceLayer, kind),
       lng: point[0],
       lat: point[1],
     });
@@ -1014,12 +1043,16 @@ export class MapView {
 
   // Flown to from wherever the map was, as when you search for a place, and
   // close enough to see it. `offset` puts it in the part the card leaves clear.
-  flyToPlace(lng, lat, offset = [0, 0]) {
-    this.map?.flyTo({
+  // `zoom` is for something bigger than a place, a town or a country, seen
+  // whole; never further out than the map already is.
+  flyToPlace(lng, lat, offset = [0, 0], { zoom = null } = {}) {
+    if (!this.map) return;
+    const z = Math.max(this.map.getZoom?.() ?? 0, zoom ?? (this.view3d ? 17 : 16.5));
+    this.map.flyTo({
       center: [lng, lat],
       offset,
-      zoom: this.view3d ? 17 : 16.5,
-      pitch: this.view3d ? 55 : 0,
+      zoom: z,
+      pitch: this.view3d && z >= 14 ? 55 : 0,
       speed: 1.6,
       maxDuration: 6000,
     });
