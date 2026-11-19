@@ -25,3 +25,4 @@ for (const [name, q] of [['animals', Q], ['ferries', F]]) {
     } catch (e) { console.log('== fail', name, server, e.message); }
   }
 }
+// retry 1795103385
