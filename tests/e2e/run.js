@@ -591,6 +591,10 @@ await check('first trip shows the safety note once, and voice speaks Malay in or
 
   assert.equal(await text(page, '#arrival-title'), 'Dah sampai');
   assert.equal(await text(page, '#arrival-place'), 'Suria KLCC');
+  // How it was driven: steady, no limits known on these streets.
+  assert.equal(await text(page, '#arrival-report-title'), 'Markah pemanduan: 100/100');
+  assert.equal(await text(page, '#arrival-report-text'), 'Tiada brek atau pecutan mengejut · Had laju tak diketahui · Paling laju 40 km/j');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.trips')).at(-1).sc), 100, 'kept with the trip');
   assert.equal(await page.evaluate(() => localStorage.getItem('pintu.trip')), null, 'finished trip is forgotten');
   assert.equal(await page.evaluate(() => window.__wake.released), 1, 'screen can sleep again');
   await page.waitForTimeout(1700);
@@ -4687,6 +4691,10 @@ await check('monthly summary: a drive is counted with its cost; months move; del
   assert.ok(last.slow >= 25, `slow ${last.slow}`);
   assert.ok(last.cost > 0, 'with this week\'s price');
   assert.equal(last.to, 'Suria KLCC');
+  // Stopping dead for the jam, and pulling away from it at once, are noticed.
+  assert.deepEqual([last.b, last.a, last.sc], [1, 1, 88]);
+  assert.equal(await text(page, '#arrival-report-title'), 'Markah pemanduan: 88/100');
+  assert.match(await text(page, '#arrival-report-text'), /^Sekali brek mengejut · Sekali pecutan mengejut · /);
   await page.click('#arrival-done');
 
   await page.click('#btn-settings');
@@ -4697,6 +4705,7 @@ await check('monthly summary: a drive is counted with its cost; months move; del
   const rows = await page.locator('#month-rows div').allInnerTexts();
   assert.ok(rows.some((r) => /Kos minyak[\s\S]*RM\d/.test(r)), rows.join(' | '));
   assert.ok(rows.some((r) => /Tersangkut[\s\S]*%/.test(r)), rows.join(' | '));
+  assert.ok(rows.some((r) => /Cara memandu[\s\S]*Purata 88\/100 · 1 kali brek mengejut/.test(r)), rows.join(' | '));
   assert.match(await text(page, '#month-vs'), /kurang daripada bulan lepas/);
   assert.equal(await page.locator('#month-days span').count(), new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
   assert.equal(await page.isDisabled('#month-next'), true, 'no months from the future');

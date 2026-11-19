@@ -1639,6 +1639,8 @@ a { color: inherit; }
 /* ---------- Fixing the map ---------- */
 #mark-title { margin-top: 14px; }
 .road-alert, .camera-alert { cursor: pointer; }
+.arrival-report p { margin: 0; }
+.arrival-report strong { font-family: var(--condensed); font-size: 20px; }
 .arrival-tolls .resume-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
 
 /* ---------- Choosing a route: labels, cameras and warnings on the map ---------- */
