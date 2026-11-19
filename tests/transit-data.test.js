@@ -188,6 +188,14 @@ test('each live feed gets its area and its routes, with names and colours', () =
   assert.deepEqual(ktm.trips, { 2001: 'KC05_KB18', 2003: 'KC05_KB18', 1101: 'KA15_KD19', 1004: 'ETS' });
 });
 
+test('a feed with an empty timetable still covers its town', () => {
+  const kb = feedOf(FEEDS.find((f) => f.id === 'mybas-kota-bharu'), { 'routes.txt': 'route_id,route_short_name\n', 'stops.txt': 'stop_id,stop_name,stop_lat,stop_lon\n' });
+  assert.deepEqual(kb.box, [101.9, 5.8, 102.5, 6.3]);
+  assert.deepEqual(kb.routes, {});
+  const bus = feedOf(FEEDS.find((f) => f.id === 'rapid-bus-kl'), { 'routes.txt': 'route_id\n', 'stops.txt': 'stop_id\n' });
+  assert.equal(bus.box, null);
+});
+
 test('every feed the data portal lists, each with its own live address', () => {
   assert.equal(FEEDS.length, 14);
   assert.equal(new Set(FEEDS.map((f) => f.id)).size, FEEDS.length);

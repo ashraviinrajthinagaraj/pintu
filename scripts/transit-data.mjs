@@ -21,8 +21,10 @@ export const FEEDS = [
   { id: 'ktmb', name: 'KTM', kind: 'train', path: 'ktmb' },
   { id: 'mybas-kangar', name: 'BAS.MY Kangar', kind: 'bus', path: 'mybas-kangar' },
   { id: 'mybas-alor-setar', name: 'BAS.MY Alor Setar', kind: 'bus', path: 'mybas-alor-setar' },
-  { id: 'mybas-kota-bharu', name: 'BAS.MY Kota Bharu', kind: 'bus', path: 'mybas-kota-bharu' },
-  { id: 'mybas-kuala-terengganu', name: 'BAS.MY Kuala Terengganu', kind: 'bus', path: 'mybas-kuala-terengganu' },
+  // These two publish empty timetables for now: the area they serve, so their
+  // buses can still be shown, if without their routes' names.
+  { id: 'mybas-kota-bharu', name: 'BAS.MY Kota Bharu', kind: 'bus', path: 'mybas-kota-bharu', box: [101.9, 5.8, 102.5, 6.3] },
+  { id: 'mybas-kuala-terengganu', name: 'BAS.MY Kuala Terengganu', kind: 'bus', path: 'mybas-kuala-terengganu', box: [102.8, 4.95, 103.35, 5.65] },
   { id: 'mybas-ipoh', name: 'BAS.MY Ipoh', kind: 'bus', path: 'mybas-ipoh' },
   { id: 'mybas-seremban-a', name: 'BAS.MY Seremban', kind: 'bus', path: 'mybas-seremban-a' },
   { id: 'mybas-seremban-b', name: 'BAS.MY Seremban', kind: 'bus', path: 'mybas-seremban-b' },
@@ -231,7 +233,7 @@ export function feedOf(def, files) {
     name: def.name,
     kind: def.kind,
     url: `${LIVE}/${def.path}`,
-    box: boxOf(csv(files['stops.txt'])),
+    box: boxOf(csv(files['stops.txt'])) || def.box || null,
     routes,
   };
   if (def.kind === 'train') feed.trips = Object.fromEntries(csv(files['trips.txt']).map((t) => [t.trip_id, t.route_id]).filter(([a, b]) => a && b));
@@ -264,7 +266,7 @@ async function main() {
       const zip = await download(`${STATIC}/${def.path}`);
       const files = unzip(zip, ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'].filter((f) => def.kind === 'train' || f === 'routes.txt' || f === 'stops.txt'));
       const feed = feedOf(def, files);
-      if (!feed.box || !Object.keys(feed.routes).length) {
+      if (!feed.box || (!Object.keys(feed.routes).length && !def.box)) {
         let inside = '';
         try { inside = Object.keys(unzip(zip)).map((n) => `${n} (${unzip(zip)[n].length})`).join(', '); } catch (err) { inside = err.message; }
         throw new Error(`no stops or routes: ${zip.length} bytes holding ${inside || 'nothing'}`);
