@@ -11,7 +11,8 @@ import { MapView } from './map.js';
 import { Motion, pointAt } from './motion.js';
 import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
-import { RouteError, distanceAfter, fetchRoadDetails, fetchRoutes, limitAt, routeProviders, timeBetween } from './routing.js';
+import { RouteError, distanceAfter, fetchDriveTimes, fetchRoadDetails, fetchRoutes, limitAt, routeProviders, timeBetween } from './routing.js';
+import { MAX_STOPS, suggestOrder } from './errands.js';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
 import { plainSpeech } from './delivery.js';
 import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
@@ -1568,8 +1569,10 @@ async function loadRoutes() {
     S.routePicked = false;
     save('lastProvider', routes[0]?.provider || '');
     S.routeState = 'ready';
+    stopsAlong(routes[0]);
     renderRoutes();
     loadRouteTraffic(routes);
+    checkStopOrder();
     if (S.startWhenRouted) {
       S.startWhenRouted = false;
       S.route = routes[0];
@@ -1942,6 +1945,7 @@ function renderPlan() {
     return row;
   }));
 
+  renderPlanOrder();
   renderPlanAlong(route);
   renderPlanFuel(route);
   renderPlanToll(route);
@@ -2246,6 +2250,64 @@ function tollMoney(tolls) {
   const sum = tolls ? tollTotal(tolls) : null;
   if (sum?.total == null) return null;
   return sum.unknown ? t('otherAtLeast', { total: money(sum.total) }) : `RM${money(sum.total)}`;
+}
+
+/* ---------- The best order for several stops ---------- */
+
+// Each stop's distance along the route as now planned, so a stop added later
+// goes in its place among them.
+function stopsAlong(route) {
+  const at = route?.maneuvers?.filter((m) => m.isStop).map((m) => m.beginDist) || [];
+  if (at.length === S.stops.length) S.stops.forEach((st, i) => { st.along = at[i]; });
+}
+
+// The stops you chose yourself, two to eight of them, with nothing planned for
+// you among them (charging stops have their own order).
+function errandsKey() {
+  if (S.mode === 'walk' || !S.routeFrom || S.stops.some((st) => st.charge)) return null;
+  if (S.stops.length < 2 || S.stops.length > MAX_STOPS) return null;
+  const end = routeEnd();
+  const p = (x) => `${x.lat.toFixed(5)},${x.lng.toFixed(5)}`;
+  return [p(S.routeFrom), ...S.stops.map(p), p(end), S.mode, S.avoidTolls ? 'free' : ''].join('|');
+}
+
+async function checkStopOrder() {
+  const key = errandsKey();
+  if (!key || S.order?.key === key) { renderPlanOrder(); return; }
+  S.orderCtrl?.abort();
+  const ctrl = new AbortController();
+  S.orderCtrl = ctrl;
+  S.order = { key, pending: true };
+  try {
+    const times = await fetchDriveTimes([S.routeFrom, ...S.stops, routeEnd()], { signal: ctrl.signal, mode: S.mode, avoidTolls: S.avoidTolls });
+    if (ctrl.signal.aborted || S.order?.key !== key) return;
+    S.order = { key, ...(suggestOrder(times) || {}) };
+  } catch {
+    if (ctrl.signal.aborted) return;
+    S.order = { key };
+  }
+  renderPlanOrder();
+}
+
+function renderPlanOrder() {
+  const row = $('plan-order');
+  const o = S.order;
+  const show = S.view === 'preview' && !!o?.order && o.key === errandsKey();
+  row.hidden = !show;
+  if (!show) return;
+  $('plan-order-icon').innerHTML = UI.swap;
+  $('plan-order-title').textContent = t('orderTitle', { time: fmtDuration(Math.round(o.saving / 60) * 60, getLang()) });
+  $('plan-order-detail').textContent = t('orderDetail', { order: o.order.map((i) => S.stops[i]?.name || '?').join(' → ') });
+  $('plan-order-go').textContent = t('orderGo');
+}
+
+function useStopOrder() {
+  const o = S.order;
+  if (!o?.order || o.key !== errandsKey()) return;
+  S.stops = o.order.map((i) => S.stops[i]);
+  S.order = null;
+  mapView?.setStopPins(stopPins());
+  loadRoutes();
 }
 
 function renderPlanOtherWay(route) {
@@ -5432,6 +5494,7 @@ function wire() {
   $('placecard-back').addEventListener('click', () => history.back());
   $('placecard-go').addEventListener('click', goTapped);
   $('placecard-share').addEventListener('click', sharePlace);
+  $('plan-order-go').addEventListener('click', useStopOrder);
   $('explore-back').addEventListener('click', () => history.back());
   for (const b of document.querySelectorAll('.explore-chip')) b.addEventListener('click', () => openExplore(b.dataset.cat));
   $('saved-work').addEventListener('click', () => goSaved('work'));
