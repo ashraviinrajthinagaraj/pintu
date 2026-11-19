@@ -16,10 +16,12 @@ const FMT = 'https://www.freemalaysiatoday.com/category/nation/2025/08/09/perhil
 const STAR = 'https://www.thestar.com.my/metro/metro-news/2024/05/31/ensuring-safe-passage-on-our-roads-for-wildlife';
 
 // Each stretch: the animal, a name for it, and its two ends (with any points
-// it must pass, so the routing server takes that road and no other).
+// it must pass, so the routing server takes that road and no other). The
+// reports also name Gua Musang–Hulu Terengganu, but OpenStreetMap's routing
+// sends traffic between those towns round by Kuala Krai, so no route would
+// ever pass it as mapped; it's left out until that road is routable.
 export const STRETCHES = [
   { id: 'gerik-jeli', animal: 'elephant', name: 'Gerik–Jeli', road: 'FT4', from: [101.1291, 5.4300], via: [[101.3500, 5.5530]], to: [101.8433, 5.7000], source: [TCER, STAR] },
-  { id: 'gua-musang-kuala-berang', animal: 'elephant', name: 'Gua Musang–Kuala Berang', road: 'FT185', from: [101.9690, 4.8800], to: [103.0071, 5.0716], source: [TCER] },
   { id: 'kluang-mersing', animal: 'elephant', name: 'Kluang–Mersing', road: 'FT50', from: [103.3328, 2.0251], to: [103.8405, 2.4312], source: [TCER] },
   { id: 'kota-tinggi-mersing', animal: 'elephant', name: 'Kota Tinggi–Mersing', road: 'FT3', from: [103.8999, 1.7381], to: [103.8405, 2.4312], source: [TCER] },
   { id: 'lahad-datu-sandakan', animal: 'elephant', name: 'Lahad Datu–Sandakan', road: 'FT13', from: [118.3270, 5.0268], to: [118.1172, 5.8394], source: [TCER] },
