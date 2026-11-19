@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  BACKOFF_MS, decodeFeed, FEED_EVERY_MS, KEEP_MS, LiveTransit, lineFeatures, loadTransit, forgetTransit, MIN_GAP_MS, MIN_ZOOM,
+  BACKOFF_MS, decodeFeed, FEED_EVERY_MS, KEEP_MS, WAIT_MS, LiveTransit, lineFeatures, loadTransit, forgetTransit, MIN_GAP_MS, MIN_ZOOM,
   overlaps, routeOf, stationFeatures, vehicleFeatures,
 } from '../js/transit.js';
 
@@ -124,6 +124,28 @@ test('a refusal waits a good while before that feed is asked for again', async (
   tick(MIN_GAP_MS);
   await live.poll(KL, 13);
   assert.equal(asked.filter((a) => a === 'ktmb').length, 2);
+});
+
+test('an answer that never comes is given up on, and the next feed is asked for', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 1_800_000_000_000;
+  const asked = [];
+  const live = new LiveTransit({
+    feeds: FEEDS,
+    now: () => now,
+    fetchImpl: (url, { signal }) => {
+      asked.push(url.split('/').pop());
+      if (asked.length > 1) return Promise.resolve(new Response(feed([])));
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
+    },
+  });
+  const first = live.poll(KL, 13);
+  assert.equal(await live.poll(KL, 13), false, 'one at a time');
+  t.mock.timers.tick(WAIT_MS);
+  assert.equal(await first, false);
+  now += MIN_GAP_MS;
+  assert.equal(await live.poll(KL, 13), true);
+  assert.deepEqual(asked, ['prasarana?category=rapid-bus-kl', 'ktmb']);
 });
 
 test('positions are kept for ten minutes, and a vehicle clock far in the future is not believed', async () => {

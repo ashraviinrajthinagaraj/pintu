@@ -12,6 +12,7 @@ export const FEED_EVERY_MS = 30000;  // and each feed is updated every 30 s
 export const BACKOFF_MS = 90000;     // after a refusal or a failure
 export const KEEP_MS = 10 * 60000;   // a position older than this is no use
 export const MIN_ZOOM = 11;          // further out there are too many to make sense of
+export const WAIT_MS = 15000;        // for an answer, before giving up on it
 
 let loading = null;
 export function loadTransit({ fetchImpl = (...a) => fetch(...a) } = {}) {
@@ -162,8 +163,11 @@ export class LiveTransit {
     this.lastAsk = this.now();
     const s = this.state.get(feed.id) || { fetched: -Infinity, vehicles: [], until: 0 };
     this.state.set(feed.id, s);
+    // An answer that never comes mustn't stop every other.
+    const stop = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => stop?.abort(), WAIT_MS);
     try {
-      const res = await this.fetchImpl(feed.url, { cache: 'no-store' });
+      const res = await this.fetchImpl(feed.url, { cache: 'no-store', signal: stop?.signal });
       if (!res.ok) throw new Error(`${feed.id} ${res.status}`);
       const got = decodeFeed(await res.arrayBuffer());
       const now = this.now();
@@ -178,6 +182,7 @@ export class LiveTransit {
       s.until = this.now() + BACKOFF_MS;
       return false;
     } finally {
+      clearTimeout(timer);
       this.busy = false;
     }
   }
