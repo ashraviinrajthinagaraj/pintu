@@ -14,6 +14,7 @@ import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
 import { RouteError, distanceAfter, fetchDriveTimes, fetchRoadDetails, fetchRoutes, limitAt, routeProviders, timeBetween } from './routing.js';
 import { MAX_STOPS, suggestOrder } from './errands.js';
 import { loadWildlife, zoneAhead, zonesOnRoute } from './wildlife.js';
+import { CROSSINGS, crossingOf, fetchCameras as fetchCrossingCameras, throughFor } from './crossings.js';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
 import { plainSpeech } from './delivery.js';
 import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
@@ -425,6 +426,7 @@ function applyStaticText() {
   $('weather-text').textContent = t('weatherText');
   $('weather-on-label').textContent = t('weatherOn');
   label($('weather-back'), t('back'), UI.close);
+  label($('camview-back'), t('back'), UI.close);
   label($('mall-back'), t('back'), UI.close);
   $('weather-title').textContent = t('weatherTitle');
   $('weather-note').textContent = t('weatherNote');
@@ -709,10 +711,11 @@ function render() {
   $('scrim').hidden = !(view === 'idle' || view === 'nav');
   $('search').hidden = !((view === 'search' && overlay !== 'pickmap') || overlay === 'stopsearch' || overlay === 'endsearch');
   // The stops panel takes the same space, so there's no need to draw both.
-  $('preview').hidden = view !== 'preview' || overlay === 'pickmap' || overlay === 'stops';
+  $('preview').hidden = view !== 'preview' || overlay === 'pickmap' || overlay === 'stops' || overlay === 'camview';
   $('map-pick').hidden = overlay !== 'pickmap';
   $('steps').hidden = overlay !== 'steps';
   $('weather').hidden = overlay !== 'weather';
+  $('camview').hidden = overlay !== 'camview';
   $('mall').hidden = overlay !== 'mall';
   $('hudmode').hidden = overlay !== 'hudmode';
   $('nav').hidden = view !== 'nav';
@@ -1575,6 +1578,7 @@ async function loadRoutes() {
     renderRoutes();
     loadRouteTraffic(routes);
     checkStopOrder();
+    checkCrossings(routes);
     if (S.startWhenRouted) {
       S.startWhenRouted = false;
       S.route = routes[0];
@@ -1948,6 +1952,7 @@ function renderPlan() {
   }));
 
   renderPlanWild(route);
+  renderPlanCross();
   renderPlanOrder();
   renderPlanAlong(route);
   renderPlanFuel(route);
@@ -2253,6 +2258,176 @@ function tollMoney(tolls) {
   const sum = tolls ? tollTotal(tolls) : null;
   if (sum?.total == null) return null;
   return sum.unknown ? t('otherAtLeast', { total: money(sum.total) }) : `RM${money(sum.total)}`;
+}
+
+/* ---------- Johor–Singapore crossings ---------- */
+
+const CROSS_JAM_S = 5 * 60;      // a delay worth naming
+const CAMERAS_FRESH_MS = 90e3;   // photos are asked for again after this
+
+// The trip over each crossing, when it goes between Johor and Singapore.
+async function checkCrossings(routes) {
+  // With stops, which crossing comes where is the route's own business.
+  const found = S.mode === 'walk' || S.stops.length ? null : crossingOf(routes[0]);
+  if (!found) { S.cross = null; renderPlanCross(); return; }
+  const p = (x) => `${x.lat.toFixed(4)},${x.lng.toFixed(4)}`;
+  const key = [p(S.routeFrom), ...S.stops.map(p), p(routeEnd()), S.mode, S.avoidTolls ? 'free' : ''].join('|');
+  if (S.cross?.key === key) { renderPlanCross(); return; }
+  S.crossCtrl?.abort();
+  const ctrl = new AbortController();
+  S.crossCtrl = ctrl;
+  const cross = { key, intoSg: found.intoSg, list: CROSSINGS.map((c) => ({ c, state: 'loading' })) };
+  S.cross = cross;
+  renderPlanCross();
+  loadCrossCameras();
+  for (const item of cross.list) {
+    try {
+      // A route already offered may go this way; otherwise, one through the bridge.
+      let route = routes.find((r) => crossingOf(r)?.crossing.id === item.c.id);
+      if (!route) {
+        const got = await fetchRoutes({
+          from: S.routeFrom, to: routeEnd(), stops: S.stops, through: [throughFor(item.c, found.intoSg)],
+          mode: S.mode, avoidTolls: S.avoidTolls, alternates: 0, id: 'pintu-crossing', signal: ctrl.signal,
+        });
+        route = got[0];
+        if (crossingOf(route)?.crossing.id !== item.c.id) route = null;
+      }
+      if (ctrl.signal.aborted) return;
+      if (route && !route.traffic && CONFIG.server && S.settings.traffic && !S.noTrafficKey) {
+        route.traffic = await fetchTraffic(route, 0, { signal: ctrl.signal }).catch(() => null);
+      }
+      if (ctrl.signal.aborted) return;
+      Object.assign(item, route ? { state: 'ready', route } : { state: 'none' });
+    } catch {
+      if (ctrl.signal.aborted) return;
+      item.state = 'none';
+    }
+    if (S.cross === cross) renderPlanCross();
+  }
+}
+
+function loadCrossCameras(force = false) {
+  if (!force && S.crossCamsAt && Date.now() - S.crossCamsAt < CAMERAS_FRESH_MS) return;
+  S.crossCamsAt = Date.now();
+  fetchCrossingCameras().then((cams) => {
+    S.crossCams = cams;
+    renderPlanCross();
+    if (S.overlay === 'camview') renderCamView();
+  }).catch(() => { S.crossCamsAt = 0; });
+}
+
+function camThumb(id, onOpen) {
+  const cam = S.crossCams?.get(id);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'cross-thumb';
+  btn.addEventListener('click', onOpen);
+  if (cam) {
+    const img = document.createElement('img');
+    img.src = cam.image;
+    img.alt = t(`cam_${id}`);
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    const when = document.createElement('span');
+    when.textContent = cam.at ? fmtClock(new Date(cam.at), getLang()) : '';
+    btn.append(img, when);
+  }
+  btn.setAttribute('aria-label', t('crossPhotos', { name: t(`cross_${id === '2701' || id === '2702' ? 'causeway' : 'second-link'}`) }));
+  return btn;
+}
+
+function renderPlanCross() {
+  const box = $('plan-cross');
+  const cross = S.cross;
+  const show = S.view === 'preview' && !!cross && S.routeState === 'ready';
+  box.hidden = !show;
+  if (!show) return;
+  const lang = getLang();
+  $('plan-cross-title').textContent = t(cross.intoSg ? 'crossTitleIn' : 'crossTitleOut');
+  const ready = cross.list.filter((x) => x.state === 'ready');
+  const quickest = ready.length > 1 ? ready.reduce((a, b) => (withTraffic(b.route) < withTraffic(a.route) ? b : a)) : null;
+  $('plan-cross-status').textContent = cross.list.some((x) => x.state === 'loading') ? t('crossFinding') : '';
+  const chosen = S.routes[S.selected];
+  $('cross-list').replaceChildren(...cross.list.map((item) => {
+    const li = document.createElement('li');
+    li.append(camThumb(item.c.cameras[0], () => openCamView(item.c)));
+    const main = document.createElement('div');
+    main.className = 'cross-main';
+    const name = document.createElement('strong');
+    name.textContent = t(`cross_${item.c.id}`);
+    const detail = document.createElement('span');
+    if (item.state === 'loading') detail.textContent = t('crossFinding');
+    else if (item.state === 'none') detail.textContent = t('crossNone');
+    else {
+      const delay = item.route.traffic?.delay || 0;
+      detail.textContent = delay >= CROSS_JAM_S
+        ? t('crossJam', { time: fmtDuration(withTraffic(item.route), lang), delay: fmtDuration(delay, lang) })
+        : fmtDuration(withTraffic(item.route), lang);
+      if (item === quickest) {
+        const q = document.createElement('span');
+        q.className = 'is-quick';
+        q.textContent = t('crossQuickest');
+        main.append(name, detail, q);
+      }
+    }
+    if (!main.childNodes.length) main.append(name, detail);
+    li.append(main);
+    if (item.state === 'ready' && item.route === chosen) {
+      const tag = document.createElement('span');
+      tag.className = 'cross-this';
+      tag.textContent = t('crossThis');
+      li.append(tag);
+    } else if (item.state === 'ready') {
+      const use = document.createElement('button');
+      use.type = 'button';
+      use.className = 'link-btn';
+      use.textContent = t('crossUse');
+      use.addEventListener('click', () => useCrossing(item));
+      li.append(use);
+    } else {
+      li.append(document.createElement('span'));
+    }
+    return li;
+  }));
+  $('cross-credit').textContent = t('crossCredit');
+}
+
+// Take the trip over this crossing: one of the routes offered, or added to them.
+function useCrossing(item) {
+  let i = S.routes.indexOf(item.route);
+  if (i < 0) {
+    S.routes = [...S.routes, item.route];
+    i = S.routes.length - 1;
+  }
+  selectRoute(i);
+  mapView?.fit(S.routes.map((r) => r.coords), mapPadding());
+}
+
+function openCamView(crossing) {
+  S.camView = crossing;
+  loadCrossCameras(true);
+  openOverlay('camview');
+  renderCamView();
+}
+
+function renderCamView() {
+  const c = S.camView;
+  if (!c) return;
+  const lang = getLang();
+  $('camview-title').textContent = t(`cross_${c.id}`);
+  $('camview-detail').textContent = t('camviewDetail');
+  $('camview-photos').replaceChildren(...c.cameras.map((id) => {
+    const cam = S.crossCams?.get(id);
+    const fig = document.createElement('figure');
+    const img = document.createElement('img');
+    img.alt = t(`cam_${id}`);
+    if (cam) img.src = cam.image;
+    const cap = document.createElement('figcaption');
+    cap.textContent = cam?.at ? t('camAt', { name: t(`cam_${id}`), time: fmtClock(new Date(cam.at), lang) }) : t(`cam_${id}`);
+    fig.append(img, cap);
+    return fig;
+  }));
+  $('camview-credit').textContent = t('crossCredit');
 }
 
 /* ---------- Roads where wild elephants cross ---------- */
@@ -5751,6 +5926,7 @@ function wire() {
   $('plan-weather').addEventListener('click', openWeather);
   $('plan-mall').addEventListener('click', openMall);
   $('weather-back').addEventListener('click', () => history.back());
+  $('camview-back').addEventListener('click', () => history.back());
   $('mall-back').addEventListener('click', () => history.back());
   $('mall-search').addEventListener('input', renderShops);
   $('arrival-walk').addEventListener('click', walkToDoor);
