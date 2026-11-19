@@ -9,10 +9,12 @@ const F = `[out:json][timeout:180];area["ISO3166-1"="MY"][admin_level=2]->.my;
 (way["route"="ferry"](area.my);relation["route"="ferry"](area.my););
 out tags center;`;
 for (const [name, q] of [['animals', Q], ['ferries', F]]) {
-  for (const server of ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter']) {
+  for (const server of ['https://overpass.kumi.systems/api/interpreter', 'https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://overpass-api.de/api/interpreter']) {
     try {
       const res = await fetch(server, { method: 'POST', body: new URLSearchParams({ data: q }), headers: { 'user-agent': 'Pintu probe (github.com/ashraviinrajthinagaraj/pintu)' } });
-      const j = await res.json();
+      const text = await res.text();
+      let j;
+      try { j = JSON.parse(text); } catch { console.log('== busy', server, res.status, text.replace(/\s+/g, ' ').slice(0, 200)); await new Promise((r) => setTimeout(r, 20000)); continue; }
       console.log('==', name, j.elements.length);
       for (const el of j.elements.slice(0, 80)) {
         const c = el.center || el;
