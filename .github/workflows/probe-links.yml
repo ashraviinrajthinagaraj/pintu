@@ -1,0 +1,32 @@
+# Temporary: what an open data source has.
+name: Probe links
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/probe-links.yml', '.github/probe/**']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: |
+          cd .github/probe && node links.mjs
+          for z in rail ktmb bus; do echo "== files $z"; unzip -l $z.zip | sed 's/^/== /'; done
+          for z in rail ktmb; do mkdir -p $z && unzip -oq $z.zip -d $z; for f in routes.txt shapes.txt stops.txt trips.txt; do [ -f $z/$f ] && { echo "== $z/$f $(wc -l < $z/$f) lines"; head -3 $z/$f | sed 's/^/== /'; }; done; done
+          mkdir -p bus && unzip -oq bus.zip -d bus && echo "== bus routes $(wc -l < bus/routes.txt)" && head -4 bus/routes.txt | sed 's/^/== /'
+          pip install gtfs-realtime-bindings >/dev/null 2>&1 && python3 - <<'PY'
+          from google.transit import gtfs_realtime_pb2
+          for n in ['rt-bus','rt-feeder','rt-ktmb']:
+              f = gtfs_realtime_pb2.FeedMessage()
+              try:
+                  f.ParseFromString(open(f'{n}.pb','rb').read())
+              except Exception as e:
+                  print('== rt', n, 'parse error', e); continue
+              print('== rt', n, len(f.entity), 'vehicles; header ts', f.header.timestamp)
+              for e in f.entity[:2]:
+                  print('== ', str(e).replace('\n', ' | ')[:400])
+          PY
