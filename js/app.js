@@ -48,6 +48,7 @@ import { initVehicleUI } from './vehicle-ui.js';
 import { GRADES, fetchFuelPrices, isStale, keptFuelPrices, priced } from './fuel-price.js';
 import { canListen, listen, understand } from './voice-search.js';
 import { CrawlClock, forgetTrips, keptTrips, markLastTrip, monthSummary, recordTrip, tripMonths } from './trips.js';
+import { DriveReport, MIN_KM as REPORT_MIN_KM, monthDriving } from './drive-report.js';
 import { BUDI_GRADE, budiAfter, budiUsed, cleanBudi } from './budi.js';
 import { careToShow, cleanCare, markSeen, odometerNow } from './car-care.js';
 import { cleanRate, workCsv, workTotals, workTrips } from './worklog.js';
@@ -3296,6 +3297,7 @@ function startGuidance({ simulate }) {
   S.tripKm = 0;
   S.tripStart = Date.now();
   S.crawl = new CrawlClock();
+  S.drive = new DriveReport();
   S.lastDrivenS = null;
   S.rangeSpoken = 0;
   S.lastSignKey = null;
@@ -3411,6 +3413,7 @@ function onNavFix(fix, takenAt) {
   }
   S.lastDrivenS = st.s;
   if (!S.sim) S.crawl?.add(fix.time ?? Date.now(), fix.speed);
+  if (!S.sim && S.mode !== 'walk') S.drive?.add({ time: fix.time ?? Date.now(), speed: fix.speed, accuracy: fix.accuracy, limit: limitHere(st) });
 
   renderSign(st);
   renderEta(st);
@@ -3715,8 +3718,37 @@ function renderRoadSigns(st) {
 }
 
 function currentLimit(st) {
-  if (S.mode === 'walk' || !S.settings.speedLimit || !st.onRoute) return null;
+  if (!S.settings.speedLimit) return null;
+  return limitHere(st);
+}
+
+// The speed limit where you are, if it's known, shown or not.
+function limitHere(st) {
+  if (S.mode === 'walk' || !st?.onRoute) return null;
   return limitAt(S.laneFetch?.limits, st.s) ?? limitAt(S.ttLimits, st.s);
+}
+
+// How the drive went, for the arrival screen and the trip's line: only a real
+// drive long enough to say anything about.
+function driveReport() {
+  if (S.sim || S.mode === 'walk' || !S.drive || !(S.tripKm >= REPORT_MIN_KM)) return null;
+  return S.drive.result;
+}
+
+function renderDriveReport(report) {
+  const box = $('arrival-report');
+  box.hidden = !report;
+  if (!report) return;
+  const lang = getLang();
+  const parts = [];
+  if (report.brakes) parts.push(t(report.brakes === 1 ? 'reportBrakeOne' : 'reportBrakes', { n: report.brakes }));
+  if (report.starts) parts.push(t(report.starts === 1 ? 'reportStartOne' : 'reportStarts', { n: report.starts }));
+  if (!report.brakes && !report.starts) parts.push(t('reportSmooth'));
+  if (report.limitedS < 60) parts.push(t('reportNoLimit'));
+  else parts.push(report.overS >= 30 ? t('reportOver', { time: fmtDuration(Math.round(report.overS / 60) * 60 || 60, lang) }) : t('reportWithin'));
+  parts.push(t('reportTop', { kmh: report.topKmh }));
+  $('arrival-report-title').textContent = t('reportTitle', { score: report.score });
+  $('arrival-report-text').textContent = parts.join(' · ');
 }
 
 function renderSpeed(fix, st) {
@@ -4546,7 +4578,9 @@ function keepTripSummary() {
   if (S.sim || !S.guidance || S.mode === 'walk' || !S.settings.keepTrips) return;
   const plan = tripPlan(pricedVehicle(), S.tripKm);
   const v = pricedVehicle();
+  const report = driveReport();
   recordTrip({
+    ...(report ? { b: report.brakes, a: report.starts, o: report.overS, sc: report.score } : {}),
     km: S.tripKm, s: S.crawl?.span || (Date.now() - S.tripStart) / 1000, slow: S.crawl?.slow || 0, cost: plan?.cost ?? null, mode: S.mode, to: S.dest?.name || '',
     l: plan?.unit === 'L' ? plan.used : null, g: v?.grade || null, from: S.tripFrom || '',
   });
@@ -4557,6 +4591,7 @@ function stopGuidance() {
   keepTripSummary();
   gps.useBackground(null);
   S.crawl = null;
+  S.drive = null;
   S.roadCtrl?.abort();
   S.roadCtrl = null;
   S.roadReports = [];
@@ -4644,6 +4679,7 @@ function finishTrip() {
   const onFoot = S.mode === 'walk';
   const simulated = !!S.sim;
   $('arrival-stats').textContent = arrivalStats();
+  renderDriveReport(driveReport());
   S.arriving = true;
   stopGuidance();
   mapView?.clearRoutes();
@@ -6601,6 +6637,12 @@ function renderSummary() {
   ];
   if (m.longest) rows.push([t('monthLongest'), m.longest.to ? t('monthLongestDetail', { km: fmtDistance(m.longest.km * 1000), to: m.longest.to }) : fmtDistance(m.longest.km * 1000)]);
   if (m.top) rows.push([t('monthTop'), t('monthTopDetail', { name: m.top.name, n: m.top.count })]);
+  const driving = monthDriving(trips.filter((x) => { const d = new Date(x.at); return d.getFullYear() === S.month.year && d.getMonth() === S.month.month; }));
+  if (driving) {
+    rows.push([t('monthDriving'), t('monthDrivingDetail', {
+      score: driving.score, brakes: driving.brakes, over: fmtDuration(Math.round(driving.overS / 60) * 60, lang),
+    })]);
+  }
   const now2 = new Date();
   const thisMonth = S.month.year === now2.getFullYear() && S.month.month === now2.getMonth();
   if (thisMonth && trips.some((x) => x.g === BUDI_GRADE)) {

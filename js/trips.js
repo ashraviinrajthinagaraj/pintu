@@ -40,6 +40,10 @@ export function cleanTrip(t) {
     // For claiming mileage: marked as work, and where it started.
     w: !!t.w,
     from: String(t.from || '').slice(0, 60),
+    // How it was driven: hard brakes, sharp starts, seconds over the limit, the mark.
+    ...(Number.isFinite(Number(t.sc)) && t.sc !== null ? {
+      b: Math.round(n(t.b)), a: Math.round(n(t.a)), o: Math.round(n(t.o)), sc: Math.max(0, Math.min(100, Math.round(Number(t.sc)))),
+    } : {}),
   };
 }
 

@@ -272,6 +272,18 @@ right on the road. Tapping one shows when you'd reach it, and an R&R can be adde
 Saved on the phone, set from the main screen or settings. With a position, each shows the journey
 time and arrival clock, asked again after 5 minutes or a 500 m move.
 
+## Driving report
+
+After each real drive of a kilometre or more, the arrival screen gives a mark out of 100 and says
+why (`js/drive-report.js`): sudden braking (losing more than 11 km/h a second, from above
+20 km/h), sharp starts (gaining that fast), time more than 5 km/h over the speed limit where the
+limit is known, and the top speed. Each sudden brake costs 8 marks and each sharp start 4; time
+over the limit costs up to 40, as a share of the time the limit was known, so a long drive isn't
+marked down for being long. It all comes from the GPS: no motion sensors, nothing new to allow.
+A single odd GPS reading is ignored (speed is the middle of the last three) and changes are judged
+over about two seconds. The figures are kept with the trip's line on the phone, and the monthly
+summary shows the month's average mark, sudden brakes and time over the limit.
+
 ## Home-screen shortcuts
 
 Holding Pintu's icon on the home screen offers Rumah, Kerja, Cari, Kereta and Minyak
