@@ -1,0 +1,46 @@
+# Keeps data/transit.json up to date: the LRT and MRT lines and stations, KTM's
+# stations, and the routes of every live bus and train feed, from the timetables
+# Prasarana, KTMB and BAS.MY publish on data.gov.my. Routes change now and then,
+# so it runs every Monday morning, when the script changes, or by hand.
+name: Bus and train data
+
+on:
+  schedule:
+    - cron: '41 19 * * 0'    # Monday 03:41 in Malaysia
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/transit-data.mjs'
+      - '.github/workflows/transit-data.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: transit-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read the timetables
+        run: node scripts/transit-data.mjs
+      - name: Save if changed
+        run: |
+          if git diff --quiet -- data/transit.json && git ls-files --error-unmatch data/transit.json >/dev/null 2>&1; then
+            echo "No change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/transit.json
+          git commit -m "Update the bus and train data"
+          git pull --rebase origin main
+          git push origin HEAD:main
