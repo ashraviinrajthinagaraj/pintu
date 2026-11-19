@@ -1,20 +1,26 @@
-// Temporary: Singapore's traffic camera list, near the two crossings into Johor.
-const near = (c) => (c.location.latitude > 1.43 && c.location.longitude > 103.75 && c.location.longitude < 103.80) || (c.location.longitude < 103.66 && c.location.latitude > 1.32);
-for (const url of ['https://api.data.gov.sg/v1/transport/traffic-images', 'https://api-open.data.gov.sg/v2/real-time/api/traffic-images']) {
-  const t0 = Date.now();
-  const res = await fetch(url);
-  const text = await res.text();
-  console.log('==', url, res.status, `${Date.now() - t0} ms`, text.length, JSON.stringify(Object.fromEntries([...res.headers].filter(([k]) => /cache|age|ratelimit|access-control|content-type/i.test(k)))));
-  try {
-    const j = JSON.parse(text);
-    const items = j.items || j.data?.items;
-    const cams = items?.[0]?.cameras || [];
-    console.log('== count', cams.length, 'timestamp', items?.[0]?.timestamp);
-    for (const c of cams.filter(near)) console.log('== cam', c.camera_id, c.location.latitude, c.location.longitude, c.timestamp, c.image, JSON.stringify(c.image_metadata));
-    const one = cams.find((c) => c.camera_id === '2701') || cams[0];
-    if (one) {
-      const img = await fetch(one.image);
-      console.log('== image', img.status, img.headers.get('content-type'), img.headers.get('content-length'), img.headers.get('access-control-allow-origin'), img.headers.get('cache-control'));
-    }
-  } catch (e) { console.log('== body', text.slice(0, 300)); }
+// Temporary: routes into Singapore by each crossing, through a point on each bridge.
+const from = { lat: 1.4927, lon: 103.7414 };   // Johor Bahru (Skudai side)
+const to = { lat: 1.3521, lon: 103.8198 };     // central Singapore
+const vias = {
+  causeway_2701: { lat: 1.447023728, lon: 103.7716543 },
+  causeway_mid: { lat: 1.4535, lon: 103.7690 },
+  secondlink_4703: { lat: 1.348697862, lon: 103.6350413 },
+  secondlink_mid: { lat: 1.3540, lon: 103.6250 },
+};
+const names = (trip) => [...new Set(trip.legs.flatMap((l) => l.maneuvers.flatMap((m) => m.street_names || [])))].slice(0, 30).join(' / ');
+for (const [name, via] of Object.entries({ none: null, ...vias })) {
+  const body = { locations: [{ ...from, type: 'break' }, ...(via ? [{ ...via, type: 'through' }] : []), { ...to, type: 'break' }], costing: 'auto', units: 'kilometers' };
+  const res = await fetch(`https://valhalla1.openstreetmap.de/route?json=${encodeURIComponent(JSON.stringify(body))}`, { headers: { 'user-agent': 'Pintu probe' } });
+  const j = await res.json();
+  if (!j.trip) { console.log('==', name, res.status, JSON.stringify(j).slice(0, 200)); continue; }
+  console.log('==', name, j.trip.summary.length, 'km', Math.round(j.trip.summary.time / 60), 'min |', names(j.trip).slice(0, 300));
+  await new Promise((r) => setTimeout(r, 1500));
+}
+// And the nearest roads to the bridge points.
+for (const [name, via] of Object.entries(vias)) {
+  const res = await fetch(`https://valhalla1.openstreetmap.de/locate?json=${encodeURIComponent(JSON.stringify({ locations: [via], costing: 'auto', verbose: true }))}`, { headers: { 'user-agent': 'Pintu probe' } });
+  const j = await res.json();
+  const e = j[0]?.edges?.[0];
+  console.log('== locate', name, e ? `${e.correlated_lat},${e.correlated_lon} dist ${Math.round(e.distance || 0)} ${JSON.stringify(e.edge_info?.names || [])}` : JSON.stringify(j).slice(0, 200));
+  await new Promise((r) => setTimeout(r, 1500));
 }
