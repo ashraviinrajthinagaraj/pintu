@@ -1,26 +1,20 @@
-// Temporary: routes into Singapore by each crossing, through a point on each bridge.
-const from = { lat: 1.4927, lon: 103.7414 };   // Johor Bahru (Skudai side)
-const to = { lat: 1.3521, lon: 103.8198 };     // central Singapore
-const vias = {
-  causeway_2701: { lat: 1.447023728, lon: 103.7716543 },
-  causeway_mid: { lat: 1.4535, lon: 103.7690 },
-  secondlink_4703: { lat: 1.348697862, lon: 103.6350413 },
-  secondlink_mid: { lat: 1.3540, lon: 103.6250 },
+// Temporary: car and foot routes over the water, and what the ferry part says.
+const trips = {
+  'alor setar → kuah (car)': [[6.1248, 100.3678], [6.3170, 99.8510], 'auto'],
+  'butterworth → georgetown (foot)': [[5.3990, 100.3640], [5.4140, 100.3420], 'pedestrian'],
+  'kuala perlis → kuah (car)': [[6.3990, 100.1290], [6.3170, 99.8510], 'auto'],
+  'mersing → tioman (foot)': [[2.4290, 103.8360], [2.8220, 104.1580], 'pedestrian'],
+  'butterworth → georgetown (car)': [[5.3990, 100.3640], [5.4140, 100.3420], 'auto'],
 };
-const names = (trip) => [...new Set(trip.legs.flatMap((l) => l.maneuvers.flatMap((m) => m.street_names || [])))].slice(0, 30).join(' / ');
-for (const [name, via] of Object.entries({ none: null, ...vias })) {
-  const body = { locations: [{ ...from, type: 'break' }, ...(via ? [{ ...via, type: 'through' }] : []), { ...to, type: 'break' }], costing: 'auto', units: 'kilometers' };
+for (const [name, [a, b, costing]] of Object.entries(trips)) {
+  const body = { locations: [{ lat: a[0], lon: a[1] }, { lat: b[0], lon: b[1] }], costing, units: 'kilometers' };
   const res = await fetch(`https://valhalla1.openstreetmap.de/route?json=${encodeURIComponent(JSON.stringify(body))}`, { headers: { 'user-agent': 'Pintu probe' } });
   const j = await res.json();
-  if (!j.trip) { console.log('==', name, res.status, JSON.stringify(j).slice(0, 200)); continue; }
-  console.log('==', name, j.trip.summary.length, 'km', Math.round(j.trip.summary.time / 60), 'min |', names(j.trip).slice(0, 300));
-  await new Promise((r) => setTimeout(r, 1500));
-}
-// And the nearest roads to the bridge points.
-for (const [name, via] of Object.entries(vias)) {
-  const res = await fetch(`https://valhalla1.openstreetmap.de/locate?json=${encodeURIComponent(JSON.stringify({ locations: [via], costing: 'auto', verbose: true }))}`, { headers: { 'user-agent': 'Pintu probe' } });
-  const j = await res.json();
-  const e = j[0]?.edges?.[0];
-  console.log('== locate', name, e ? `${e.correlated_lat},${e.correlated_lon} dist ${Math.round(e.distance || 0)} ${JSON.stringify(e.edge_info?.names || [])}` : JSON.stringify(j).slice(0, 200));
+  if (!j.trip) { console.log('==', name, res.status, JSON.stringify(j).slice(0, 160)); continue; }
+  const ms = j.trip.legs[0].maneuvers;
+  console.log('==', name, j.trip.summary.length, 'km', Math.round(j.trip.summary.time / 60), 'min, has_ferry', j.trip.summary.has_ferry);
+  for (const m of ms.filter((x) => x.ferry || x.type === 28 || x.type === 29 || x.travel_mode === 'ferry')) {
+    console.log('==   ', m.type, m.travel_mode, m.travel_type, JSON.stringify(m.street_names), m.length, 'km', Math.round(m.time / 60), 'min |', m.instruction);
+  }
   await new Promise((r) => setTimeout(r, 1500));
 }
