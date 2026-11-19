@@ -21,8 +21,10 @@ export const FEEDS = [
   { id: 'ktmb', name: 'KTM', kind: 'train', path: 'ktmb' },
   { id: 'mybas-kangar', name: 'BAS.MY Kangar', kind: 'bus', path: 'mybas-kangar' },
   { id: 'mybas-alor-setar', name: 'BAS.MY Alor Setar', kind: 'bus', path: 'mybas-alor-setar' },
-  { id: 'mybas-kota-bharu', name: 'BAS.MY Kota Bharu', kind: 'bus', path: 'mybas-kota-bharu' },
-  { id: 'mybas-kuala-terengganu', name: 'BAS.MY Kuala Terengganu', kind: 'bus', path: 'mybas-kuala-terengganu' },
+  // These two publish empty timetables for now: the area they serve, so their
+  // buses can still be shown, if without their routes' names.
+  { id: 'mybas-kota-bharu', name: 'BAS.MY Kota Bharu', kind: 'bus', path: 'mybas-kota-bharu', box: [101.9, 5.8, 102.5, 6.3] },
+  { id: 'mybas-kuala-terengganu', name: 'BAS.MY Kuala Terengganu', kind: 'bus', path: 'mybas-kuala-terengganu', box: [102.8, 4.95, 103.35, 5.65] },
   { id: 'mybas-ipoh', name: 'BAS.MY Ipoh', kind: 'bus', path: 'mybas-ipoh' },
   { id: 'mybas-seremban-a', name: 'BAS.MY Seremban', kind: 'bus', path: 'mybas-seremban-a' },
   { id: 'mybas-seremban-b', name: 'BAS.MY Seremban', kind: 'bus', path: 'mybas-seremban-b' },
@@ -51,7 +53,7 @@ export function unzip(buf, wanted = null) {
     const local = buf.readUInt32LE(at + 42);
     const path = buf.toString('utf8', at + 46, at + 46 + nameLen);
     at += 46 + nameLen + extraLen + commentLen;
-    const name = path.split('/').pop();
+    const name = path.split('/').pop().toLowerCase();
     // Mac copies of each file ride along in some of them.
     if (!name || path.startsWith('__MACOSX') || name.startsWith('._')) continue;
     if (wanted && !wanted.includes(name)) continue;
@@ -220,16 +222,18 @@ export function feedOf(def, files) {
   const routes = {};
   for (const r of csv(files['routes.txt'])) {
     if (!r.route_id) continue;
-    const short = nameCase(r.route_short_name || '');
+    let short = nameCase(r.route_short_name || '');
     const long = nameCase(r.route_long_name || '');
-    routes[r.route_id] = [short || long || r.route_id, short ? long : '', colourOf(r.route_color, fallback)];
+    // Some put the route's name in both and its number only in its id ("N50").
+    if (short && short === long && /^[A-Z]{0,3}\d{1,4}[A-Z]?$/.test(r.route_id)) short = r.route_id;
+    routes[r.route_id] = [short || long || r.route_id, short && short !== long ? long : '', colourOf(r.route_color, fallback)];
   }
   const feed = {
     id: def.id,
     name: def.name,
     kind: def.kind,
     url: `${LIVE}/${def.path}`,
-    box: boxOf(csv(files['stops.txt'])),
+    box: boxOf(csv(files['stops.txt'])) || def.box || null,
     routes,
   };
   if (def.kind === 'train') feed.trips = Object.fromEntries(csv(files['trips.txt']).map((t) => [t.trip_id, t.route_id]).filter(([a, b]) => a && b));
@@ -259,9 +263,14 @@ async function main() {
   for (const def of FEEDS) {
     await sleep(GAP_MS);
     try {
-      const files = unzip(await download(`${STATIC}/${def.path}`), ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'].filter((f) => def.kind === 'train' || f === 'routes.txt' || f === 'stops.txt'));
+      const zip = await download(`${STATIC}/${def.path}`);
+      const files = unzip(zip, ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'].filter((f) => def.kind === 'train' || f === 'routes.txt' || f === 'stops.txt'));
       const feed = feedOf(def, files);
-      if (!feed.box || !Object.keys(feed.routes).length) throw new Error('no stops or routes');
+      if (!feed.box || (!Object.keys(feed.routes).length && !def.box)) {
+        let inside = '';
+        try { inside = Object.keys(unzip(zip)).map((n) => `${n} (${unzip(zip)[n].length})`).join(', '); } catch (err) { inside = err.message; }
+        throw new Error(`no stops or routes: ${zip.length} bytes holding ${inside || 'nothing'}`);
+      }
       feeds.push(feed);
       if (def.id === 'ktmb') ktm = ktmStations(files);
       console.log(`${def.id}: ${Object.keys(feed.routes).length} routes`);

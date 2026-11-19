@@ -178,6 +178,51 @@ export function drawCameraBadge(ratio = 2) {
   ctx.fill();
   return { width: size, height: size, data: ctx.getImageData(0, 0, size, size).data, pixelRatio: ratio };
 }
+// A bus or a train seen from the front, in white, to sit on the dot in its
+// route's colour. 16 px across before it's sized; the windows are cut out.
+export const TRANSIT_KINDS = ['bus', 'train'];
+export function drawTransitGlyph(kind, ratio = 2) {
+  const size = 16 * ratio;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(ratio, ratio);
+  const box = (x, y, w, h, r) => {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h);
+  };
+  ctx.fillStyle = '#fff';
+  if (kind === 'train') {
+    box(3.5, 1.5, 9, 10.5, [3.5, 3.5, 1.5, 1.5]);
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = '#fff';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(5.5, 12.5); ctx.lineTo(4, 14.8);
+    ctx.moveTo(10.5, 12.5); ctx.lineTo(12, 14.8);
+    ctx.stroke();
+    ctx.globalCompositeOperation = 'destination-out';
+    box(5, 3.5, 6, 3.6, 1);
+    ctx.fill();
+    for (const x of [6, 10]) { ctx.beginPath(); ctx.arc(x, 9.5, 0.9, 0, Math.PI * 2); ctx.fill(); }
+  } else {
+    box(3, 1.5, 10, 11.5, 2);
+    ctx.fill();
+    ctx.fillRect(4, 12, 2.2, 2.6);
+    ctx.fillRect(9.8, 12, 2.2, 2.6);
+    ctx.globalCompositeOperation = 'destination-out';
+    box(4.4, 3.2, 7.2, 4.6, 0.8);
+    ctx.fill();
+    for (const x of [5.6, 10.4]) { ctx.beginPath(); ctx.arc(x, 10.2, 0.85, 0, Math.PI * 2); ctx.fill(); }
+  }
+  return { width: size, height: size, data: ctx.getImageData(0, 0, size, size).data, pixelRatio: ratio };
+}
+export const TRANSIT_VEHICLE_LAYERS = ['pintu-transit-veh', 'pintu-transit-veh-icon', 'pintu-transit-veh-num'];
+const TRANSIT_ATTRIBUTION = 'Bas &amp; tren: data.gov.my (CC BY 4.0)';
+
 const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Phones with very sharp screens would otherwise draw the map at three times
@@ -224,7 +269,7 @@ export function tapZoom(sourceLayer, kind) {
 }
 
 export class MapView {
-  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onOtherTap, onPlaceTap, onPuckTap, trafficTiles = null, satelliteTiles = null, satellite = false }) {
+  constructor(el, { theme, view3d, onLongPress, onUserMove, onAltTap, onOtherTap, onPlaceTap, onPuckTap, onTransitTap, trafficTiles = null, satelliteTiles = null, satellite = false }) {
     this.el = el;
     this.trafficTiles = trafficTiles;   // where TomTom's traffic tiles come from, if anywhere
     this.satelliteTiles = satelliteTiles; // where the photos from above come from, if anywhere
@@ -240,10 +285,12 @@ export class MapView {
     this.onOtherTap = onOtherTap;
     this.onPlaceTap = onPlaceTap;
     this.onPuckTap = onPuckTap;
+    this.onTransitTap = onTransitTap;
+    this.transitOn = false;
     this.carPin = null;
     this.carKey = '';
     this.map = null;
-    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY, turn: EMPTY };
+    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY, turn: EMPTY, railLines: EMPTY, stations: EMPTY, vehicles: EMPTY };
     this.junctionRoads = false;
     this.routeLabels = [];
     this.routeLabelKey = '';
@@ -299,10 +346,19 @@ export class MapView {
       const p = this.map.project(you);
       if (Math.hypot(p.x - x, p.y - y) < 34) { this.onPuckTap(); return; }
     }
-    if (!this.onPlaceTap || !this.map.queryRenderedFeatures) return;
+    if (!this.map.queryRenderedFeatures) return;
     let hits = [];
     try { hits = this.map.queryRenderedFeatures([[x - 14, y - 14], [x + 14, y + 14]]) || []; } catch { return; }
     if (hits.some((h) => h.layer?.id === 'pintu-alt-hit' || h.layer?.id === 'pintu-other-hit')) return;
+    // A bus or a train, the nearest to the finger if there are several.
+    const vehicles = this.transitOn ? hits.filter((h) => TRANSIT_VEHICLE_LAYERS.includes(h.layer?.id) && h.geometry?.type === 'Point') : [];
+    if (vehicles.length && this.onTransitTap) {
+      const dist = (h) => { const p = this.map.project(h.geometry.coordinates); return Math.hypot(p.x - x, p.y - y); };
+      const near = vehicles.reduce((a, b) => (dist(b) < dist(a) ? b : a));
+      this.onTransitTap({ ...near.properties });
+      return;
+    }
+    if (!this.onPlaceTap) return;
     const named = (h) => TAPPABLE.includes(h.sourceLayer) && placeName(h.properties);
     const f = hits.find((h) => named(h) && TAPPABLE.indexOf(h.sourceLayer) < 2) || hits.find(named);
     if (!f) return;
@@ -398,6 +454,8 @@ export class MapView {
 
     // On the ground, under the buildings, so a road behind one stays hidden.
     this._addJunctionRoads(m.getLayer('pintu-3d') ? 'pintu-3d' : beforeId, c);
+
+    this._addTransitLines(beforeId);
 
     if (!m.getSource('pintu-other')) m.addSource('pintu-other', { type: 'geojson', data: this.data.other });
     if (!m.getSource('pintu-alts')) m.addSource('pintu-alts', { type: 'geojson', data: this.data.alts });
@@ -518,7 +576,151 @@ export class MapView {
         onReady: (ok) => { this.carReady = ok; this._syncPuck(); },
       }));
     }
+    // Buses and trains on top of the names, so they can be seen and tapped;
+    // only the car is above them.
+    this._addTransitVehicles('pintu-car');
   }
+
+  // The LRT, MRT, monorail and BRT lines in their own colours, edged so they
+  // stand out from the roads, with a white dot at each station.
+  _addTransitLines(beforeId) {
+    const m = this.map;
+    const visibility = this.transitOn ? 'visible' : 'none';
+    const edge = this.theme === 'night' ? '#141A1D' : '#FFFFFF';
+    if (!m.getSource('pintu-rail')) m.addSource('pintu-rail', { type: 'geojson', data: this.data.railLines, attribution: TRANSIT_ATTRIBUTION });
+    if (!m.getSource('pintu-stations')) m.addSource('pintu-stations', { type: 'geojson', data: this.data.stations });
+    const width = (a, b) => ['interpolate', ['linear'], ['zoom'], 9, a, 16, b];
+    if (!m.getLayer('pintu-rail-edge')) {
+      m.addLayer({ id: 'pintu-rail-edge', type: 'line', source: 'pintu-rail', minzoom: 9, layout: { 'line-cap': 'round', 'line-join': 'round', visibility }, paint: { 'line-color': edge, 'line-width': width(3, 8), 'line-opacity': 0.9 } }, beforeId);
+    }
+    if (!m.getLayer('pintu-rail')) {
+      m.addLayer({ id: 'pintu-rail', type: 'line', source: 'pintu-rail', minzoom: 9, layout: { 'line-cap': 'round', 'line-join': 'round', visibility }, paint: { 'line-color': ['get', 'c'], 'line-width': width(1.6, 4.5) } }, beforeId);
+    }
+    if (!m.getLayer('pintu-stations')) {
+      m.addLayer({
+        id: 'pintu-stations',
+        type: 'circle',
+        source: 'pintu-stations',
+        minzoom: 12,
+        layout: { visibility },
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 12, 2.6, 16, 5.5],
+          'circle-color': '#FFFFFF',
+          'circle-stroke-color': ['get', 'c'],
+          'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 12, 1.4, 16, 2.6],
+        },
+      }, beforeId);
+    }
+  }
+
+  // Each bus and train: a dot in its route's colour with a white bus or train
+  // on it up close, and the route's number beside it closer still.
+  _addTransitVehicles(beforeId) {
+    const m = this.map;
+    const visibility = this.transitOn ? 'visible' : 'none';
+    if (!m.getSource('pintu-vehicles')) m.addSource('pintu-vehicles', { type: 'geojson', data: this.data.vehicles, attribution: TRANSIT_ATTRIBUTION });
+    for (const kind of TRANSIT_KINDS) {
+      if (m.hasImage?.(`pintu-transit-${kind}`)) continue;
+      try {
+        const img = drawTransitGlyph(kind, Math.min(3, Math.max(1, Math.round(window.devicePixelRatio || 2))));
+        if (img) m.addImage?.(`pintu-transit-${kind}`, { width: img.width, height: img.height, data: img.data }, { pixelRatio: img.pixelRatio });
+      } catch { /* the dots alone still show them */ }
+    }
+    if (!m.getLayer('pintu-transit-veh')) {
+      m.addLayer({
+        id: 'pintu-transit-veh',
+        type: 'circle',
+        source: 'pintu-vehicles',
+        minzoom: 11,
+        layout: { visibility },
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 11, 3.5, 13, 6, 15, 10, 18, 12],
+          'circle-color': ['get', 'c'],
+          'circle-stroke-color': '#FFFFFF',
+          'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 11, 1, 15, 2],
+          'circle-pitch-alignment': 'viewport',
+        },
+      }, beforeId);
+    }
+    if (!m.getLayer('pintu-transit-veh-icon')) {
+      m.addLayer({
+        id: 'pintu-transit-veh-icon',
+        type: 'symbol',
+        source: 'pintu-vehicles',
+        minzoom: 13.5,
+        layout: {
+          visibility,
+          'icon-image': ['concat', 'pintu-transit-', ['get', 'k']],
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 13.5, 0.7, 15, 0.9, 18, 1.05],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      }, beforeId);
+    }
+    // The numbers need the map's letters, which every real style has.
+    if (!m.getLayer('pintu-transit-veh-num') && m.getStyle().glyphs) {
+      m.addLayer({
+        id: 'pintu-transit-veh-num',
+        type: 'symbol',
+        source: 'pintu-vehicles',
+        minzoom: 14.5,
+        layout: {
+          visibility,
+          'text-field': ['get', 'n'],
+          'text-font': ['Noto Sans Bold'],
+          'text-size': 12,
+          'text-anchor': 'left',
+          'text-offset': [1.15, 0],
+          'text-optional': true,
+        },
+        paint: {
+          'text-color': this.theme === 'night' ? '#FFFFFF' : '#15191C',
+          'text-halo-color': this.theme === 'night' ? '#141A1D' : '#FFFFFF',
+          'text-halo-width': 1.6,
+        },
+      }, beforeId);
+    }
+  }
+
+  // Buses and trains shown or not, with the lines and stations to draw.
+  setTransit(on, data = null) {
+    this.transitOn = !!on;
+    if (data) {
+      this.data.railLines = data.lines || EMPTY;
+      this.data.stations = data.stations || EMPTY;
+    }
+    const m = this.map;
+    if (!m) return;
+    if (data) {
+      m.getSource('pintu-rail')?.setData(this.data.railLines);
+      m.getSource('pintu-stations')?.setData(this.data.stations);
+    }
+    const visibility = this.transitOn ? 'visible' : 'none';
+    for (const id of ['pintu-rail-edge', 'pintu-rail', 'pintu-stations', ...TRANSIT_VEHICLE_LAYERS]) {
+      if (m.getLayer?.(id)) m.setLayoutProperty(id, 'visibility', visibility);
+    }
+  }
+
+  setTransitVehicles(featureCollection) {
+    this.data.vehicles = featureCollection || EMPTY;
+    this.map?.getSource?.('pintu-vehicles')?.setData(this.data.vehicles);
+  }
+
+  // The part of the world on screen, [west, south, east, north].
+  viewBox() {
+    const m = this.map;
+    if (!m) return null;
+    try {
+      if (m.getBounds) {
+        const b = m.getBounds();
+        return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      }
+      const corners = [[0, 0], [innerWidth, 0], [0, innerHeight], [innerWidth, innerHeight]].map((p) => m.unproject(p));
+      return [Math.min(...corners.map((c) => c.lng)), Math.min(...corners.map((c) => c.lat)), Math.max(...corners.map((c) => c.lng)), Math.max(...corners.map((c) => c.lat))];
+    } catch { return null; }
+  }
+
+  zoom() { return this.map?.getZoom?.() ?? 0; }
 
   // Traffic goes under the route, so the way you're going is always on top.
   _addTrafficLayers(beforeId) {

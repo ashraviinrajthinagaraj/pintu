@@ -113,6 +113,8 @@
       const rings = (geo) => (geo.type === 'Polygon' ? geo.coordinates : geo.type === 'MultiPolygon' ? geo.coordinates.flat() : []);
       const path = (pts) => pts.forEach((pt, i) => { const [x, y] = toXY(pt, this.cam, w, h); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
       const num = (v, d) => (typeof v === 'number' ? v : Array.isArray(v) ? v[v.length - 1] : d);
+      // A fixed value, a feature's own (['get', key]), or the far end of a zoom curve.
+      const val = (v, f, d) => (Array.isArray(v) ? (v[0] === 'get' ? f.properties[v[1]] ?? d : num(v, d)) : v ?? d);
       for (const l of this.layers) {
         const src = this.sources[l.source];
         if (!src || !src.data || !src.data.features || l.id.startsWith('pintu-lane')) continue;
@@ -125,14 +127,25 @@
         } else if (l.type === 'line' && l.paint['line-opacity'] !== 0) {
           const polys = src.data.features.filter((f) => /Polygon/.test(f.geometry.type));
           const lines = src.data.features.filter((f) => f.geometry.type === 'LineString');
-          g.strokeStyle = l.paint['line-color'];
+          g.strokeStyle = typeof l.paint['line-color'] === 'string' ? l.paint['line-color'] : '#888';
           g.lineWidth = num(l.paint['line-width'], 2);
           g.globalAlpha = num(l.paint['line-opacity'], 1);
           g.lineCap = l.layout?.['line-cap'] === 'butt' ? 'butt' : 'round'; g.lineJoin = 'round';
           if (l.paint['line-dasharray']) g.setLineDash(l.paint['line-dasharray'].map((d) => d * g.lineWidth));
           if (l.paint['line-blur']) { g.shadowColor = g.strokeStyle; g.shadowBlur = l.paint['line-blur'] * 2; }
           for (const f of polys) for (const r of rings(f.geometry)) { g.beginPath(); path(r); g.closePath(); g.stroke(); }
-          if (!l.paint['line-blur']) for (const f of lines) { g.beginPath(); path(f.geometry.coordinates); g.stroke(); }
+          if (!l.paint['line-blur']) for (const f of lines) { g.strokeStyle = val(l.paint['line-color'], f, '#888'); g.beginPath(); path(f.geometry.coordinates); g.stroke(); }
+        } else if (l.type === 'circle') {
+          for (const f of src.data.features) {
+            if (f.geometry.type !== 'Point') continue;
+            const [x, y] = toXY(f.geometry.coordinates, this.cam, w, h);
+            g.beginPath();
+            g.arc(x, y, num(l.paint['circle-radius'], 5), 0, Math.PI * 2);
+            g.fillStyle = val(l.paint['circle-color'], f, '#000');
+            g.fill();
+            const sw = num(l.paint['circle-stroke-width'], 0);
+            if (sw) { g.lineWidth = sw; g.strokeStyle = val(l.paint['circle-stroke-color'], f, '#fff'); g.stroke(); }
+          }
         } else if (l.type === 'symbol' && l.layout?.['icon-image']) {
           // A fixed image, or ['concat', 'prefix-', ['get', key]].
           const spec = l.layout['icon-image'];

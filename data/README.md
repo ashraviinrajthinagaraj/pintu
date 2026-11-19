@@ -18,3 +18,10 @@ relation). Rebuilt every Monday by `scripts/along-data.mjs` through
 zone lists its sources), as lines along each road found by the public routing server (FOSSGIS
 Valhalla) between the two towns, by `scripts/wildlife-data.mjs`. The lines are © OpenStreetMap
 contributors, under the same licence.
+
+`transit.json`: the Klang Valley's LRT, MRT, monorail and BRT lines (one way along each,
+simplified to within 10 m) with their colours and stations, KTM's stations, and for each live bus
+and train feed the area it covers and its routes' numbers, names and colours. Built every Monday
+by `scripts/transit-data.mjs` from the GTFS timetables Prasarana, KTMB and BAS.MY publish on
+[data.gov.my](https://developer.data.gov.my/realtime-api/gtfs-static), under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

@@ -16,6 +16,7 @@ import { speech } from '../../js/instructions.js';
 import { pointAt } from '../../js/motion.js';
 import { lngLatToTile } from '../../js/tiles.js';
 import { encodeTile } from '../helpers/mvt.js';
+import { feed as feedRT, vehicle as vehicleRT } from '../helpers/gtfs-rt.js';
 
 const require = createRequire('/opt/npm-tools/node_modules/');
 const { chromium, devices } = require('playwright');
@@ -85,9 +86,9 @@ async function pickPlace(page, n = 0) {
   if (await page.locator('#placecard').isVisible()) await page.click('#placecard-go');
 }
 
-async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, alongData, solat, traffic, tomtom, fuel, init, hub } = {}) {
+async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, alongData, solat, traffic, tomtom, fuel, init, hub, transit } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, alongData: 0, sgCameras: 0, fossgis: [], matrix: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
+  const log = { stadia: 0, alongData: 0, sgCameras: 0, transit: [], fossgis: [], matrix: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
@@ -166,6 +167,13 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
     if (host === 'api.open-meteo.com') {
       log.forecast.push(url);
       return forecast ? route.fulfill({ json: forecast(url), headers: CORS }) : route.abort();
+    }
+    if (host === 'api.data.gov.my' && new URL(url).pathname.startsWith('/gtfs-realtime/')) {
+      // Where the buses and trains are: as the test says, or none at all.
+      log.transit.push({ url, at: Date.now() });
+      const answer = transit ? await transit(url) : feedRT([]);
+      if (answer.__status) return route.fulfill({ status: answer.__status, body: '', headers: CORS });
+      return route.fulfill({ body: Buffer.from(answer), contentType: 'application/x-protobuf', headers: CORS });
     }
     if (host === 'api.data.gov.my') {
       log.warnings++;
@@ -4263,6 +4271,135 @@ await check('car: driving off from it means you have it', async () => {
   assert.equal(await vis(page, '#car-pill'), true);
   await toNav(page);
   assert.equal(await page.evaluate(() => localStorage.getItem('pintu.car')), null);
+  await ctx.close();
+});
+
+/* ---------- Buses and trains ---------- */
+
+await check('buses and trains: the lines in their colours, live buses where the map is, and a tapped one says its route', async () => {
+  const data = JSON.parse(await readFile(path.join(root, 'data/transit.json'), 'utf8'));
+  const seremban = Object.entries(data.feeds.find((f) => f.id === 'ktmb').trips).find(([, r]) => r === 'KC05_KB18')[0];
+  const secs = () => Math.floor(Date.now() / 1000);
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    scale: 2,
+    transit: (url) => {
+      if (url.endsWith('rapid-bus-kl')) {
+        return feedRT([
+          vehicleRT({ id: '0', trip: 'weekday_U3000_U300002_0', route: 'U3000', lat: 3.1555, lng: 101.7005, at: secs() - 20, vid: 'WUW1664' }),
+          vehicleRT({ id: '1', route: 'U9999', lat: 3.1540, lng: 101.6985, vid: 'WXX2' }),
+          vehicleRT({ id: '2', route: 'U3000', lat: 0, lng: 0, vid: 'NOFIX' }),
+        ], secs());
+      }
+      if (url.endsWith('/ktmb')) return feedRT([vehicleRT({ id: 'k1', trip: seremban, lat: 3.1520, lng: 101.6950, vid: '2001' })], secs());
+      if (url.includes('mrtfeeder')) return { __status: 429 };
+      return feedRT([]);
+    },
+  });
+  // Time moved on in the page, to see what happens later without waiting for it.
+  await page.evaluate(() => {
+    const realNow = Date.now.bind(Date);
+    window.__shift = 0;
+    Date.now = () => realNow() + window.__shift;
+  });
+  const later = async (ms) => { await page.evaluate((n) => { window.__shift += n; }, ms); await page.waitForTimeout(2300); };
+  const layout = (id) => page.evaluate((i) => window.__map.layout[i], id);
+  const vehicles = () => page.evaluate(() => window.__map.sources['pintu-vehicles'].data.features.map((f) => f.properties));
+
+  // Off at first, and nothing asked for.
+  assert.equal(await page.getAttribute('#btn-transit', 'aria-pressed'), 'false');
+  assert.equal(await page.getAttribute('#btn-transit', 'aria-label'), 'Bas dan tren');
+  await page.click('#btn-transit');
+  assert.equal(await page.getAttribute('#btn-transit', 'aria-pressed'), 'true');
+  // The whole country on screen: the lines, but no buses until closer.
+  assert.equal(await text(page, '#toast'), 'Bas dan tren ditunjukkan. Dekatkan peta untuk melihatnya.');
+  await page.waitForFunction(() => window.__map.sources['pintu-rail']?.data?.features?.length > 0);
+  assert.equal(await layout('pintu-rail'), 'visible');
+  assert.equal(await layout('pintu-stations'), 'visible');
+  const rail = await page.evaluate(() => window.__map.sources['pintu-rail'].data.features.map((f) => f.properties));
+  assert.ok(rail.some((l) => l.name === 'Kelana Jaya Line' && l.c === '#D50032'), 'in its own colour');
+  assert.match(await page.evaluate(() => window.__map.sources['pintu-rail'].attribution), /data\.gov\.my/);
+  await page.waitForTimeout(2300);
+  assert.equal(log.transit.length, 0, 'not from this far out');
+
+  // Close in on Kuala Lumpur: its buses first, then KTM, one request at a time.
+  await page.evaluate(() => window.__map.jumpTo({ center: [101.7, 3.155], zoom: 15 }));
+  await page.waitForFunction(() => window.__map.sources['pintu-vehicles'].data.features.length >= 2);
+  assert.equal(log.transit.length, 1);
+  assert.match(log.transit[0].url, /^https:\/\/api\.data\.gov\.my\/gtfs-realtime\/vehicle-position\/prasarana\?category=rapid-bus-kl$/);
+  let shown = await vehicles();
+  assert.deepEqual(shown.map((v) => [v.id, v.k, v.c, v.n]), [['WUW1664', 'bus', '#006CFF', '300'], ['WXX2', 'bus', '#1565C0', '']]);
+  // Too soon for the next one: the portal allows four a minute.
+  await page.waitForTimeout(2300);
+  assert.equal(log.transit.length, 1);
+  await later(16000);
+  assert.equal(log.transit.length, 2);
+  // The feeder buses next: refused, so left alone for a while.
+  assert.match(log.transit[1].url, /rapid-bus-mrtfeeder$/);
+  await later(16000);
+  assert.match(log.transit[2].url, /\/ktmb$/);
+  await page.waitForFunction(() => window.__map.sources['pintu-vehicles'].data.features.length >= 3);
+  shown = await vehicles();
+  assert.deepEqual(shown.find((v) => v.id === '2001'), { k: 'train', c: '#3C5A9F', n: '', feed: 'ktmb', id: '2001', at: shown.find((v) => v.id === '2001').at });
+  // Never Johor Bahru's or Penang's buses, from here.
+  assert.ok(log.transit.every((r) => /rapid-bus-kl|mrtfeeder|ktmb|seremban/.test(r.url)), log.transit.map((r) => r.url).join(' '));
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${shots}/95-transit.png` });
+
+  // A bus tapped: which route, and how fresh.
+  await page.evaluate(() => {
+    window.__mapFeatures = [
+      { layer: { id: 'pintu-transit-veh' }, properties: { feed: 'rapid-bus-kl', id: 'WXX2' }, geometry: { type: 'Point', coordinates: [101.6985, 3.154] } },
+      { layer: { id: 'pintu-transit-veh-icon' }, properties: { feed: 'rapid-bus-kl', id: 'WUW1664' }, geometry: { type: 'Point', coordinates: [101.7005, 3.1555] } },
+    ];
+    const p = window.__map.project([101.7005, 3.1555]);
+    window.__map._fire('click', { point: { x: p.x + 3, y: p.y }, lngLat: { lng: 101.7005, lat: 3.1555 } });
+  });
+  assert.match(await text(page, '#toast'), /^Bas 300 \(Rapid KL\): Terminal Maluri ~ Lebuh Ampang\. Kedudukan \d+ saat lalu\.$/);
+  assert.equal(await vis(page, '#placecard'), false, 'a bus, not a place');
+  await page.evaluate(() => {
+    const p = window.__map.project([101.695, 3.152]);
+    window.__mapFeatures = [{ layer: { id: 'pintu-transit-veh' }, properties: { feed: 'ktmb', id: '2001' }, geometry: { type: 'Point', coordinates: [101.695, 3.152] } }];
+    window.__map._fire('click', { point: { x: p.x, y: p.y }, lngLat: { lng: 101.695, lat: 3.152 } });
+  });
+  assert.match(await text(page, '#toast'), /^Tren Seremban Line \(KTM\): KTM Batu Caves - Pulau Sebang\/Tampin\. Kedudukan \d+ (saat|min) lalu\.$/);
+
+  // Going somewhere: they're put away, and nothing more is asked for.
+  const asked = log.transit.length;
+  await page.click('#where');
+  await page.waitForSelector('#search:not([hidden])');
+  assert.equal(await layout('pintu-rail'), 'none');
+  assert.equal(await layout('pintu-transit-veh'), 'none');
+  await later(40000);
+  assert.equal(log.transit.length, asked);
+  await page.click('#search-back');
+  await page.waitForSelector('#idle:not([hidden])');
+  assert.equal(await layout('pintu-transit-veh'), 'visible');
+
+  // Positions too old to trust are dropped.
+  await page.evaluate(() => { window.__shift += 11 * 60000; });
+  await page.waitForFunction(() => window.__map.sources['pintu-vehicles'].data.features.every((f) => f.properties.feed !== 'ktmb'), null, { timeout: 8000 }).catch(() => {});
+
+  // Off again, and it stays off next time.
+  await page.click('#btn-transit');
+  assert.equal(await text(page, '#toast'), 'Bas dan tren disembunyikan');
+  assert.equal(await layout('pintu-rail'), 'none');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.settings')).transit), false);
+  const off = log.transit.length;
+  await later(20000);
+  assert.equal(log.transit.length, off);
+  await ctx.close();
+});
+
+await check('buses and trains: somewhere with no live feed says so, once', async () => {
+  const { ctx, page, log } = await newApp(browser, { ...quiet, storage: { 'pintu.safetySeen': 'true', 'pintu.settings': { transit: true } } });
+  await page.evaluate(() => window.__map.jumpTo({ center: [116.07, 5.98], zoom: 14 }));   // Kota Kinabalu
+  await page.waitForFunction(() => document.querySelector('#toast')?.textContent === 'Tiada kedudukan bas atau tren langsung untuk kawasan ini.', null, { timeout: 5000 });
+  assert.equal(await page.getAttribute('#btn-transit', 'aria-pressed'), 'true', 'still on from last time');
+  assert.equal(await page.evaluate(() => window.__map.layout['pintu-rail']), 'visible');
+  // Nothing there to ask for.
+  await page.waitForTimeout(2500);
+  assert.equal(log.transit.length, 0);
   await ctx.close();
 });
 

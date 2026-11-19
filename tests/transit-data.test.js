@@ -178,8 +178,22 @@ test('each live feed gets its area and its routes, with names and colours', () =
   const ktm = feedOf(FEEDS.find((f) => f.id === 'ktmb'), KTM);
   assert.equal(ktm.url, 'https://api.data.gov.my/gtfs-realtime/vehicle-position/ktmb');
   assert.equal(ktm.kind, 'train');
-  assert.deepEqual(ktm.routes.ETS, ['ETS', 'ETS', '#3C5A9F']);
+  assert.deepEqual(ktm.routes.ETS, ['ETS', '', '#3C5A9F']);
+  // The number only in the id, the name in both the others.
+  const seremban = feedOf(FEEDS.find((f) => f.id === 'mybas-seremban-a'), {
+    'routes.txt': 'route_id,route_short_name,route_long_name,route_color\nN50,TERMINAL1 - Nilai Sentral,TERMINAL1 - Nilai Sentral,\nN10A,Terminal 1 - Bahau,Terminal 1 - Bahau,\n',
+    'stops.txt': 'stop_id,stop_name,stop_lat,stop_lon\n1,A,2.7,101.9\n',
+  });
+  assert.deepEqual(seremban.routes, { N50: ['N50', 'TERMINAL1 - Nilai Sentral', '#1565C0'], N10A: ['N10A', 'Terminal 1 - Bahau', '#1565C0'] });
   assert.deepEqual(ktm.trips, { 2001: 'KC05_KB18', 2003: 'KC05_KB18', 1101: 'KA15_KD19', 1004: 'ETS' });
+});
+
+test('a feed with an empty timetable still covers its town', () => {
+  const kb = feedOf(FEEDS.find((f) => f.id === 'mybas-kota-bharu'), { 'routes.txt': 'route_id,route_short_name\n', 'stops.txt': 'stop_id,stop_name,stop_lat,stop_lon\n' });
+  assert.deepEqual(kb.box, [101.9, 5.8, 102.5, 6.3]);
+  assert.deepEqual(kb.routes, {});
+  const bus = feedOf(FEEDS.find((f) => f.id === 'rapid-bus-kl'), { 'routes.txt': 'route_id\n', 'stops.txt': 'stop_id\n' });
+  assert.equal(bus.box, null);
 });
 
 test('every feed the data portal lists, each with its own live address', () => {

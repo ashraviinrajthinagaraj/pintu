@@ -26,6 +26,7 @@ folder as it is.
 | Satellite photos (if chosen) | Maxar's, through [TomTom's Map Display API](https://docs.tomtom.com/map-display-api/documentation/raster/satellite-tile), via Pintu's server | TomTom's key. 200,000 tiles a month free, no card. See Satellite map |
 | Traffic lights, bumps and railway crossings | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), asked after the tolls, in small boxes along the routes | Too many to keep with the app. No more than two requests at a time |
 | Singapore crossing photos | [data.gov.sg](https://data.gov.sg/datasets/354/view) traffic images (LTA) | Singapore Open Data Licence; credited under the photos |
+| Buses and trains (if shown) | Lines, stations and route names in `data/transit.json`, from the [GTFS timetables](https://developer.data.gov.my/realtime-api/gtfs-static) on data.gov.my, refreshed every Monday (`scripts/transit-data.mjs`); live positions from the [GTFS Realtime feeds](https://developer.data.gov.my/realtime-api/gtfs-realtime), asked for by the phone | Prasarana, KTMB and BAS.MY, CC BY 4.0, credited on the map. 4 requests a minute, so no more than one every 16 s |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
 ### Routing
@@ -219,6 +220,30 @@ The plan now has a line for each crossing (`js/ferries.js`): its name and the ti
 ("Feri Wantas RoRo: 2 j 21 min di atas air"), that the arrival time doesn't count waiting for
 the ferry, and a "Jadual" link that searches the web for when it sails. No open timetable for
 Malaysia's ferries exists to read the times from.
+
+## Buses and trains
+
+The bus button on the main map (under the satellite one) shows public transport. The LRT, MRT,
+monorail and BRT lines are drawn in their own colours with a dot at each station, and KTM's
+stations too. Closer in, each bus and KTM train is a dot in its route's colour, with a bus or
+train on it and its number beside it; a tap says which route ("Bas 300 (Rapid KL): Terminal
+Maluri ~ Lebuh Ampang. Kedudukan 20 saat lalu."). It stays on or off as left.
+
+Where they are comes from data.gov.my's live feeds: Rapid KL's buses and MRT feeders, Rapid
+Penang, KTM's Komuter, ETS and intercity trains, and BAS.MY in Kangar, Alor Setar, Kota Bharu,
+Kuala Terengganu, Ipoh, Seremban, Melaka, Johor Bahru and Kuching (`js/transit.js`). The phone asks for them itself,
+with no key, only for the feeds covering the part of the map on screen, and only when the map
+is close enough to see them (zoom 11). The portal allows four requests a minute, so Pintu asks
+for one feed at a time, no more than once every 16 seconds, each feed no more than every 30
+seconds (as often as it changes), and leaves a feed alone for a minute and a half after a
+refusal. A position more than ten minutes old is dropped. Nothing is asked for while you're on
+the way somewhere, or with Pintu in the background. Somewhere no feed covers says so once.
+
+The LRT and MRT have no live feed yet, so their trains aren't shown, only their lines. BAS.MY's
+Kota Bharu and Kuala Terengganu timetables are empty for now, so their buses show without their
+routes' names (only a number, where the feed gives one), over an area set by hand. Each
+week a GitHub workflow (`.github/workflows/transit-data.yml`) reads the timetables again; a feed
+that can't be read that week keeps last week's routes.
 
 ## Into and out of Singapore
 

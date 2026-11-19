@@ -1770,3 +1770,6 @@ a { color: inherit; }
 /* The satellite map switch, above the settings button */
 .round-sat.is-on { background: #2E7D4F; color: #fff; border-color: rgba(255, 255, 255, .6); }
 .round-sat[hidden] { display: none; }
+
+/* Buses and trains on the map: on, in the colour of the buses themselves. */
+.round-transit.is-on { background: #1565C0; color: #fff; border-color: rgba(255, 255, 255, .6); }

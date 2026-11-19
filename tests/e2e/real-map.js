@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { altTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
 import { bearing } from '../../js/geo.js';
 import { prepareTrip } from '../../js/routing.js';
+import { feed as feedRT, vehicle as vehicleRT } from '../helpers/gtfs-rt.js';
 
 const require = createRequire('/opt/npm-tools/node_modules/');
 const { chromium } = require('playwright');
@@ -189,7 +190,7 @@ const tileBytes = ({ z, x, y }) => encodeTile({ z, x, y }, {
   transportation: STREETS,
 });
 
-async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null, roadThings = null, satellite = false }) {
+async function open(browser, { styleFor, viewport = { width: 390, height: 844 }, scale = 2, routeResponse, storage, theme = 'day', laneCount = 1, tiles = false, tileLog = [], traffic = null, roadThings = null, satellite = false, transit = null }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: 'block', locale: 'ms-MY', timezoneId: 'Asia/Kuala_Lumpur' });
   const errors = [];
   ctx.route(/^https?:\/\/(?!127\.0\.0\.1)/, async (route) => {
@@ -249,6 +250,9 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
       ] }, headers: CORS });
     }
     if (host === 'api.waktusolat.app') return route.fulfill({ status: 404, json: {}, headers: CORS });
+    if (host === 'api.data.gov.my' && url.includes('/gtfs-realtime/')) {
+      return route.fulfill({ body: Buffer.from(transit ? transit(url) : feedRT([])), contentType: 'application/x-protobuf', headers: CORS });
+    }
     return route.abort();
   });
   await ctx.addInitScript(({ storage, theme }) => {
@@ -670,6 +674,49 @@ await check('screens on the real renderer', async () => {
     }
     await ctx.close();
     assert.deepEqual(errors, []);
+  }
+});
+
+await check('buses and trains on the real renderer: valid layers above the route, drawn, and a tap on a bus says its route', async () => {
+  const secs = () => Math.floor(Date.now() / 1000);
+  for (const theme of ['day', 'night']) {
+    const { ctx, page, errors } = await open(browser, {
+      styleFor: realStyle,
+      scale: 2,
+      theme,
+      transit: (url) => (url.endsWith('rapid-bus-kl')
+        ? feedRT([
+          vehicleRT({ id: '0', route: 'U3000', lat: 3.1555, lng: 101.7005, at: secs() - 15, vid: 'WUW1664' }),
+          vehicleRT({ id: '1', route: 'U4020', lat: 3.1528, lng: 101.6968, at: secs() - 40, vid: 'WXX2' }),
+        ], secs())
+        : feedRT([])),
+    });
+    await page.click('#btn-transit');
+    await page.evaluate(() => window.__map.jumpTo({ center: [101.6985, 3.1535], zoom: 15.5 }));
+    await page.waitForFunction(() => window.__map.queryRenderedFeatures({ layers: ['pintu-transit-veh'] }).length === 2, null, { timeout: 20000 });
+    const layers = await layerOrder(page);
+    const at = (id) => layers.findIndex((l) => l.id === id);
+    for (const id of ['pintu-rail-edge', 'pintu-rail', 'pintu-stations', 'pintu-transit-veh', 'pintu-transit-veh-icon', 'pintu-transit-veh-num']) assert.ok(at(id) > -1, `${theme}: ${id}`);
+    assert.ok(at('pintu-rail') < at('pintu-route'), `${theme}: the train lines under any route`);
+    assert.ok(at('pintu-transit-veh') > at('pintu-route') && at('pintu-transit-veh') > at('pintu-cams'), `${theme}: buses on top`);
+    const order = await page.evaluate(() => window.__map.style._order);
+    assert.ok(order.indexOf('pintu-transit-veh-num') < order.indexOf('pintu-car'), `${theme}: but under the car`);
+    assert.ok(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-rail'] }).length > 0), `${theme}: a line drawn`);
+    assert.ok(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-stations'] }).length > 0), `${theme}: a station drawn`);
+    assert.equal(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-transit-veh-icon'] }).length), 2, `${theme}: each with its bus`);
+    await settle(page, 800);
+    if (theme === 'day') await page.screenshot({ path: `${shots}/real-transit.png` });
+    // A finger on the bus, as on the phone.
+    const p = await page.evaluate(() => window.__map.project([101.7005, 3.1555]));
+    await page.mouse.click(p.x + 2, p.y + 1);
+    await page.waitForFunction(() => /^Bas 300 \(Rapid KL\)/.test(document.querySelector('#toast')?.textContent || ''), null, { timeout: 5000 });
+    assert.equal(await page.locator('#placecard').isVisible(), false);
+    await page.click('#btn-transit');
+    assert.equal(await page.evaluate(() => window.__map.getLayoutProperty('pintu-transit-veh', 'visibility')), 'none');
+    const bad = (await page.evaluate(() => window.__mapErrors)).filter((e) => !/Failed to fetch|sprite|glyph|404|AJAXError|204|Unexpected end|Could not load/i.test(e));
+    assert.deepEqual(bad, [], theme);
+    assert.deepEqual(errors, [], theme);
+    await ctx.close();
   }
 });
 

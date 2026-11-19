@@ -65,6 +65,7 @@ import * as voice from './voice.js';
 import { LABEL_BOX, clearOf, clearOfBoxes, labelSize, labelSpots, trafficBar, trafficGradient } from './route-labels.js';
 import { loadStates, shapesOf, stretchIn } from './states.js';
 import { arrowFor, turnArrow } from './turn-arrow.js';
+import { LiveTransit, MIN_ZOOM as TRANSIT_MIN_ZOOM, lineFeatures, loadTransit, routeOf, stationFeatures, vehicleFeatures } from './transit.js';
 
 const $ = (id) => document.getElementById(id);
 // Bahasa Melayu, English, Chinese and Tamil. The characters' jokes and the human
@@ -121,7 +122,7 @@ const S = {
   routeError: null,
   mode: load('mode', 'car'),
   avoidTolls: load('avoidTolls', false),
-  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, camerasMap: true, satellite: false, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
+  settings: { lang: 'ms', theme: 'auto', muted: false, view3d: true, solat: true, simSpeed: 4, voiceLevel: 'full', voiceCharacter: 'standard', speedLimit: true, weather: true, hudMirror: true, hudInk: 'white', speedCameras: true, camerasMap: true, satellite: false, transit: false, roadWarnings: true, sayLights: false, traffic: true, trafficMap: true, offlineMap: true, keepDrive: true, keepTrips: true, saver: 'auto', name: '', commute: { ...COMMUTE_DEFAULTS }, ...load('settings', {}) },
   vehicles: load('vehicles', {}),
   looks: { ...DEFAULT_LOOKS, ...load('looks', {}) },
   scene: null,
@@ -470,6 +471,7 @@ function applyStaticText() {
   $('look-sat').textContent = t('lookSat');
   $('look-note').textContent = t('lookNote');
   label($('btn-sat'), t('satBtn'), UI.satellite);
+  label($('btn-transit'), t('transitBtn'), UI.bus);
   $('set-theme-title').textContent = t('setTheme');
   $('theme-auto').textContent = t('themeAuto');
   $('theme-day').textContent = t('themeDay');
@@ -498,6 +500,7 @@ function applyStaticText() {
   $('veh-remove').textContent = t('vehRemove');
   render3DButtons();
   renderSatButton();
+  renderTransitBtn();
   renderMute();
   renderVoiceStatus();
   renderInstall();
@@ -676,6 +679,7 @@ function show(view) {
   S.view = view;
   render();
   syncTrafficMap();
+  syncTransit();
   renderShareBtn();
   renderConvoy();
   $('btn-report').hidden = view !== 'nav' || !togetherReady() || S.mode === 'walk';
@@ -699,6 +703,85 @@ function toggleTrafficMap() {
   $('traffic-map-on').checked = S.settings.trafficMap;
   syncTrafficMap();
   toast(t(S.settings.trafficMap ? 'trafficMapShown' : 'trafficMapHidden'));
+}
+
+/* ---------- Buses and trains ---------- */
+
+// On the main map only: on the way somewhere, they'd be in the way.
+const transitShown = () => !!S.settings.transit && S.view === 'idle';
+
+function renderTransitBtn() {
+  const b = $('btn-transit');
+  b.classList.toggle('is-on', !!S.settings.transit);
+  b.setAttribute('aria-pressed', String(!!S.settings.transit));
+}
+
+function toggleTransit() {
+  setSetting('transit', !S.settings.transit);
+  renderTransitBtn();
+  S.transitToldNone = false;
+  if (!S.settings.transit) toast(t('transitOff'));
+  else toast(t((mapView?.zoom() ?? 0) < TRANSIT_MIN_ZOOM ? 'transitOnZoom' : 'transitOn'), 6000);
+  syncTransit();
+}
+
+function syncTransit() {
+  const on = transitShown();
+  if (on && !S.transit) { loadTransitData(); return; }
+  if (S.transit) {
+    mapView?.setTransit(on, mapView.transitData === S.transit.features ? null : S.transit.features);
+    if (mapView) mapView.transitData = S.transit.features;
+  }
+  clearInterval(S.transitTimer);
+  S.transitTimer = null;
+  if (on && S.transit) {
+    S.transitTimer = setInterval(transitTick, 2000);
+    renderVehicles();
+    transitTick();
+  }
+}
+
+function loadTransitData() {
+  if (S.transitLoading) return;
+  S.transitLoading = true;
+  loadTransit().then((data) => {
+    S.transit = {
+      data,
+      features: { lines: lineFeatures(data), stations: stationFeatures(data) },
+      live: new LiveTransit({ feeds: data.feeds, onUpdate: renderVehicles }),
+    };
+    syncTransit();
+  }).catch(() => {
+    if (transitShown()) toast(t('transitFailed'));
+  }).finally(() => { S.transitLoading = false; });
+}
+
+function transitTick() {
+  if (!transitShown() || document.hidden || !S.transit || !mapView) return;
+  const box = mapView.viewBox(), zoom = mapView.zoom();
+  // Somewhere with no live feed at all: said once.
+  if (zoom >= TRANSIT_MIN_ZOOM && box && !S.transit.live.inView(box).length && !S.transitToldNone) {
+    S.transitToldNone = true;
+    toast(t('transitNone'));
+  }
+  S.transit.live.poll(box, zoom);
+}
+
+function renderVehicles() {
+  if (S.transit) mapView?.setTransitVehicles(vehicleFeatures(S.transit.live.vehicles()));
+}
+
+// What a tapped bus or train is, and how fresh its position is.
+function onTransitTap({ feed, id }) {
+  const v = S.transit?.live.vehicles().find((x) => x.feed.id === feed && x.id === id);
+  if (!v) return;
+  const r = routeOf(v, v.feed);
+  const train = v.feed.kind === 'train';
+  const what = r.number ? t(train ? 'vehTrain' : 'vehBus', { number: r.number }) : t(train ? 'vehTrainNone' : 'vehBusNone');
+  const secs = Math.max(0, Math.round((Date.now() - v.at) / 1000));
+  const ago = secs < 90 ? t('vehAgoSec', { n: Math.max(5, Math.round(secs / 5) * 5) }) : t('vehAgoMin', { n: Math.round(secs / 60) });
+  const name = r.name && r.name !== r.number ? r.name : '';
+  toast(t(name ? 'vehSay' : 'vehSayNoName', { what, op: v.feed.name, name, ago }), 6000);
 }
 
 function render() {
@@ -6099,6 +6182,7 @@ function wire() {
   for (const b of document.querySelectorAll('#voice-try button')) b.addEventListener('click', () => tryMoment(b.dataset.moment));
   $('look-map').addEventListener('click', () => setSatellite(false));
   $('look-sat').addEventListener('click', () => setSatellite(true));
+  $('btn-transit').addEventListener('click', toggleTransit);
   $('btn-sat').addEventListener('click', () => {
     setSatellite(!S.settings.satellite);
     toast(t(S.settings.satellite ? 'satOn' : 'satOff'));
@@ -7151,6 +7235,7 @@ async function startMap() {
       onOtherTap: () => takeOtherWay(),
       onPlaceTap,
       onPuckTap: () => { if (S.view === 'idle' && !S.overlay) openCar(); },
+      onTransitTap,
       trafficTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
       satelliteTiles: CONFIG.server ? `${CONFIG.server}/tiles` : null,
       satellite: S.settings.satellite,
@@ -7159,6 +7244,7 @@ async function startMap() {
     mapView.setSaver(S.saving);
     mapView.setCarOn(S.settings.view3d);
     syncTrafficMap();
+    syncTransit();
   } catch {
     $('map-problem-text').textContent = t('mapFailed');
     $('map-problem').hidden = false;
