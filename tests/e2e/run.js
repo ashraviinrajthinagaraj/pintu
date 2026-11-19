@@ -1335,6 +1335,25 @@ await check('no lane data at all leaves the normal view untouched', async () => 
   await ctx.close();
 });
 
+await check('ferries: the car ferry to Langkawi in the plan, with the time on the water and where to find when it sails', async () => {
+  const trip = () => buildTrip([100.129, 6.399], [
+    { to: [100.125, 6.395], type: 1, street: 'Jalan Kuala Perlis', kph: 40 },
+    { to: [99.86, 6.32], type: 28, street: 'Wantas RoRo', kph: 18, ferry: true },
+    { to: [99.851, 6.317], type: 29, kph: 30 },
+  ], { has_ferry: true });
+  const { ctx, page } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: trip() }) });
+  await toPreview(page);
+  await page.waitForSelector('#plan-ferry:not([hidden])');
+  assert.match(await text(page, '#plan-ferry-title'), /^Feri Wantas RoRo: 1 j \d+ min di atas air$/);
+  assert.equal(await text(page, '#plan-ferry-detail'), 'Masa tiba belum termasuk menunggu feri. Semak jadual sebelum pergi.');
+  assert.equal(await page.getAttribute('#plan-ferry-times', 'href'), 'https://www.google.com/search?q=Wantas%20RoRo%20jadual%20feri');
+  assert.equal(await page.getAttribute('#plan-ferry-times', 'target'), '_blank');
+  assert.match(await page.locator('.route-opt').first().innerText(), /Feri/);
+  await page.screenshot({ path: `${shots}/13f-ferry.png` });
+  await noOverflow(page, 'ferry');
+  await ctx.close();
+});
+
 await check('Singapore: both crossings with their times and photos; the quicker one taken in a tap', async () => {
   const JB = [103.7637, 1.4627], SG = [103.8198, 1.3521];
   const causeway = () => buildTrip(JB, [

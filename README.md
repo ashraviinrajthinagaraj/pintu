@@ -211,6 +211,15 @@ stand on the road on the map, upright like the real thing. Pintu knows where a l
 whether it's red: Malaysia's signal timings aren't shared openly. A route found while driving
 asks for its own, and only things someone has mapped are known.
 
+## Ferries
+
+The route planner already takes ferries where there's no road: the car ferry to Langkawi, the
+boats to Penang or Tioman on foot, and the route says "Naik feri" and "Turun dari feri" there.
+The plan now has a line for each crossing (`js/ferries.js`): its name and the time on the water
+("Feri Wantas RoRo: 2 j 21 min di atas air"), that the arrival time doesn't count waiting for
+the ferry, and a "Jadual" link that searches the web for when it sails. No open timetable for
+Malaysia's ferries exists to read the times from.
+
 ## Into and out of Singapore
 
 A trip between Johor and Singapore goes over the Causeway (Tambak Johor) or the Second Link

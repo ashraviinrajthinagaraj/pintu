@@ -15,6 +15,7 @@ import { RouteError, distanceAfter, fetchDriveTimes, fetchRoadDetails, fetchRout
 import { MAX_STOPS, suggestOrder } from './errands.js';
 import { loadWildlife, zoneAhead, zonesOnRoute } from './wildlife.js';
 import { CROSSINGS, crossingOf, fetchCameras as fetchCrossingCameras, throughFor } from './crossings.js';
+import { ferryLegs, timetableSearch } from './ferries.js';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
 import { plainSpeech } from './delivery.js';
 import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
@@ -1952,6 +1953,7 @@ function renderPlan() {
   }));
 
   renderPlanWild(route);
+  renderPlanFerry(route);
   renderPlanCross();
   renderPlanOrder();
   renderPlanAlong(route);
@@ -2258,6 +2260,23 @@ function tollMoney(tolls) {
   const sum = tolls ? tollTotal(tolls) : null;
   if (sum?.total == null) return null;
   return sum.unknown ? t('otherAtLeast', { total: money(sum.total) }) : `RM${money(sum.total)}`;
+}
+
+/* ---------- Ferries ---------- */
+
+// The route counts the time on the water, not the wait for the next sailing.
+function renderPlanFerry(route) {
+  const legs = ferryLegs(route);
+  $('plan-ferry').hidden = !legs.length;
+  if (!legs.length) return;
+  const lang = getLang();
+  $('plan-ferry-icon').innerHTML = turnIcon({ type: 28 });
+  const names = legs.map((l) => t('ferryLeg', { name: l.name || t('ferry'), time: fmtDuration(l.seconds, lang) })).join(', ');
+  $('plan-ferry-title').textContent = names;
+  $('plan-ferry-detail').textContent = t('ferryWait');
+  const link = $('plan-ferry-times');
+  link.href = timetableSearch(legs[0].name, t('ferryTimesWords'));
+  link.textContent = t('ferryTimes');
 }
 
 /* ---------- Johor–Singapore crossings ---------- */
