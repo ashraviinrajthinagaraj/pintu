@@ -51,7 +51,7 @@ export function unzip(buf, wanted = null) {
     const local = buf.readUInt32LE(at + 42);
     const path = buf.toString('utf8', at + 46, at + 46 + nameLen);
     at += 46 + nameLen + extraLen + commentLen;
-    const name = path.split('/').pop();
+    const name = path.split('/').pop().toLowerCase();
     // Mac copies of each file ride along in some of them.
     if (!name || path.startsWith('__MACOSX') || name.startsWith('._')) continue;
     if (wanted && !wanted.includes(name)) continue;
@@ -220,9 +220,11 @@ export function feedOf(def, files) {
   const routes = {};
   for (const r of csv(files['routes.txt'])) {
     if (!r.route_id) continue;
-    const short = nameCase(r.route_short_name || '');
+    let short = nameCase(r.route_short_name || '');
     const long = nameCase(r.route_long_name || '');
-    routes[r.route_id] = [short || long || r.route_id, short ? long : '', colourOf(r.route_color, fallback)];
+    // Some put the route's name in both and its number only in its id ("N50").
+    if (short && short === long && /^[A-Z]{0,3}\d{1,4}[A-Z]?$/.test(r.route_id)) short = r.route_id;
+    routes[r.route_id] = [short || long || r.route_id, short && short !== long ? long : '', colourOf(r.route_color, fallback)];
   }
   const feed = {
     id: def.id,
@@ -259,9 +261,14 @@ async function main() {
   for (const def of FEEDS) {
     await sleep(GAP_MS);
     try {
-      const files = unzip(await download(`${STATIC}/${def.path}`), ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'].filter((f) => def.kind === 'train' || f === 'routes.txt' || f === 'stops.txt'));
+      const zip = await download(`${STATIC}/${def.path}`);
+      const files = unzip(zip, ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'].filter((f) => def.kind === 'train' || f === 'routes.txt' || f === 'stops.txt'));
       const feed = feedOf(def, files);
-      if (!feed.box || !Object.keys(feed.routes).length) throw new Error('no stops or routes');
+      if (!feed.box || !Object.keys(feed.routes).length) {
+        let inside = '';
+        try { inside = Object.keys(unzip(zip)).map((n) => `${n} (${unzip(zip)[n].length})`).join(', '); } catch (err) { inside = err.message; }
+        throw new Error(`no stops or routes: ${zip.length} bytes holding ${inside || 'nothing'}`);
+      }
       feeds.push(feed);
       if (def.id === 'ktmb') ktm = ktmStations(files);
       console.log(`${def.id}: ${Object.keys(feed.routes).length} routes`);
