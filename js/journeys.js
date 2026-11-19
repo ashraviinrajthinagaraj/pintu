@@ -65,7 +65,9 @@ const at = (p) => ({
 });
 
 function legOf(l, ends) {
-  const kind = kindOf(l.mode);
+  let kind = kindOf(l.mode);
+  // KTM's Komuter lines are filed as trams; they're trains.
+  if (kind === 'tram' && /\bktm|keretapi/i.test(l.agency || '')) kind = 'train';
   const named = (p, end) => {
     const place = at(p);
     // Where the trip starts and ends are yours, not stops.

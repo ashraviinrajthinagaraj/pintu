@@ -71,6 +71,9 @@ test('a line without its colour gets one: Singapore MRT by its line, others by w
   assert.equal(bus.first.colour, '#1565C0');
   assert.equal(bus.first.from.name, 'Komersial SS2 (Poh Kong)');
   assert.equal(bus.transfers, 1);
+  const ktm = klTrip();
+  Object.assign(ktm.legs[1], { mode: 'TRAM', routeShortName: 'Port Klang Line', routeColor: 'dc2420', agencyName: 'Keretapi Tanah Melayu' });
+  assert.equal(ready([ktm]).trips[0].first.kind, 'train', 'a KTM Komuter is a train, however it is filed');
   const pale = klTrip();
   pale.legs[1].routeColor = 'FFFFFF';
   assert.equal(ready([pale]).trips[0].first.colour, '#6B7280');
