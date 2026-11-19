@@ -1,16 +1,25 @@
-// Temporary: can the public route server put stops in the best order?
-const locs = [[3.139, 101.6869], [3.1579, 101.7116], [3.0738, 101.5183], [3.1185, 101.6773], [3.2375, 101.684]]; // start, KLCC, Shah Alam, Mid Valley, Batu Caves (end)
-const body = { locations: locs.map(([lat, lon]) => ({ lat, lon })), costing: 'auto', directions_options: { units: 'kilometers' } };
-for (const action of ['optimized_route', 'sources_to_targets']) {
-  const b = action === 'sources_to_targets' ? { sources: body.locations, targets: body.locations, costing: 'auto' } : body;
-  const t0 = Date.now();
-  const res = await fetch(`https://valhalla1.openstreetmap.de/${action}?json=${encodeURIComponent(JSON.stringify(b))}`, { headers: { 'user-agent': 'Pintu probe' } });
-  const text = await res.text();
-  console.log('==', action, res.status, `${Date.now() - t0} ms`, text.length);
-  try {
-    const j = JSON.parse(text);
-    if (j.trip) console.log('== order', JSON.stringify(j.trip.locations.map((l) => l.original_index)), 'km', j.trip.summary?.length, 'min', Math.round(j.trip.summary?.time / 60), 'legs', j.trip.legs?.length);
-    else if (j.sources_to_targets) console.log('== matrix', JSON.stringify(j.sources_to_targets.map((row) => row.map((c) => Math.round(c.time / 60)))));
-    else console.log('== body', text.slice(0, 300));
-  } catch { console.log('== body', text.slice(0, 300)); }
+// Temporary: animal crossings and ferries that OpenStreetMap has in Malaysia.
+const Q = `[out:json][timeout:180];area["ISO3166-1"="MY"][admin_level=2]->.my;
+(nwr["hazard"~"animal|wildlife|deer|elephant"](area.my);
+ nwr["traffic_sign"~"animal|elephant|tapir|deer|wildlife",i](area.my);
+ nwr["animal_crossing"](area.my);
+ node["crossing"="animal"](area.my););
+out center tags;`;
+const F = `[out:json][timeout:180];area["ISO3166-1"="MY"][admin_level=2]->.my;
+(way["route"="ferry"](area.my);relation["route"="ferry"](area.my););
+out tags center;`;
+for (const [name, q] of [['animals', Q], ['ferries', F]]) {
+  for (const server of ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter']) {
+    try {
+      const res = await fetch(server, { method: 'POST', body: new URLSearchParams({ data: q }), headers: { 'user-agent': 'Pintu probe (github.com/ashraviinrajthinagaraj/pintu)' } });
+      const j = await res.json();
+      console.log('==', name, j.elements.length);
+      for (const el of j.elements.slice(0, 80)) {
+        const c = el.center || el;
+        const t = el.tags || {};
+        console.log('==', name, el.type, el.id, (c.lat ?? 0).toFixed(4), (c.lon ?? 0).toFixed(4), JSON.stringify(Object.fromEntries(Object.entries(t).filter(([k]) => /hazard|animal|traffic_sign|crossing|name|ref|operator|duration|interval|opening|motor_vehicle|motorcar|foot|highway/.test(k)))).slice(0, 260));
+      }
+      break;
+    } catch (e) { console.log('== fail', name, server, e.message); }
+  }
 }
