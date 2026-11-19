@@ -210,6 +210,24 @@ stand on the road on the map, upright like the real thing. Pintu knows where a l
 whether it's red: Malaysia's signal timings aren't shared openly. A route found while driving
 asks for its own, and only things someone has mapped are known.
 
+## Wild elephants
+
+Some roads run through forest where wild elephants cross, and hitting one is deadly for both.
+OpenStreetMap has hardly any of these marked in Malaysia, so `data/wildlife.json` holds the
+stretches named in public reports ([TCER](https://www.tcer.my/gajah-melintas/),
+[The Star](https://www.thestar.com.my/metro/metro-news/2024/05/31/ensuring-safe-passage-on-our-roads-for-wildlife)):
+Gerik–Jeli (the East–West Highway), Kluang–Mersing, Kota Tinggi–Mersing and Lahad Datu–Sandakan.
+Each is a line along the road itself, found once by the public routing server between the two
+towns (`scripts/wildlife-data.mjs`, run by `.github/workflows/wildlife-data.yml` when the list
+changes). Gua Musang–Hulu Terengganu is also named, but OpenStreetMap's routing sends traffic
+between those towns another way, so no route would pass it as mapped; it's left out for now.
+
+A route that runs along one for a kilometre or more gets a yellow line in the plan ("Gajah liar
+mungkin melintas", the stretch and its length, and to drive slowly, above all at dusk and at
+night). While driving, it shows with the road warnings a minute and a half before (at least 2 km),
+is said once, and stays shown with the distance left until the end of the stretch
+(`js/wildlife.js`). A light, bump or crossing nearer still takes the space first.
+
 ## Fixing the map
 
 The map is OpenStreetMap, and it misses things. While driving, the road report button also has

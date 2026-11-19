@@ -13,3 +13,8 @@ Each state keeps only its name.
 OpenStreetMap has, as short lists (`[id, lat, lng, …]`, the id's first letter for node, way or
 relation). Rebuilt every Monday by `scripts/along-data.mjs` through
 `.github/workflows/along-data.yml`. © OpenStreetMap contributors, under the same licence.
+
+`wildlife.json`: the roads where wild elephants are known to cross, named in public reports (each
+zone lists its sources), as lines along each road found by the public routing server (FOSSGIS
+Valhalla) between the two towns, by `scripts/wildlife-data.mjs`. The lines are © OpenStreetMap
+contributors, under the same licence.

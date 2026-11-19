@@ -120,6 +120,8 @@ export const UI = {
   // A traffic light with its lamps lit, so it isn't mistaken for the jam report.
   signal: line('<rect x="7.5" y="2.5" width="9" height="19" rx="3.2"/><circle cx="12" cy="7" r="1.9" fill="#E53935" stroke="none"/><circle cx="12" cy="12" r="1.9" fill="#FBC02D" stroke="none"/><circle cx="12" cy="17" r="1.9" fill="#43A047" stroke="none"/>'),
   bump: line('<path d="M2.5 18.5h19"/><path d="M5 18.5c2-6 12-6 14 0"/><path d="M9.5 14.2l1-1.6M13.5 14.2l-1-1.6"/>'),
+  // An elephant side on, as on the warning signs: back, ear, trunk, legs.
+  elephant: line('<path d="M3.5 19.5v-7C3.5 8.6 6.4 6 10.5 6h3.2c3.7 0 6.3 2.6 6.3 6.4v4.4c0 1.4.6 2.2 1.8 2.2"/><path d="M12.6 7.2c-1.6 1.5-1.8 4.4.4 5.8"/><path d="M7.5 15v4.5M16.5 15.5v4"/><circle cx="17.3" cy="10" r="1" fill="currentColor" stroke="none"/>'),
   // The crossed boards that stand at a level crossing.
   railCross: line('<path d="M4.5 5.5l15 13M19.5 5.5l-15 13"/><path d="M12 12v9.5"/>'),
   // A card held to a reader.

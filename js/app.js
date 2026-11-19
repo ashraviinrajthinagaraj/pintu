@@ -13,6 +13,7 @@ import { findAlongRoute, placeOnRoute, thinAlong } from './places.js';
 import { NAMES, PrayerTimes, closePrayer, prayerDuringTrip } from './prayer.js';
 import { RouteError, distanceAfter, fetchDriveTimes, fetchRoadDetails, fetchRoutes, limitAt, routeProviders, timeBetween } from './routing.js';
 import { MAX_STOPS, suggestOrder } from './errands.js';
+import { loadWildlife, zoneAhead, zonesOnRoute } from './wildlife.js';
 import { CHARACTER_IDS, characterAbout, characterName, characterTag, characterVoice, dress, pick, sample } from './characters.js';
 import { plainSpeech } from './delivery.js';
 import { DriveWatch, OVER_BY_KMH, RESTED_MS } from './drive-watch.js';
@@ -1946,6 +1947,7 @@ function renderPlan() {
     return row;
   }));
 
+  renderPlanWild(route);
   renderPlanOrder();
   renderPlanAlong(route);
   renderPlanFuel(route);
@@ -2251,6 +2253,58 @@ function tollMoney(tolls) {
   const sum = tolls ? tollTotal(tolls) : null;
   if (sum?.total == null) return null;
   return sum.unknown ? t('otherAtLeast', { total: money(sum.total) }) : `RM${money(sum.total)}`;
+}
+
+/* ---------- Roads where wild elephants cross ---------- */
+
+// The stretches of a route along one, worked out once the roads are known.
+function wildOn(route) {
+  if (!route || !S.wildlife) return [];
+  route.wild ??= zonesOnRoute(route, S.wildlife);
+  return route.wild;
+}
+
+function loadWild() {
+  loadWildlife().then((zones) => {
+    S.wildlife = zones;
+    if (S.view === 'preview') renderPlan();
+  }).catch(() => { /* nothing known, nothing said */ });
+}
+
+function renderPlanWild(route) {
+  const row = $('plan-wild');
+  const on = S.mode === 'walk' ? [] : wildOn(route);
+  row.hidden = !on.length;
+  if (!on.length) return;
+  $('plan-wild-icon').innerHTML = UI.elephant;
+  $('plan-wild-title').textContent = t('wildTitle');
+  const names = on.map((z) => t('wildStretch', { name: z.name, km: fmtDistance(z.toS - z.fromS) })).join(', ');
+  $('plan-wild-detail').textContent = t('wildDetail', { names });
+}
+
+// While driving: the stretch coming up, or the one you're in, when nothing
+// nearer (a light, a bump, a crossing) needs the space.
+function renderWildAhead(st, fix) {
+  const box = $('road-alert');
+  const near = zoneAhead(wildOn(S.route), st.s, fix.speed ?? 0);
+  if (!near) return false;
+  const { zone, ahead, left } = near;
+  S.roadNear = null;
+  const lang = getLang();
+  box.hidden = false;
+  box.dataset.kind = zone.animal;
+  $('road-alert-icon').innerHTML = UI.elephant;
+  const distance = fmtDistance(Math.max(ahead > 0 ? ahead : left, 10));
+  $('road-alert-distance').textContent = ahead > 0 ? distance : t('wildLeft', { distance });
+  box.setAttribute('aria-label', ahead > 0 ? t('roadAria_elephant', { distance }) : t('wildAriaIn', { distance }));
+  const key = `wild:${zone.id}:${Math.round(zone.fromS)}`;
+  if (S.featuresSaid.has(key)) return true;
+  if (!st.prompts.length && voice.busy()) return true;
+  S.featuresSaid.add(key);
+  if (S.settings.voiceLevel === 'full' && !(S.sim && S.sim.factor >= SIM_FAST)) {
+    speakText(ahead > 0 ? t('roadSay_elephant', { distance: sayDistance(ahead, lang) }) : t('wildSayIn'), { wait: voice.WAIT_TURN_MS });
+  }
+  return true;
 }
 
 /* ---------- The best order for several stops ---------- */
@@ -3990,7 +4044,10 @@ function renderRoadFeature(st, fix) {
   const on = S.settings.roadWarnings && st.onRoute && S.mode !== 'walk';
   const near = on ? featureAhead(S.features, st.s, fix.speed ?? 0) : null;
   box.hidden = !near;
-  if (!near) return;
+  if (!near) {
+    if (on) renderWildAhead(st, fix);
+    return;
+  }
   const { feature, ahead } = near;
   S.roadNear = feature;
   const lang = getLang();
@@ -6954,6 +7011,7 @@ async function main() {
   applySaver();
   requestAnimationFrame(frame);
   loadFuelPrices();
+  loadWild();
   await startMap();
   openIncoming();
 

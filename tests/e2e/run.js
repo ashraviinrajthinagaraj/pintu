@@ -1325,6 +1325,36 @@ await check('no lane data at all leaves the normal view untouched', async () => 
   await ctx.close();
 });
 
+await check('wild elephants: a route along Gerik–Jeli says so in the plan, and on the road', async () => {
+  const wild = JSON.parse(await readFile(new URL('../../data/wildlife.json', import.meta.url), 'utf8'));
+  const road = wild.zones.find((z) => z.id === 'gerik-jeli').line.slice(0, 120);
+  const trip = () => buildTrip(road[0], road.slice(1).map((to, i) => ({ to, type: i ? 8 : 1, street: 'Jalan Raya Timur-Barat', kph: 70 })));
+  const { ctx, page } = await newApp(browser, { ...quiet, routeResponse: () => ({ trip: trip() }) });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), road[0]);
+  await page.click('#where');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await pickPlace(page);
+  await page.waitForSelector('.route-opt');
+  await page.waitForSelector('#plan-wild:not([hidden])');
+  assert.equal(await text(page, '#plan-wild-title'), 'Gajah liar mungkin melintas');
+  assert.match(await text(page, '#plan-wild-detail'), /^Gerik–Jeli, \d+(\.\d)? km · Pandu perlahan, terutama waktu senja dan malam$/);
+  await page.screenshot({ path: `${shots}/13c-elephants.png` });
+  // Driving: in it from the start, with the distance left, said once.
+  await page.click('#start');
+  await page.waitForSelector('#nav-bar');
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { speed: 19, accuracy: 8 }), road[1]);
+  await page.waitForSelector('#road-alert:not([hidden])');
+  assert.equal(await page.getAttribute('#road-alert', 'data-kind'), 'elephant');
+  assert.match(await text(page, '#road-alert-distance'), / km lagi$/);
+  await page.waitForFunction(() => (window.__said || []).some((s) => /kawasan gajah liar melintas/.test(s.text)));
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { speed: 19, accuracy: 8 }), road[2]);
+  await page.waitForTimeout(300);
+  const words = (await said(page)).map((x) => x.text);
+  assert.equal(words.filter((w) => /kawasan gajah liar melintas/.test(w)).length, 1, words.join(' | '));
+  await ctx.close();
+});
+
 await check('errands: several stops in a slow order are offered a quicker one, and reordered', async () => {
   const { ctx, page, log } = await newApp(browser, {
     ...quiet,
