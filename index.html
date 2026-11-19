@@ -157,6 +157,12 @@
       <span id="plan-wild-icon" class="plan-icon"></span>
       <div class="plan-main"><strong id="plan-wild-title"></strong><span id="plan-wild-detail"></span></div>
     </div>
+    <!-- Into or out of Singapore: the trip over each crossing, with traffic and a photo -->
+    <div id="plan-cross" class="plan-cross" hidden>
+      <p class="along-head"><strong id="plan-cross-title"></strong><span id="plan-cross-status"></span></p>
+      <ol id="cross-list" class="cross-list"></ol>
+      <p id="cross-credit" class="cross-credit"></p>
+    </div>
     <!-- Several stops that would be quicker in another order -->
     <div id="plan-order" class="plan-row plan-other" hidden>
       <span id="plan-order-icon" class="plan-icon"></span>
@@ -571,6 +577,17 @@
 </section>
 
 <!-- Rain and floods along the route -->
+<!-- Singapore's camera photos of one crossing, larger -->
+<section id="camview" class="sheet sheet-stops sheet-auto" hidden>
+  <div class="sheet-grip" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <button id="camview-back" class="icon-btn" type="button"></button>
+    <div class="dest-title"><h2 id="camview-title"></h2><p id="camview-detail"></p></div>
+  </div>
+  <div id="camview-photos" class="cam-photos"></div>
+  <p id="camview-credit" class="tip"></p>
+</section>
+
 <section id="weather" class="sheet sheet-stops sheet-auto" hidden>
   <div class="sheet-grip" aria-hidden="true"></div>
   <div class="sheet-head">

@@ -25,6 +25,7 @@ folder as it is.
 | Toll plazas, cameras and R&Rs | `data/along.json`, kept with the app and refreshed from OpenStreetMap every Monday by a GitHub workflow (`scripts/along-data.mjs`) | © OpenStreetMap contributors, ODbL. If the file can't be loaded, the [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) is asked instead. Toll fares are a short list in the app, see Tolls |
 | Satellite photos (if chosen) | Maxar's, through [TomTom's Map Display API](https://docs.tomtom.com/map-display-api/documentation/raster/satellite-tile), via Pintu's server | TomTom's key. 200,000 tiles a month free, no card. See Satellite map |
 | Traffic lights, bumps and railway crossings | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), asked after the tolls, in small boxes along the routes | Too many to keep with the app. No more than two requests at a time |
+| Singapore crossing photos | [data.gov.sg](https://data.gov.sg/datasets/354/view) traffic images (LTA) | Singapore Open Data Licence; credited under the photos |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
 ### Routing
@@ -209,6 +210,21 @@ said; lights are only said if you switch that on in Settings. The next few withi
 stand on the road on the map, upright like the real thing. Pintu knows where a light is, not
 whether it's red: Malaysia's signal timings aren't shared openly. A route found while driving
 asks for its own, and only things someone has mapped are known.
+
+## Into and out of Singapore
+
+A trip between Johor and Singapore goes over the Causeway (Tambak Johor) or the Second Link
+(Laluan Kedua), and which is quicker changes by the hour. When the route plan goes over either,
+it shows both (`js/crossings.js`): the trip over each, with today's traffic from TomTom, the
+quickest marked, and "Guna" to take it. A route offered already that goes one way is used for
+it; otherwise the route is asked for again through a point on that bridge, facing the way the
+trip goes, so it doesn't take the other side of the road. Each crossing has the latest photo
+from Singapore's own traffic camera there (LTA, through
+[data.gov.sg](https://data.gov.sg/datasets/354/view), under the Singapore Open Data Licence),
+and tapping it shows both of that crossing's cameras larger. The photos come straight from
+data.gov.sg to the phone, about once every one and a half minutes at most, with no key needed.
+Malaysia's own cameras at the checkpoints aren't open to use. With stops on the way, the card
+isn't shown.
 
 ## Wild elephants
 

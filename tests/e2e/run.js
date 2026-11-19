@@ -87,7 +87,7 @@ async function pickPlace(page, n = 0) {
 
 async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, alongData, solat, traffic, tomtom, fuel, init, hub } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, alongData: 0, fossgis: [], matrix: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
+  const log = { stadia: 0, alongData: 0, sgCameras: 0, fossgis: [], matrix: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
@@ -122,6 +122,15 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
       if (!answer) return route.fulfill({ status: tomtomPath.startsWith('/tiles/') ? 204 : 503, json: tomtomPath.startsWith('/tiles/') ? undefined : { error: 'no key' }, headers: CORS });
       if (answer.__status) return route.fulfill({ status: answer.__status, json: answer.__json || { error: 'refused' }, headers: CORS });
       return route.fulfill({ json: answer, headers: CORS });
+    }
+    if (host === 'api.data.gov.sg') {
+      // Singapore's traffic cameras: the four at the two crossings, photos just taken.
+      log.sgCameras++;
+      const cam = (id, lat, lng) => ({ camera_id: id, timestamp: '2026-11-20T09:15:00+08:00', image: `https://images.data.gov.sg/api/traffic-images/test/${id}.jpg`, location: { latitude: lat, longitude: lng } });
+      return route.fulfill({ json: { items: [{ cameras: [cam('2701', 1.447, 103.7717), cam('2702', 1.4456, 103.7683), cam('4703', 1.3487, 103.635), cam('4713', 1.3476, 103.6367), cam('9999', 1.3, 103.8)] }] }, headers: CORS });
+    }
+    if (host === 'images.data.gov.sg') {
+      return route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAGklEQVR4nGNk+M+ADzAxEADDRsGoBqMagGEAADwPAREI6MEbAAAAAElFTkSuQmCC', 'base64') });
     }
     if (host === 'pintu.test' && new URL(url).pathname === '/traffic') {
       const sent = JSON.parse(route.request().postData() || '{}');
@@ -355,6 +364,7 @@ async function check(name, fn) {
   if (process.env.ONLY && !name.includes(process.env.ONLY)) return;
   try { await fn(); results.push(['ok', name]); console.log(`ok   ${name}`); }
   catch (e) { results.push(['FAIL', name, e.message]); console.log(`FAIL ${name}\n     ${String(e.message).split('\n').slice(0, 6).join('\n     ')}`); }
+
 }
 
 async function toPreview(page) {
@@ -1321,6 +1331,66 @@ await check('no lane data at all leaves the normal view untouched', async () => 
   assert.equal(await page.evaluate(() => window.__map.getSource('pintu-lanes').data.features.length), 0);
   assert.ok(await page.evaluate(() => window.__map.lastJump.zoom) < 18);
   assert.equal(await page.evaluate(() => localStorage.getItem('pintu.laneNoteSeen')), null);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('Singapore: both crossings with their times and photos; the quicker one taken in a tap', async () => {
+  const JB = [103.7637, 1.4627], SG = [103.8198, 1.3521];
+  const causeway = () => buildTrip(JB, [
+    { to: [103.7680, 1.4560], type: 1, street: 'Jalan Lingkaran Dalam', kph: 40 },
+    { to: [103.768985, 1.453495], type: 8, street: ['E14', 'Laluan Tambak Johor–Singapura'], kph: 30 },
+    { to: [103.7716, 1.4470], type: 8, street: 'Woodlands Checkpoint', kph: 20 },
+    { to: SG, type: 10, street: 'BKE', kph: 70 },
+  ]);
+  const secondLink = () => buildTrip(JB, [
+    { to: [103.6050, 1.3650], type: 1, street: 'Lebuhraya Hubungan Kedua', kph: 90 },
+    { to: [103.626322, 1.355772], type: 8, street: 'Laluan Kedua Malaysia–Singapura', kph: 60 },
+    { to: [103.6350, 1.3487], type: 8, street: 'Tuas Checkpoint', kph: 20 },
+    { to: SG, type: 10, street: 'AYE', kph: 80 },
+  ]);
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    routeResponse: (b) => ({ trip: b.id === 'pintu-crossing' ? secondLink() : causeway() }),
+    // The Causeway jammed this morning, the Second Link clear.
+    traffic: (sent) => ({ delay: sent.points.some(([lng, lat]) => lng > 103.76 && lng < 103.775 && lat > 1.445 && lat < 1.458) ? 3600 : 60, jams: [] }),
+  });
+  await page.evaluate(([lng, lat]) => window.__gps.push(lng, lat, { accuracy: 10 }), JB);
+  await page.click('#where');
+  await page.fill('#search-input', 'klcc');
+  await page.waitForSelector('#search-results .place');
+  await pickPlace(page);
+  await page.waitForSelector('#plan-cross:not([hidden])');
+  assert.equal(await text(page, '#plan-cross-title'), 'Ke Singapura: ikut mana?');
+  await page.waitForFunction(() => !document.getElementById('plan-cross-status').textContent, null, { timeout: 8000 }).catch(async () => { throw new Error(await page.locator('#plan-cross').innerText()); });
+  const rows = await page.locator('#cross-list li').allInnerTexts();
+  assert.match(rows[0], /^9:15 PG\nTambak Johor\n.*termasuk sesak 1 j\nLaluan ini$/s, rows[0]);
+  assert.match(rows[1], /^9:15 PG\nLaluan Kedua\n.+\nPaling cepat sekarang\nGuna$/s, rows[1]);
+  const asked = log.fossgis.find((b) => b.id === 'pintu-crossing');
+  assert.deepEqual(asked.locations[1], { lat: 1.355772, lon: 103.626322, type: 'through', heading: 130, heading_tolerance: 60 });
+  assert.equal(await page.locator('#cross-list img').first().getAttribute('src'), 'https://images.data.gov.sg/api/traffic-images/test/2701.jpg');
+  await page.screenshot({ path: `${shots}/13d-crossings.png` });
+  await noOverflow(page, 'crossings');
+  // Taking the Second Link: it's added to the routes offered, and chosen.
+  await page.locator('#cross-list li').nth(1).locator('button.link-btn').click();
+  await page.waitForFunction(() => document.querySelectorAll('.route-opt').length === 2, null, { timeout: 5000 }).catch(async () => {
+    throw new Error(`${await page.locator('.route-opt').count()} routes; ${log.errors.join(' | ')}; ${await page.locator('#cross-list').innerText()}`);
+  });
+  assert.equal(await page.locator('.route-opt[aria-checked="true"]').count(), 1);
+  assert.match((await page.locator('#cross-list li').allInnerTexts())[1], /Laluan ini$/);
+  // The photos, larger, and back.
+  await page.locator('.cross-thumb').first().click();
+  await page.waitForSelector('#camview:not([hidden])');
+  assert.equal(await text(page, '#camview-title'), 'Tambak Johor');
+  const caps = await page.locator('#camview-photos figcaption').allInnerTexts();
+  assert.equal(caps.length, 2);
+  assert.match(caps[0], /^Tambak Johor, arah ke Johor · \d+:\d\d/);
+  assert.ok(log.sgCameras >= 2, 'photos asked for again when looked at');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${shots}/13e-crossing-photos.png` });
+  await page.click('#camview-back');
+  await page.waitForSelector('#camview', { state: 'hidden' });
+  assert.equal(await vis(page, '#preview'), true);
   assert.deepEqual(log.errors, []);
   await ctx.close();
 });
