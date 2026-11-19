@@ -703,7 +703,9 @@ await check('buses and trains on the real renderer: valid layers above the route
     assert.ok(order.indexOf('pintu-transit-veh-num') < order.indexOf('pintu-car'), `${theme}: but under the car`);
     assert.ok(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-rail'] }).length > 0), `${theme}: a line drawn`);
     assert.ok(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-stations'] }).length > 0), `${theme}: a station drawn`);
-    assert.equal(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-transit-veh-icon'] }).length), 2, `${theme}: each with its bus`);
+    // Symbols are placed a moment after the dots are drawn.
+    await page.waitForFunction(() => window.__map.queryRenderedFeatures({ layers: ['pintu-transit-veh-icon'] }).length === 2, null, { timeout: 10000 })
+      .catch(() => assert.fail(`${theme}: each with its bus`));
     await settle(page, 800);
     if (theme === 'day') await page.screenshot({ path: `${shots}/real-transit.png` });
     // A finger on the bus, as on the phone.

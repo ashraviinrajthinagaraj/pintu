@@ -4303,7 +4303,7 @@ await check('buses and trains: the lines in their colours, live buses where the 
     Date.now = () => realNow() + window.__shift;
   });
   const later = async (ms) => { await page.evaluate((n) => { window.__shift += n; }, ms); await page.waitForTimeout(2300); };
-  const layout = (id) => page.evaluate((i) => window.__map.layout[i], id);
+  const layout = (id) => page.evaluate((i) => window.__map.layout[i] ?? window.__map.getLayer(i)?.layout?.visibility, id);
   const vehicles = () => page.evaluate(() => window.__map.sources['pintu-vehicles'].data.features.map((f) => f.properties));
 
   // Off at first, and nothing asked for.
@@ -4396,7 +4396,8 @@ await check('buses and trains: somewhere with no live feed says so, once', async
   await page.evaluate(() => window.__map.jumpTo({ center: [116.07, 5.98], zoom: 14 }));   // Kota Kinabalu
   await page.waitForFunction(() => document.querySelector('#toast')?.textContent === 'Tiada kedudukan bas atau tren langsung untuk kawasan ini.', null, { timeout: 5000 });
   assert.equal(await page.getAttribute('#btn-transit', 'aria-pressed'), 'true', 'still on from last time');
-  assert.equal(await page.evaluate(() => window.__map.layout['pintu-rail']), 'visible');
+  // As the layer was added, or as it was set since.
+  await page.waitForFunction(() => (window.__map.layout['pintu-rail'] ?? window.__map.getLayer('pintu-rail')?.layout?.visibility) === 'visible');
   // Nothing there to ask for.
   await page.waitForTimeout(2500);
   assert.equal(log.transit.length, 0);
