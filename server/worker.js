@@ -5,6 +5,7 @@
 //   /fuel          this week's official pump prices, from data.gov.my
 //   /mall?id=…     the shop list from a mall's own directory
 //   /speak?…       a line spoken by a character's human-sounding voice
+//   /transit?…     trips by bus, train and on foot, from Transitous (see transit.js)
 //   /traffic, /tiles/…, /limits, /geocode, /ev   TomTom's traffic, speed limits,
 //                  addresses and electric car charging (see tomtom.js)
 //   /share…, /reports…, /convoy…, /commute…, /push/key   what phones share with each
@@ -27,6 +28,7 @@
 import { TOMTOM_POSTS, allowed, tomtomRoute, trafficCheck } from './tomtom.js';
 import { fuelCheck, fuelRoute } from './fuel.js';
 import { allowedStart, followLink } from './links.js';
+import { transitRoute } from './transit.js';
 
 // The hub is a Durable Object, which Cloudflare finds by this name.
 export { Hub } from './hub.js';
@@ -37,7 +39,7 @@ const HUB_POSTS = ['/share/start', '/share/update', '/share/end', '/reports/add'
 const HUB_MAX_BODY = 20000;
 const hubOf = (env) => env.HUB.get(env.HUB.idFromName('pintu'));
 
-const SERVER_VERSION = '2026-11-17.2';
+const SERVER_VERSION = '2026-11-20.1';
 
 // The page allowed to use this server.
 const ALLOWED_ORIGINS = ['https://ashraviinrajthinagaraj.github.io'];
@@ -729,6 +731,11 @@ async function handle(request, origin, env, ctx) {
   }
 
   if (url.pathname === '/speak') return speakRoute(url, origin, env, ctx, request);
+
+  if (url.pathname === '/transit') {
+    if (!allowed(request.headers.get('cf-connecting-ip') || 'unknown', 'transit')) return reply({ error: 'busy' }, origin, 429, { 'retry-after': '60' });
+    return transitRoute(url, origin, reply);
+  }
 
   if (HUB_GETS.includes(url.pathname) || HUB_POSTS.includes(url.pathname)) return hubRoute(request, url, origin, env);
 

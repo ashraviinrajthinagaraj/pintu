@@ -17,6 +17,8 @@ import { pointAt } from '../../js/motion.js';
 import { lngLatToTile } from '../../js/tiles.js';
 import { encodeTile } from '../helpers/mvt.js';
 import { feed as feedRT, vehicle as vehicleRT } from '../helpers/gtfs-rt.js';
+import { klTrip, pjTrip, plan as transitPlan } from '../helpers/transitous.js';
+import { trimPlan } from '../../server/transit.js';
 
 const require = createRequire('/opt/npm-tools/node_modules/');
 const { chromium, devices } = require('playwright');
@@ -4271,6 +4273,120 @@ await check('car: driving off from it means you have it', async () => {
   assert.equal(await vis(page, '#car-pill'), true);
   await toNav(page);
   assert.equal(await page.evaluate(() => localStorage.getItem('pintu.car')), null);
+  await ctx.close();
+});
+
+/* ---------- By bus, train and on foot ---------- */
+
+await check('public transport: trips by bus and train with their lines and times, one step by step on the map, earlier and later, arriving by a time', async () => {
+  const soon = (min) => new Date(Math.ceil(Date.now() / 60000) * 60000 + min * 60000).toISOString().replace('.000', '');
+  const asked = [];
+  const appServer = (url) => {
+    if (url.pathname !== '/transit') return null;
+    asked.push(url);
+    const cursor = url.searchParams.get('cursor');
+    if (cursor === 'LATER|1') return trimPlan(transitPlan([klTrip(soon(40))], { previousPageCursor: null, nextPageCursor: null }));
+    return trimPlan(transitPlan([klTrip(soon(4), { live: true, late: 3 }), pjTrip(soon(12))], { previousPageCursor: 'EARLIER|1', nextPageCursor: 'LATER|1' }));
+  };
+  const { ctx, page, log } = await newApp(browser, { ...quiet, scale: 2, appServer });
+  await toPreview(page);
+  assert.equal(await text(page, '#mode-transit'), 'Transit');
+  await page.click('#mode-transit');
+  await page.waitForSelector('.journey-opt');
+  assert.equal(await page.getAttribute('#mode-transit', 'aria-checked'), 'true');
+
+  // Asked through Pintu's server, from here to there, saying which Pintu.
+  const q = asked[0].searchParams;
+  assert.equal(q.get('from'), '3.150000,101.700000');
+  assert.match(q.get('to'), /^3\.\d{6},101\.\d{6}$/);
+  assert.equal(q.get('lang'), 'ms');
+  assert.match(q.get('v'), /^\d+\.\d+\.\d+$/);
+  assert.equal(q.has('time'), false, 'leaving now');
+
+  // Nothing about driving: no tolls, fuel, start button or car routes.
+  for (const sel of ['#toll-wrap', '#plan', '#start', '#add-stop', '#route-list', '#try-sim']) assert.equal(await vis(page, sel), false, sel);
+  const cards = await page.$$eval('.journey-opt', (els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()));
+  assert.equal(cards.length, 2);
+  assert.match(cards[0], /^21 min \d{1,2}:\d\d .*– \d{1,2}:\d\d .*KJL › 4 Dari KL Sentral - Redone \d{1,2}:\d\d .*Lewat 3 min$/);
+  assert.match(cards[1], /^37 min .*7 › PJ05 › 2 › KJL › 13 Dari Komersial SS2 \(Poh Kong\)/);
+  // Each line in its own colour.
+  const kjl = await page.$eval('.journey-opt .ride-name', (e) => [e.textContent, getComputedStyle(e).backgroundColor, getComputedStyle(e).color]);
+  assert.deepEqual(kjl, ['KJL', 'rgb(213, 0, 50)', 'rgb(255, 255, 255)']);
+  assert.equal(await page.getAttribute('.journey-opt >> nth=0', 'aria-checked'), 'true');
+  // The first trip on the map: walk, train, walk, and where you get on and off.
+  const onMap = () => page.evaluate(() => window.__map.sources['pintu-journey'].data.features.map((f) => (f.geometry.type === 'Point' ? 'stop' : f.properties.walk ? 'walk' : f.properties.c)));
+  assert.deepEqual(await onMap(), ['walk', '#D50032', 'stop', 'stop', 'walk']);
+  assert.equal(await page.evaluate(() => window.__map.sources['pintu-route']?.data?.features?.length || 0), 0, 'no driving route');
+  assert.match(await text(page, '.journey-credit'), /Transitous$/);
+  assert.equal(await page.getAttribute('.journey-credit a', 'href'), 'https://transitous.org/sources/');
+  await noOverflow(page, 'transit list');
+  await page.screenshot({ path: `${shots}/96-transit.png` });
+
+  // The bus one, step by step.
+  await page.click('.journey-opt >> nth=1');
+  await page.waitForSelector('#journey-detail:not([hidden])');
+  assert.equal(await vis(page, '#journey-list'), false);
+  assert.match(await text(page, '#journey-head'), /^\d{1,2}:\d\d .*– \d{1,2}:\d\d .* · 37 min · 1 pertukaran$/);
+  const steps = await page.$$eval('#journey-steps li', (els) => els.map((e) => [e.querySelector('.step-time'), ...e.querySelectorAll('p')].map((x) => x.textContent).join(' ').replace(/\s+/g, ' ').trim()));
+  assert.equal(steps.length, 6, steps.join('\n'));
+  assert.match(steps[0], /Jalan kaki 7 min \(500 m\) ke Komersial SS2 \(Poh Kong\)$/);
+  assert.match(steps[1], /PJ05 Bas arah LRT Taman Bahagia Naik di Komersial SS2 \(Poh Kong\) 2 hentian · 2 min \d{1,2}:\d\d .*Turun di LRT Taman Bahagia$/);
+  assert.match(steps[3], /KJL LRT\/MRT arah Gombak Naik di Taman Bahagia 4 hentian · 11 min .*Turun di Universiti$/);
+  assert.match(steps[4], /Jalan kaki 13 min \(1 km\) ke Suria KLCC$/);
+  assert.match(steps[5], /^\d{1,2}:\d\d .*\S/);
+  assert.deepEqual(await onMap(), ['walk', '#1565C0', 'stop', 'stop', 'walk', '#D50032', 'stop', 'stop', 'walk']);
+  await noOverflow(page, 'transit steps');
+  await page.screenshot({ path: `${shots}/96b-transit-steps.png` });
+  await page.click('#journey-back');
+  await page.waitForSelector('#journey-list:not([hidden])');
+  assert.equal(await page.getAttribute('.journey-opt >> nth=1', 'aria-checked'), 'true', 'the one looked at stays chosen');
+
+  // Later ones, added below.
+  await page.click('#journey-later');
+  await page.waitForFunction(() => document.querySelectorAll('.journey-opt').length === 3);
+  assert.equal(asked.at(-1).searchParams.get('cursor'), 'LATER|1');
+  assert.equal(await vis(page, '#journey-later'), false, 'no more to come');
+  assert.equal(await vis(page, '#journey-earlier'), true);
+
+  // Arriving by a time instead: the time goes with the question.
+  await page.selectOption('#journey-when-kind', 'arrive');
+  await page.waitForFunction((n) => document.querySelectorAll('.journey-opt').length === 2, asked.length);
+  assert.equal(await vis(page, '#journey-when-time'), true);
+  const last = asked.at(-1).searchParams;
+  assert.equal(last.get('arriveBy'), '1');
+  assert.ok(Math.abs(Date.parse(last.get('time')) - Date.now()) < 15 * 60000, last.get('time'));
+  await page.selectOption('#journey-when-kind', 'now');
+  await page.waitForFunction(() => document.getElementById('journey-when-time').hidden);
+
+  // Back to the car: its routes again, and the trip off the map.
+  await page.click('#mode-car');
+  await page.waitForSelector('.route-opt:not(.journey-opt)');
+  assert.equal(await vis(page, '#journey'), false);
+  assert.equal(await vis(page, '#start'), true);
+  assert.deepEqual(await onMap(), []);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('pintu.mode') || '"car"')), 'car', 'transit is not remembered as how you travel');
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('public transport: nothing found, and a server too busy, each said plainly', async () => {
+  let answer = { trips: [], walk: null, earlier: null, later: null };
+  const { ctx, page, log } = await newApp(browser, { ...quiet, appServer: (url) => (url.pathname === '/transit' ? answer : null) });
+  await toPreview(page);
+  await page.click('#mode-transit');
+  await page.waitForSelector('#journey-note:not([hidden])');
+  assert.equal(await text(page, '#journey-note'), 'Tiada perjalanan bas atau tren ditemui. Cuba masa lain, atau tempat yang lebih dekat dengan stesen.');
+  assert.equal(await page.$$eval('.journey-opt', (e) => e.length), 0);
+  answer = { __status: 429 };
+  await page.click('#mode-car');
+  await page.waitForSelector('.route-opt');
+  await page.click('#mode-transit');
+  await page.waitForSelector('#route-status.is-error');
+  assert.match(await text(page, '#route-status'), /^Terlalu banyak carian\. Cuba lagi sebentar lagi\./);
+  answer = trimPlan(transitPlan([klTrip(new Date(Date.now() + 300000).toISOString())]));
+  await page.click('#route-status .link-btn');
+  await page.waitForSelector('.journey-opt');
+  assert.deepEqual(log.errors, []);
   await ctx.close();
 });
 

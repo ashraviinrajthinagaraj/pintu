@@ -14,6 +14,8 @@ import { altTrip, cityTrip, multiLeg, P } from '../helpers/fixtures.js';
 import { bearing } from '../../js/geo.js';
 import { prepareTrip } from '../../js/routing.js';
 import { feed as feedRT, vehicle as vehicleRT } from '../helpers/gtfs-rt.js';
+import { pjTrip, plan as transitPlan } from '../helpers/transitous.js';
+import { trimPlan } from '../../server/transit.js';
 
 const require = createRequire('/opt/npm-tools/node_modules/');
 const { chromium } = require('playwright');
@@ -228,6 +230,7 @@ async function open(browser, { styleFor, viewport = { width: 390, height: 844 },
         return route.fulfill({ body: fakePhoto(z, x, y), contentType: 'image/jpeg', headers: CORS });
       }
       if (path === '/traffic') return route.fulfill({ json: { delay: 0, jams: [] }, headers: CORS });
+      if (path === '/transit') return route.fulfill({ json: trimPlan(transitPlan([pjTrip(new Date(Date.now() + 300000).toISOString())])), headers: CORS });
       return route.fulfill({ status: 503, json: { error: 'no key' }, headers: CORS });
     }
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
@@ -715,6 +718,44 @@ await check('buses and trains on the real renderer: valid layers above the route
     assert.equal(await page.locator('#placecard').isVisible(), false);
     await page.click('#btn-transit');
     assert.equal(await page.evaluate(() => window.__map.getLayoutProperty('pintu-transit-veh', 'visibility')), 'none');
+    const bad = (await page.evaluate(() => window.__mapErrors)).filter((e) => !/Failed to fetch|sprite|glyph|404|AJAXError|204|Unexpected end|Could not load/i.test(e));
+    assert.deepEqual(bad, [], theme);
+    assert.deepEqual(errors, [], theme);
+    await ctx.close();
+  }
+});
+
+await check('a trip by bus and train on the real renderer: valid layers, rides in their colours, walks dotted, under the names', async () => {
+  for (const theme of ['day', 'night']) {
+    const { ctx, page, errors } = await open(browser, { styleFor: realStyle, scale: 2, theme });
+    await toPreview(page);
+    await page.click('#mode-transit');
+    await page.waitForSelector('.journey-opt');
+    for (const id of ['pintu-journey', 'pintu-journey-walk', 'pintu-journey-stops']) {
+      await page.waitForFunction((i) => window.__map.queryRenderedFeatures({ layers: [i] }).length > 0, id, { timeout: 15000 })
+        .catch(() => assert.fail(`${theme}: ${id} drawn`));
+    }
+    // Both rides, once the map has moved to show the whole trip.
+    const colours = () => page.evaluate(() => [...new Set(window.__map.queryRenderedFeatures({ layers: ['pintu-journey'] }).map((f) => f.properties.c))].sort().join());
+    await page.waitForFunction(() => new Set(window.__map.queryRenderedFeatures({ layers: ['pintu-journey'] }).map((f) => f.properties.c)).size === 2, null, { timeout: 10000 }).catch(() => {});
+    assert.equal(await colours(), '#1565C0,#D50032', theme);
+    assert.equal(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-journey-walk'] }).every((f) => f.properties.walk === true)), true);
+    const order = await page.evaluate(() => window.__map.style._order);
+    // Above the roads, with the road names drawn over it, as a driving route is.
+    const after = await page.evaluate(() => {
+      const o = window.__map.style._order;
+      const at = o.indexOf('pintu-journey-stops');
+      return o.slice(at + 1).filter((id) => window.__map.getLayer(id)?.type === 'symbol' && !id.startsWith('pintu')).length;
+    });
+    assert.ok(after > 0, `${theme}: under the names`);
+    assert.ok(order.indexOf('pintu-journey-edge') > order.lastIndexOf(order.find((id) => /road|highway|transportation/.test(id)) || ''), `${theme}: over the roads`);
+    assert.ok(order.indexOf('pintu-journey-edge') < order.indexOf('pintu-journey'), `${theme}: edged`);
+    await settle(page, 800);
+    if (theme === 'day') await page.screenshot({ path: `${shots}/real-journey.png` });
+    // Back to the car: the trip leaves the map.
+    await page.click('#mode-car');
+    await page.waitForSelector('.route-opt:not(.journey-opt)');
+    assert.equal(await page.evaluate(() => window.__map.queryRenderedFeatures({ layers: ['pintu-journey'] }).length), 0);
     const bad = (await page.evaluate(() => window.__mapErrors)).filter((e) => !/Failed to fetch|sprite|glyph|404|AJAXError|204|Unexpected end|Could not load/i.test(e));
     assert.deepEqual(bad, [], theme);
     assert.deepEqual(errors, [], theme);

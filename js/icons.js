@@ -123,6 +123,10 @@ export const UI = {
   // An elephant side on, as on the warning signs: back, ear, trunk, legs.
   // A bus from the front, for buses and trains on the map.
   bus: line('<rect x="5" y="3" width="14" height="15" rx="2.5"/><path d="M5 11h14M5 7h14"/><circle cx="8.5" cy="14.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="15.5" cy="14.5" r="0.9" fill="currentColor" stroke="none"/><path d="M7.5 18v2.5M16.5 18v2.5"/>'),
+  // A train from the front, a boat and a plane: what a trip by public transport is on.
+  train: line('<rect x="6" y="3" width="12" height="14" rx="3.5"/><path d="M6 10h12"/><circle cx="9" cy="13.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="15" cy="13.5" r="0.9" fill="currentColor" stroke="none"/><path d="m8.5 17-2 4M15.5 17l2 4M7.5 20h9"/>'),
+  boat: line('<path d="M4 15h16l-2.5 5h-11Z"/><path d="M7 15V9h10v6M12 9V4"/>'),
+  plane: line('<path d="M12 3c.9 0 1.5.8 1.5 2v4.5l7 4v2l-7-2V18l2.2 1.6V21L12 20l-3.7 1v-1.4l2.2-1.6v-4.5l-7 2v-2l7-4V5c0-1.2.6-2 1.5-2Z"/>'),
   elephant: line('<path d="M3.5 19.5v-7C3.5 8.6 6.4 6 10.5 6h3.2c3.7 0 6.3 2.6 6.3 6.4v4.4c0 1.4.6 2.2 1.8 2.2"/><path d="M12.6 7.2c-1.6 1.5-1.8 4.4.4 5.8"/><path d="M7.5 15v4.5M16.5 15.5v4"/><circle cx="17.3" cy="10" r="1" fill="currentColor" stroke="none"/>'),
   // The crossed boards that stand at a level crossing.
   railCross: line('<path d="M4.5 5.5l15 13M19.5 5.5l-15 13"/><path d="M12 12v9.5"/>'),

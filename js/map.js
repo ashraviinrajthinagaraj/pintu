@@ -290,7 +290,7 @@ export class MapView {
     this.carPin = null;
     this.carKey = '';
     this.map = null;
-    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY, turn: EMPTY, railLines: EMPTY, stations: EMPTY, vehicles: EMPTY };
+    this.data = { active: EMPTY, far: EMPTY, alts: EMPTY, lanes: EMPTY, other: EMPTY, cams: EMPTY, warn: EMPTY, signs: EMPTY, turn: EMPTY, railLines: EMPTY, stations: EMPTY, vehicles: EMPTY, journey: EMPTY };
     this.junctionRoads = false;
     this.routeLabels = [];
     this.routeLabelKey = '';
@@ -456,6 +456,7 @@ export class MapView {
     this._addJunctionRoads(m.getLayer('pintu-3d') ? 'pintu-3d' : beforeId, c);
 
     this._addTransitLines(beforeId);
+    this._addJourney(beforeId);
 
     if (!m.getSource('pintu-other')) m.addSource('pintu-other', { type: 'geojson', data: this.data.other });
     if (!m.getSource('pintu-alts')) m.addSource('pintu-alts', { type: 'geojson', data: this.data.alts });
@@ -680,6 +681,46 @@ export class MapView {
         },
       }, beforeId);
     }
+  }
+
+  // A trip by bus and train: each ride a line in its colour, edged to stand out,
+  // the walks between dotted, and a ringed dot wherever you get on or off.
+  _addJourney(beforeId) {
+    const m = this.map;
+    const edge = this.theme === 'night' ? '#141A1D' : '#FFFFFF';
+    if (!m.getSource('pintu-journey')) m.addSource('pintu-journey', { type: 'geojson', data: this.data.journey });
+    const ride = ['all', ['==', ['geometry-type'], 'LineString'], ['!', ['get', 'walk']]];
+    const walk = ['all', ['==', ['geometry-type'], 'LineString'], ['get', 'walk']];
+    const width = (a, b) => ['interpolate', ['linear'], ['zoom'], 8, a, 16, b];
+    if (!m.getLayer('pintu-journey-edge')) {
+      m.addLayer({ id: 'pintu-journey-edge', type: 'line', source: 'pintu-journey', filter: ride, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': edge, 'line-width': width(6, 13) } }, beforeId);
+    }
+    if (!m.getLayer('pintu-journey')) {
+      m.addLayer({ id: 'pintu-journey', type: 'line', source: 'pintu-journey', filter: ride, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'c'], 'line-width': width(3.5, 8) } }, beforeId);
+    }
+    if (!m.getLayer('pintu-journey-walk')) {
+      m.addLayer({ id: 'pintu-journey-walk', type: 'line', source: 'pintu-journey', filter: walk, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'c'], 'line-width': width(2.5, 5), 'line-dasharray': [0.2, 1.8] } }, beforeId);
+    }
+    if (!m.getLayer('pintu-journey-stops')) {
+      m.addLayer({
+        id: 'pintu-journey-stops',
+        type: 'circle',
+        source: 'pintu-journey',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3.5, 16, 7],
+          'circle-color': '#FFFFFF',
+          'circle-stroke-color': ['get', 'c'],
+          'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 8, 2, 16, 3.5],
+          'circle-pitch-alignment': 'map',
+        },
+      }, beforeId);
+    }
+  }
+
+  setJourney(featureCollection) {
+    this.data.journey = featureCollection || EMPTY;
+    this.map?.getSource?.('pintu-journey')?.setData(this.data.journey);
   }
 
   // Buses and trains shown or not, with the lines and stations to draw.

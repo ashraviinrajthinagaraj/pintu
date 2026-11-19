@@ -65,6 +65,7 @@ import * as voice from './voice.js';
 import { LABEL_BOX, clearOf, clearOfBoxes, labelSize, labelSpots, trafficBar, trafficGradient } from './route-labels.js';
 import { loadStates, shapesOf, stretchIn } from './states.js';
 import { arrowFor, turnArrow } from './turn-arrow.js';
+import { JourneyError, journeyCoords, journeyFeatures, mergeTrips, planTrips, prepareTrips, summaryLegs } from './journeys.js';
 import { LiveTransit, MIN_ZOOM as TRANSIT_MIN_ZOOM, lineFeatures, loadTransit, routeOf, stationFeatures, vehicleFeatures } from './transit.js';
 
 const $ = (id) => document.getElementById(id);
@@ -222,7 +223,9 @@ function vehicle() { return S.vehicles[S.mode] || null; }
 // With this week's pump price filled in when you haven't typed one.
 function pricedVehicle() { return priced(vehicle(), S.fuel); }
 // The vehicle in question, even while you're on foot.
-function driveMode() { return S.mode === 'walk' ? (S.returnMode || load('mode', 'car')) : S.mode; }
+// On foot, or on buses and trains: the car and its looks still belong to how you drive.
+const onFoot = () => S.mode === 'walk' || S.mode === 'transit';
+function driveMode() { return onFoot() ? (S.returnMode || load('mode', 'car')) : S.mode; }
 function saveVehicles() { save('vehicles', S.vehicles); }
 
 /* ---------- Words and icons ---------- */
@@ -305,6 +308,15 @@ function applyStaticText() {
   $('mode-car').textContent = t('car');
   $('mode-moto').textContent = t('moto');
   $('mode-walk').textContent = t('walk');
+  $('mode-transit').textContent = t('modeTransit');
+  const whenKind = $('journey-when-kind');
+  for (const o of whenKind.options) o.textContent = t({ now: 'journeyNow', leave: 'journeyLeave', arrive: 'journeyArrive' }[o.value]);
+  $('journey-earlier').textContent = t('journeyEarlier');
+  $('journey-later').textContent = t('journeyLater');
+  $('journey-back').replaceChildren();
+  $('journey-back').insertAdjacentHTML('afterbegin', UI.back);
+  $('journey-back').append(t('journeyAll'));
+  $('journey-credit-text').textContent = t('journeyCredit');
   $('avoid-tolls-label').textContent = t('avoidTolls');
   $('add-stop-label').textContent = t('addStopShort');
   $('add-stop').setAttribute('aria-label', t('addStop'));
@@ -587,6 +599,7 @@ function renderSegments() {
   set('mode-car', S.mode === 'car');
   set('mode-moto', S.mode === 'motorcycle');
   set('mode-walk', S.mode === 'walk');
+  set('mode-transit', S.mode === 'transit');
   set('voice-full', S.settings.voiceLevel === 'full');
   set('voice-turns', S.settings.voiceLevel === 'turns');
   $('limit-on').checked = S.settings.speedLimit;
@@ -682,7 +695,7 @@ function show(view) {
   syncTransit();
   renderShareBtn();
   renderConvoy();
-  $('btn-report').hidden = view !== 'nav' || !togetherReady() || S.mode === 'walk';
+  $('btn-report').hidden = view !== 'nav' || !togetherReady() || onFoot();
 }
 
 /* ---------- Traffic on the map ---------- */
@@ -908,7 +921,7 @@ function mapPadding() {
     if (landscape) { pad.left = $('preview').offsetWidth + 30; pad.bottom = 92; }
     else pad.bottom = updateBottomInset() + 30;
     // Clear of the camera switch in the top corner, which may come once the cameras are found.
-    if (S.settings.speedCameras && S.mode !== 'walk') pad.right = 92;
+    if (S.settings.speedCameras && !onFoot()) pad.right = 92;
   }
   return pad;
 }
@@ -1016,7 +1029,7 @@ function frame(now) {
 
 function updateCar(lng, lat, heading) {
   S.carDirty = false;
-  if (S.mode === 'walk') {
+  if (onFoot()) {
     mapView.setCarOn(false);
     return;
   }
@@ -1036,7 +1049,7 @@ function navFrame(pose, now, dt, moved, inLanes) {
   const speedUp = S.sim ? Math.max(0, Math.log2(S.sim.factor / 4)) * 0.65 : 0;
   // A paused simulated car is still on that road, so the view holds still.
   const speedNow = S.sim ? S.sim.roadSpeed : S.fix?.speed;
-  const walking = S.mode === 'walk';
+  const walking = onFoot();
   const targetZoom = walking ? 18.4 : inLanes ? laneZoom(speedNow) : zoomForSpeed(speedNow) - speedUp;
   const targetPitch = !S.settings.view3d ? 0 : walking ? 45 : inLanes ? 68 : 60;
   const ease = 1 - Math.exp(-dt * (inLanes ? 1.4 : 1.1));
@@ -1087,7 +1100,7 @@ function startScene(route) {
 async function loadRoadDetails(s) {
   const f = S.laneFetch;
   const route = S.route;
-  if (!route || S.mode === 'walk' || !(S.settings.view3d || S.settings.speedLimit)) return;
+  if (!route || onFoot() || !(S.settings.view3d || S.settings.speedLimit)) return;
   if (f.busy || f.failures >= 3 || Date.now() < f.retryAt) return;
   if (s < f.until - 3000 || f.until >= route.length) return;
   f.busy = true;
@@ -1119,7 +1132,7 @@ function updateScene(st, fix) {
   if (!scene) return;
   const tooQuick = S.simScrub || (S.sim && S.sim.factor >= SIM_FAST);
   if (!tooQuick) loadRoadDetails(st.s);
-  if (!S.settings.view3d || !st.onRoute || tooQuick || S.mode === 'walk') {
+  if (!S.settings.view3d || !st.onRoute || tooQuick || onFoot()) {
     if (scene.active) {
       scene.active = false;
       scene.builtAt = null;
@@ -1155,7 +1168,7 @@ function toggle3D() {
   render3DButtons();
   mapView?.setView3D(on);
   mapView?.setCarOn(on);
-  mapView?.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && (on || !!S.settings.satellite));
+  mapView?.setJunctionRoads(S.view === 'nav' && !onFoot() && (on || !!S.settings.satellite));
   S.carDirty = true;
   if (S.view === 'idle') mapView?.tilt(on, S.fix ? [S.fix.lng, S.fix.lat] : null);
   S.poseStale = true;
@@ -1607,6 +1620,8 @@ function leaveDestination() {
   mapView?.setDestination(null);
   mapView?.setStopPins([]);
   mapView?.clearRoutes();
+  S.journey = null;
+  mapView?.setJourney(null);
   renderRoutes();
 }
 
@@ -1633,6 +1648,9 @@ async function loadRoutes() {
   S.routes = [];
   S.routeState = 'locating';
   S.routeError = null;
+  S.journey = null;
+  mapView?.setJourney(null);
+  if (S.mode === 'transit') mapView?.clearRoutes();
   renderRoutes();
 
   gps.start();
@@ -1648,6 +1666,10 @@ async function loadRoutes() {
 
   S.routeState = 'loading';
   renderRoutes();
+  if (S.mode === 'transit') {
+    loadJourneys(from, ctrl);
+    return;
+  }
   try {
     const routes = await fetchRoutes({
       from, to: routeEnd(), stops: S.stops, mode: S.mode, avoidTolls: S.avoidTolls, alternates: 2, signal: ctrl.signal,
@@ -1681,6 +1703,308 @@ async function loadRoutes() {
   }
 }
 
+/* ---------- By bus, train and on foot ---------- */
+
+// When to go: now, leaving at a time, or arriving by one.
+S.journeyWhen = { kind: 'now', at: null };
+
+const localInput = (ms) => {
+  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+};
+
+function setJourneyWhen() {
+  const kind = $('journey-when-kind').value;
+  const input = $('journey-when-time');
+  if (kind === 'now') S.journeyWhen = { kind, at: null };
+  else {
+    // A time not chosen yet: the next five minutes, as a start.
+    let at = Date.parse(input.value);
+    if (!Number.isFinite(at) || S.journeyWhen.kind === 'now') {
+      at = Math.ceil((Date.now() + 60000) / 300000) * 300000;
+      input.value = localInput(at);
+    }
+    S.journeyWhen = { kind, at };
+  }
+  if (S.mode === 'transit' && S.view === 'preview') loadRoutes();
+  else renderJourney();
+}
+
+const journeyEnds = () => ({ from: S.start ? S.start.name : t('myLocation'), to: routeEnd()?.name || '' });
+
+async function loadJourneys(from, ctrl, { cursor = null, dir = null } = {}) {
+  const to = routeEnd();
+  const when = S.journeyWhen;
+  try {
+    const json = await planTrips({
+      server: CONFIG.server, from, to, when: when.kind === 'now' ? null : when.at, arriveBy: when.kind === 'arrive',
+      cursor, lang: getLang(), version: CONFIG.version, signal: ctrl.signal,
+    });
+    if (ctrl.signal.aborted) return;
+    const got = prepareTrips(json, journeyEnds());
+    const before = dir && S.journey ? S.journey : null;
+    S.journey = before ? {
+      ...before,
+      trips: mergeTrips(before.trips, got.trips),
+      earlier: dir === 'earlier' ? got.earlier : before.earlier,
+      later: dir === 'later' ? got.later : before.later,
+      busy: null,
+    } : { ...got, pick: 0, open: false, busy: null };
+    if (!before) S.journey.pick = 0;
+    else if (before.trips[before.pick]) S.journey.pick = S.journey.trips.findIndex((x) => x.key === before.trips[before.pick].key);
+    S.routeState = 'ready';
+    renderRoutes();
+    if (!before) showJourneyOnMap({ fit: true });
+  } catch (err) {
+    if (ctrl.signal.aborted || err?.name === 'AbortError') return;
+    if (dir && S.journey) {
+      S.journey.busy = null;
+      renderJourney();
+      toast(t(err instanceof JourneyError && err.code === 'busy' ? 'journeyBusy' : 'journeyFailed'));
+      return;
+    }
+    S.routeState = 'error';
+    S.routeError = err instanceof JourneyError && err.code === 'busy' ? 'journeyBusy' : err?.code === 'offline' ? 'errOffline' : 'journeyFailed';
+    renderRoutes();
+  }
+}
+
+function moreJourneys(dir) {
+  const j = S.journey;
+  if (!j?.[dir] || j.busy || !S.routeFrom) return;
+  S.routeCtrl?.abort();
+  const ctrl = new AbortController();
+  S.routeCtrl = ctrl;
+  j.busy = dir;
+  renderJourney();
+  loadJourneys(S.routeFrom, ctrl, { cursor: j[dir], dir });
+}
+
+function showJourneyOnMap({ fit = false } = {}) {
+  const trip = S.journey?.trips[S.journey.pick];
+  mapView?.setJourney(trip ? journeyFeatures(trip) : null);
+  if (trip && fit) {
+    S.previewMoved = false;
+    const coords = journeyCoords(trip);
+    if (coords.length > 1) mapView?.fit([coords], mapPadding());
+  }
+}
+
+function openJourneyTrip(i) {
+  const j = S.journey;
+  if (!j) return;
+  if (i == null) j.open = false;
+  else {
+    j.pick = i;
+    j.open = true;
+  }
+  renderJourney();
+  showJourneyOnMap({ fit: i != null });
+  $('preview').scrollTop = 0;
+}
+
+const journeyClock = (ms) => (Number.isFinite(ms) ? fmtClock(new Date(ms), getLang()) : '');
+const KIND_ICONS = { bus: 'bus', train: 'train', metro: 'train', tram: 'train', ferry: 'boat', plane: 'plane', cable: 'train', other: 'bus' };
+
+// A ride as a little sign in its line's colour: "[bus] N54".
+function rideChip(leg) {
+  const chip = document.createElement('span');
+  chip.className = 'ride-chip';
+  const icon = document.createElement('span');
+  icon.className = 'ride-icon';
+  icon.innerHTML = UI[KIND_ICONS[leg.kind]] || UI.bus;
+  chip.append(icon);
+  if (leg.name) {
+    const name = document.createElement('span');
+    name.className = 'ride-name';
+    name.textContent = leg.name;
+    name.style.background = leg.colour;
+    name.style.color = leg.text;
+    chip.append(name);
+  } else {
+    icon.style.color = leg.colour;
+  }
+  chip.setAttribute('aria-label', `${t(`journeyKind_${leg.kind}`)} ${leg.name}`.trim());
+  return chip;
+}
+
+function walkChip(leg) {
+  const chip = document.createElement('span');
+  chip.className = 'ride-chip ride-walk';
+  chip.innerHTML = UI.walk;
+  const min = document.createElement('sub');
+  min.textContent = String(Math.max(1, Math.round(leg.seconds / 60)));
+  chip.append(min);
+  chip.setAttribute('aria-label', t('journeyWalk', { time: fmtDuration(leg.seconds, getLang()) }));
+  return chip;
+}
+
+// Running late, on time, or cancelled: only said when it's known.
+function liveNote(leg) {
+  if (!leg) return null;
+  const el = document.createElement('span');
+  if (leg.cancelled) {
+    el.className = 'journey-live is-late';
+    el.textContent = t('journeyCancelled');
+  } else if (leg.late != null && leg.late >= 60) {
+    el.className = 'journey-live is-late';
+    el.textContent = t('journeyLate', { time: fmtDuration(leg.late, getLang()) });
+  } else if (leg.live) {
+    el.className = 'journey-live is-on-time';
+    el.textContent = t('journeyOnTime');
+  } else return null;
+  return el;
+}
+
+function journeyCard(trip, i) {
+  const li = document.createElement('li');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'route-opt journey-opt';
+  btn.setAttribute('role', 'radio');
+  btn.setAttribute('aria-checked', String(i === S.journey.pick));
+  const times = document.createElement('span');
+  times.className = 'journey-times';
+  times.textContent = `${journeyClock(trip.start)} – ${journeyClock(trip.end)}`;
+  const dur = document.createElement('span');
+  dur.className = 'route-time journey-dur';
+  dur.textContent = fmtDuration(trip.seconds, getLang());
+  const chips = document.createElement('span');
+  chips.className = 'journey-chips';
+  summaryLegs(trip).forEach((leg, n) => {
+    if (n) {
+      const sep = document.createElement('span');
+      sep.className = 'ride-sep';
+      sep.setAttribute('aria-hidden', 'true');
+      sep.textContent = '›';
+      chips.append(sep);
+    }
+    chips.append(leg.kind === 'walk' ? walkChip(leg) : rideChip(leg));
+  });
+  const sub = document.createElement('span');
+  sub.className = 'route-via journey-sub';
+  const first = trip.first;
+  sub.textContent = first ? t('journeyFrom', { place: first.from.name, clock: journeyClock(first.start) }) : '';
+  const note = liveNote(first);
+  if (note) sub.append(' ', note);
+  btn.append(dur, times, chips, sub);
+  btn.addEventListener('click', () => openJourneyTrip(i));
+  li.append(btn);
+  return li;
+}
+
+// One trip, step by step: each walk, and each ride from where you get on to
+// where you get off.
+function journeySteps(trip) {
+  const lang = getLang();
+  const items = [];
+  trip.legs.forEach((leg, n) => {
+    const li = document.createElement('li');
+    li.className = `journey-step step-${leg.kind === 'walk' ? 'walk' : 'ride'}`;
+    li.style.setProperty('--ride', leg.colour);
+    const time = document.createElement('span');
+    time.className = 'step-time';
+    time.textContent = journeyClock(leg.start);
+    const body = document.createElement('div');
+    body.className = 'step-body';
+    if (leg.kind === 'walk') {
+      // A walk to the last place is to where you're going; one of no length is just a change.
+      if (leg.seconds < 30 && n && n < trip.legs.length - 1) return;
+      const p = document.createElement('p');
+      p.textContent = t('journeyWalkTo', { time: fmtDuration(leg.seconds, lang), dist: fmtDistance(leg.metres), place: leg.to.name });
+      body.append(p);
+    } else {
+      const head = document.createElement('p');
+      head.className = 'step-head';
+      head.append(rideChip(leg), ' ');
+      const what = document.createElement('strong');
+      what.textContent = leg.long && leg.long !== leg.name ? leg.long : t(`journeyKind_${leg.kind}`);
+      head.append(what);
+      if (leg.toward) {
+        const toward = document.createElement('span');
+        toward.className = 'step-toward';
+        toward.textContent = t('journeyToward', { place: leg.toward });
+        head.append(' ', toward);
+      }
+      const board = document.createElement('p');
+      board.textContent = leg.stay ? t('journeyStay', { name: leg.name }) : t('journeyBoard', { place: leg.from.name });
+      if (leg.from.track) {
+        const track = document.createElement('span');
+        track.className = 'step-track';
+        track.textContent = t('journeyTrack', { n: leg.from.track });
+        board.append(' ', track);
+      }
+      const note = liveNote(leg);
+      if (note) board.append(' ', note);
+      const ride = document.createElement('p');
+      ride.className = 'step-stops';
+      const rideTime = fmtDuration(leg.seconds, lang);
+      ride.textContent = leg.stops.length ? t('journeyStops', { n: leg.stops.length + 1, time: rideTime }) : t('journeyStopsNone', { time: rideTime });
+      const off = document.createElement('p');
+      off.textContent = t('journeyAlight', { place: leg.to.name });
+      const offTime = document.createElement('span');
+      offTime.className = 'step-off-time';
+      offTime.textContent = journeyClock(leg.end);
+      off.prepend(offTime, ' ');
+      body.append(head, board, ride, off);
+    }
+    li.append(time, body);
+    items.push(li);
+  });
+  // Where you end up, and when.
+  const end = document.createElement('li');
+  end.className = 'journey-step step-end';
+  const time = document.createElement('span');
+  time.className = 'step-time';
+  time.textContent = journeyClock(trip.end);
+  const body = document.createElement('div');
+  body.className = 'step-body';
+  const p = document.createElement('p');
+  const strong = document.createElement('strong');
+  strong.textContent = routeEnd()?.name || '';
+  p.append(strong);
+  body.append(p);
+  end.append(time, body);
+  items.push(end);
+  return items;
+}
+
+function renderJourney() {
+  const on = S.mode === 'transit';
+  $('preview').classList.toggle('is-transit', on);
+  $('journey').hidden = !on;
+  if (!on) return;
+  const kind = S.journeyWhen.kind;
+  $('journey-when-kind').value = kind;
+  $('journey-when-time').hidden = kind === 'now';
+  if (kind !== 'now' && S.journeyWhen.at && document.activeElement !== $('journey-when-time')) $('journey-when-time').value = localInput(S.journeyWhen.at);
+  const j = S.routeState === 'ready' ? S.journey : null;
+  const trips = j?.trips || [];
+  const open = !!(j?.open && trips[j.pick]);
+  const note = $('journey-note');
+  const notes = [];
+  if (j && !trips.length) notes.push(t('journeyNone'));
+  if (j && S.stops.length) notes.push(t('journeyStopsIgnored'));
+  // Walking there might be quickest of all.
+  if (j?.walk && !open) notes.push(t('journeyWalkOnly', { time: fmtDuration(j.walk.seconds, getLang()) }));
+  note.textContent = notes.join(' ');
+  note.hidden = !notes.length;
+  $('journey-list').hidden = open;
+  $('journey-list').setAttribute('role', 'radiogroup');
+  $('journey-list').replaceChildren(...(open ? [] : trips.map(journeyCard)));
+  $('journey-earlier').hidden = open || !j?.earlier || !trips.length;
+  $('journey-later').hidden = open || !j?.later || !trips.length;
+  $('journey-earlier').disabled = !!j?.busy;
+  $('journey-later').disabled = !!j?.busy;
+  $('journey-detail').hidden = !open;
+  if (open) {
+    const trip = trips[j.pick];
+    const changes = trip.transfers ? t('journeyChanges', { n: trip.transfers }) : t('journeyChangesNone');
+    $('journey-head').textContent = `${journeyClock(trip.start)} – ${journeyClock(trip.end)} · ${fmtDuration(trip.seconds, getLang())} · ${changes}`;
+    $('journey-steps').replaceChildren(...journeySteps(trip));
+  }
+}
+
 /* ---------- Traffic for each route choice ---------- */
 
 const withTraffic = (r) => r.time + (r.traffic?.delay || 0);
@@ -1693,7 +2017,7 @@ function fastestNow(routes) {
 
 function loadRouteTraffic(routes) {
   S.optionTrafficCtrl?.abort();
-  if (!CONFIG.server || !S.settings.traffic || S.mode === 'walk' || S.noTrafficKey) return;
+  if (!CONFIG.server || !S.settings.traffic || onFoot() || S.noTrafficKey) return;
   const ctrl = new AbortController();
   S.optionTrafficCtrl = ctrl;
   const each = (r) => fetchTraffic(r, 0, { signal: ctrl.signal }).then((tr) => { r.traffic = tr; }).catch((e) => {
@@ -1744,7 +2068,7 @@ function renderRoutes() {
 
   const list = $('route-list');
   list.setAttribute('role', 'radiogroup');
-  const pv = S.mode === 'walk' ? null : pricedVehicle();
+  const pv = onFoot() ? null : pricedVehicle();
   list.replaceChildren(...S.routes.map((r, i) => {
     const li = document.createElement('li');
     const btn = document.createElement('button');
@@ -1780,9 +2104,9 @@ function renderRoutes() {
     if (r.hasFerry) tags.append(tag(t('ferry')));
     const cost = pv ? tripPlan(pv, r.distanceKm)?.cost : null;
     if (cost != null) tags.append(tag(t(pv.kind === 'ev' ? 'costEv' : 'costFuel', { cost: money(cost) }), 'tag-cost'));
-    const lights = S.mode !== 'walk' && alongOf(r) ? countLights(alongOf(r).features) : 0;
+    const lights = !onFoot() && alongOf(r) ? countLights(alongOf(r).features) : 0;
     if (lights) tags.append(tag(t('lightsCount', { n: lights }), 'tag-cost'));
-    const cams = S.mode !== 'walk' && S.settings.speedCameras ? alongOf(r)?.cameras.length || 0 : 0;
+    const cams = !onFoot() && S.settings.speedCameras ? alongOf(r)?.cameras.length || 0 : 0;
     if (cams) tags.append(tag(cams === 1 ? t('camerasOne') : t('camerasCount', { n: cams }), 'tag-cam'));
     if (r.traffic) {
       const slow = r.traffic.delay >= 120;
@@ -1804,6 +2128,7 @@ function renderRoutes() {
   $('add-stop').disabled = !ready;
   renderActions();
   renderPlan();
+  renderJourney();
   renderMapExtras();
   updateBottomInset();
 }
@@ -1915,7 +2240,7 @@ function renderMapLabels() {
 // Speed cameras on the map: on the chosen route while choosing, and on the way while driving.
 function renderMapCameras() {
   if (!mapView) return;
-  const on = S.settings.speedCameras && S.settings.camerasMap && S.mode !== 'walk';
+  const on = S.settings.speedCameras && S.settings.camerasMap && !onFoot();
   let list = [];
   if (on && S.view === 'preview' && !S.overlay) list = alongOf(S.routes[S.selected] || {})?.cameras || [];
   if (on && S.view === 'nav') list = S.cameras || [];
@@ -1927,7 +2252,7 @@ function renderMapCameras() {
 
 function renderMapTools() {
   const route = S.routes[S.selected];
-  const cams = route && S.mode !== 'walk' && S.settings.speedCameras ? alongOf(route)?.cameras.length || 0 : 0;
+  const cams = route && !onFoot() && S.settings.speedCameras ? alongOf(route)?.cameras.length || 0 : 0;
   $('map-tools').hidden = !(S.view === 'preview' && !S.overlay && S.routeState === 'ready' && cams > 0);
   const btn = $('btn-cams');
   btn.setAttribute('aria-pressed', String(!!S.settings.camerasMap));
@@ -1978,7 +2303,7 @@ function clearOfLabels(points) {
 
 function renderMapExtras() {
   if (!mapView) return;
-  mapView.setJunctionRoads(S.view === 'nav' && S.mode !== 'walk' && (!!S.settings.view3d || !!S.settings.satellite));
+  mapView.setJunctionRoads(S.view === 'nav' && !onFoot() && (!!S.settings.view3d || !!S.settings.satellite));
   if (S.view !== 'nav') renderTurnArrow(null);
   if (S.view !== 'nav') renderRoadSigns({ onRoute: false });
   renderMapLabels();
@@ -2058,7 +2383,7 @@ function renderPlan() {
 function renderPlanFuel(route) {
   const v = pricedVehicle();
   const row = $('plan-fuel');
-  row.hidden = S.mode === 'walk';
+  row.hidden = onFoot();
   const look = S.looks[driveMode()] || DEFAULT_LOOKS.car;
   const lookKey = `${look.body}|${look.color}`;
   if ($('plan-car-pic').dataset.look !== lookKey) {
@@ -2142,7 +2467,7 @@ const SHOW_LOADING_KM = 30;
 // One request for every route on offer, a moment after they arrive.
 function loadAlong() {
   if (S.view !== 'preview') return;
-  const routes = S.mode === 'walk' ? [] : S.routes.slice(0, 3);
+  const routes = onFoot() ? [] : S.routes.slice(0, 3);
   const opts = {
     tolls: S.mode !== 'motorcycle' && routes.some((r) => r.hasToll),
     cameras: !!S.settings.speedCameras,
@@ -2370,7 +2695,7 @@ const CAMERAS_FRESH_MS = 90e3;   // photos are asked for again after this
 // The trip over each crossing, when it goes between Johor and Singapore.
 async function checkCrossings(routes) {
   // With stops, which crossing comes where is the route's own business.
-  const found = S.mode === 'walk' || S.stops.length ? null : crossingOf(routes[0]);
+  const found = onFoot() || S.stops.length ? null : crossingOf(routes[0]);
   if (!found) { S.cross = null; renderPlanCross(); return; }
   const p = (x) => `${x.lat.toFixed(4)},${x.lng.toFixed(4)}`;
   const key = [p(S.routeFrom), ...S.stops.map(p), p(routeEnd()), S.mode, S.avoidTolls ? 'free' : ''].join('|');
@@ -2550,7 +2875,7 @@ function loadWild() {
 
 function renderPlanWild(route) {
   const row = $('plan-wild');
-  const on = S.mode === 'walk' ? [] : wildOn(route);
+  const on = onFoot() ? [] : wildOn(route);
   row.hidden = !on.length;
   if (!on.length) return;
   $('plan-wild-icon').innerHTML = UI.elephant;
@@ -2596,7 +2921,7 @@ function stopsAlong(route) {
 // The stops you chose yourself, two to eight of them, with nothing planned for
 // you among them (charging stops have their own order).
 function errandsKey() {
-  if (S.mode === 'walk' || !S.routeFrom || S.stops.some((st) => st.charge)) return null;
+  if (onFoot() || !S.routeFrom || S.stops.some((st) => st.charge)) return null;
   if (S.stops.length < 2 || S.stops.length > MAX_STOPS) return null;
   const end = routeEnd();
   const p = (x) => `${x.lat.toFixed(5)},${x.lng.toFixed(5)}`;
@@ -2695,7 +3020,7 @@ function renderPlanAlong(route) {
   const on = alongOf(route);
   const items = on ? railItems(on) : [];
   const loadingLong = state === 'loading' && route.distanceKm >= SHOW_LOADING_KM;
-  wrap.hidden = S.mode === 'walk' || !(items.length || loadingLong);
+  wrap.hidden = onFoot() || !(items.length || loadingLong);
   if (wrap.hidden) return;
   $('plan-along-title').textContent = t('alongTitle');
   $('plan-along-status').textContent = state === 'loading' ? t('alongLoading') : '';
@@ -2811,7 +3136,7 @@ function renderPlanArrive(route) {
   const now = Date.now();
   const plan = route ? leaveBy(now, time, withTraffic(route)) : null;
   let usual = false;
-  if (plan && CONFIG.server && S.settings.traffic && S.mode !== 'walk') {
+  if (plan && CONFIG.server && S.settings.traffic && !onFoot()) {
     const key = `${route.id}|${time}|${plan.arrive.getTime()}`;
     const known = S.leaveAsk?.key === key ? S.leaveAsk.leave : null;
     if (known) {
@@ -2841,7 +3166,7 @@ function renderPlanArrive(route) {
 function loadParking(place) {
   S.parkingCtrl?.abort();
   S.parking = null;
-  if (S.mode === 'walk' || !place) return;
+  if (onFoot() || !place) return;
   const key = `${place.lng.toFixed(5)},${place.lat.toFixed(5)},${S.mode}`;
   const ctrl = new AbortController();
   S.parkingCtrl = ctrl;
@@ -2860,7 +3185,7 @@ function renderPlanParking() {
   const wrap = $('plan-parking-wrap');
   const found = S.parking;
   const park = S.parkAt;
-  const show = S.mode !== 'walk' && !!S.dest && (!!park || found?.state === 'loading' || (found?.state === 'ready' && found.list.length > 0));
+  const show = !onFoot() && !!S.dest && (!!park || found?.state === 'loading' || (found?.state === 'ready' && found.list.length > 0));
   wrap.hidden = !show;
   if (!show) return;
   const list = $('parking-list');
@@ -3005,7 +3330,7 @@ function walkToCar() {
   const car = savedCar();
   if (!car) return;
   S.afterBack = () => {
-    S.returnMode = S.mode === 'walk' ? (S.returnMode || load('mode', 'car')) : S.mode;
+    S.returnMode = onFoot() ? (S.returnMode || load('mode', 'car')) : S.mode;
     S.mode = 'walk';
     S.carDirty = true;
     goTo({ name: t('yourCar'), detail: car.note || '', lng: car.lng, lat: car.lat, country: '', isCar: true }, { remember: false });
@@ -3603,7 +3928,7 @@ function startGuidance({ simulate }) {
     // The lights are looked for along this one route instead, below.
     S.alongCtrl?.abort();
   }
-  S.guidance = new Guidance(S.route, { walking: S.mode === 'walk' });
+  S.guidance = new Guidance(S.route, { walking: onFoot() });
   S.greeted = false;
   // Driving time carries on into the next trip unless there was a proper rest.
   const before = load('driveTime', null);
@@ -3661,7 +3986,7 @@ function startGuidance({ simulate }) {
   if (!plannedFeatures) loadFeatures(S.route);
   warnTng();
   // Traffic looked up while choosing the route needn't be asked for again yet.
-  S.traffic = S.route.traffic?.from === 0 && S.mode !== 'walk' ? S.route.traffic : null;
+  S.traffic = S.route.traffic?.from === 0 && !onFoot() ? S.route.traffic : null;
   S.trafficAt = S.traffic ? S.traffic.at : 0;
   S.trafficStopped = false;
   S.jamsSaid = new Set();
@@ -3724,7 +4049,7 @@ function startGuidance({ simulate }) {
     renderSimPanel();
     saveTrip();
     const car = savedCar();
-    if (car && S.mode !== 'walk' && (!S.fix || haversine([S.fix.lng, S.fix.lat], [car.lng, car.lat]) < CAR_SAME_M)) forgetCar();
+    if (car && !onFoot() && (!S.fix || haversine([S.fix.lng, S.fix.lat], [car.lng, car.lat]) < CAR_SAME_M)) forgetCar();
     if (S.fix) onNavFix({ ...S.fix, time: Date.now() }, performance.now());
   }
 }
@@ -3744,7 +4069,7 @@ function onNavFix(fix, takenAt) {
   }
   S.lastDrivenS = st.s;
   if (!S.sim) S.crawl?.add(fix.time ?? Date.now(), fix.speed);
-  if (!S.sim && S.mode !== 'walk') S.drive?.add({ time: fix.time ?? Date.now(), speed: fix.speed, accuracy: fix.accuracy, limit: limitHere(st) });
+  if (!S.sim && !onFoot()) S.drive?.add({ time: fix.time ?? Date.now(), speed: fix.speed, accuracy: fix.accuracy, limit: limitHere(st) });
 
   renderSign(st);
   renderEta(st);
@@ -3854,7 +4179,7 @@ const SPEED_MOMENT = /^overspeed/;
 
 function watchDrive(fix, st) {
   S.fixTime = fix.time;
-  if (!S.watch || S.mode === 'walk' || S.simScrub) return;
+  if (!S.watch || onFoot() || S.simScrub) return;
   const limit = currentLimit(st);
   const road = S.route.maneuvers[st.currentIndex];
   const roadKmh = limit ?? (road?.time > 0 ? (road.length / road.time) * 3600 : null);
@@ -3950,7 +4275,7 @@ function renderSign(st) {
 function renderJunction(st) {
   const box = $('junction');
   const next = st.next;
-  const j = S.mode === 'walk' ? null : junctionFor(next);
+  const j = onFoot() ? null : junctionFor(next);
   const range = next.highway || next.toll ? JUNCTION_RANGE.highway : JUNCTION_RANGE.road;
   if (!j || st.distanceToNext > range) {
     box.hidden = true;
@@ -4017,7 +4342,7 @@ function renderEta(st) {
 // The name of the road you're on, at the foot of the map.
 function renderRoadNow(st) {
   const box = $('road-now');
-  const m = st.onRoute && S.mode !== 'walk' ? S.route?.maneuvers[st.currentIndex] : null;
+  const m = st.onRoute && !onFoot() ? S.route?.maneuvers[st.currentIndex] : null;
   const { name, ref } = m ? roadNames(m) : { name: '', ref: '' };
   const show = !!(name || ref) && S.overlay !== 'hudmode';
   box.hidden = !show;
@@ -4029,7 +4354,7 @@ function renderRoadNow(st) {
 
 // The arrow painted on the road at the next turn, once it's close.
 function renderTurnArrow(st) {
-  const pick = st && S.view === 'nav' && S.mode !== 'walk' ? arrowFor(S.route, st) : null;
+  const pick = st && S.view === 'nav' && !onFoot() ? arrowFor(S.route, st) : null;
   const key = pick ? `${S.route.id}|${pick.index}` : '';
   if (key === S.turnKey) return;
   S.turnKey = key;
@@ -4040,7 +4365,7 @@ function renderTurnArrow(st) {
 const SIGNS_AHEAD_M = 900;
 const SIGNS_MAX = 10;
 function renderRoadSigns(st) {
-  const on = S.view === 'nav' && S.settings.roadWarnings && st.onRoute && S.mode !== 'walk';
+  const on = S.view === 'nav' && S.settings.roadWarnings && st.onRoute && !onFoot();
   const list = on ? (S.features || []).filter((f) => f.along > st.s - 15 && f.along < st.s + SIGNS_AHEAD_M).slice(0, SIGNS_MAX) : [];
   const key = list.map((f) => f.id).join('|');
   if (key === S.signsKey) return;
@@ -4055,14 +4380,14 @@ function currentLimit(st) {
 
 // The speed limit where you are, if it's known, shown or not.
 function limitHere(st) {
-  if (S.mode === 'walk' || !st?.onRoute) return null;
+  if (onFoot() || !st?.onRoute) return null;
   return limitAt(S.laneFetch?.limits, st.s) ?? limitAt(S.ttLimits, st.s);
 }
 
 // How the drive went, for the arrival screen and the trip's line: only a real
 // drive long enough to say anything about.
 function driveReport() {
-  if (S.sim || S.mode === 'walk' || !S.drive || !(S.tripKm >= REPORT_MIN_KM)) return null;
+  if (S.sim || onFoot() || !S.drive || !(S.tripKm >= REPORT_MIN_KM)) return null;
   return S.drive.result;
 }
 
@@ -4083,7 +4408,7 @@ function renderDriveReport(report) {
 }
 
 function renderSpeed(fix, st) {
-  const known = fix.speed != null && S.mode !== 'walk';
+  const known = fix.speed != null && !onFoot();
   $('speed').hidden = !known;
   if (known) $('speed-value').textContent = String(Math.round(fix.speed * 3.6));
 
@@ -4108,7 +4433,7 @@ async function fromData(route, kind) {
 
 function loadCameras(route) {
   S.cameraCtrl?.abort();
-  if (!S.settings.speedCameras || S.mode === 'walk') return;
+  if (!S.settings.speedCameras || onFoot()) return;
   const ctrl = new AbortController();
   S.cameraCtrl = ctrl;
   S.cameraFetchedAt = Date.now();
@@ -4124,7 +4449,7 @@ function loadCameras(route) {
 /* ---------- Live traffic, from TomTom ---------- */
 
 function loadTraffic() {
-  if (!S.settings.traffic || S.trafficStopped || S.noTrafficKey || S.mode === 'walk' || !S.route || S.trafficCtrl) return;
+  if (!S.settings.traffic || S.trafficStopped || S.noTrafficKey || onFoot() || !S.route || S.trafficCtrl) return;
   const route = S.route;
   const from = S.lastState?.onRoute ? S.lastState.s : 0;
   const ctrl = new AbortController();
@@ -4132,7 +4457,7 @@ function loadTraffic() {
   S.trafficAt = Date.now();
   const timer = setTimeout(() => ctrl.abort(), 20000);
   // A quicker way is looked for only on a straight trip to one place.
-  const better = !S.sim && S.mode !== 'walk' && !S.stops.length;
+  const better = !S.sim && !onFoot() && !S.stops.length;
   fetchTraffic(route, from, { better, signal: ctrl.signal }).then((traffic) => {
     if (S.route !== route) return;
     S.traffic = traffic;
@@ -4215,7 +4540,7 @@ function declineFaster() {
 function loadLimits(route) {
   S.limitsCtrl?.abort();
   S.ttLimits = [];
-  if (!CONFIG.server || S.mode === 'walk' || !S.settings.speedLimit || (S.limitAsks || 0) >= 3) return;
+  if (!CONFIG.server || onFoot() || !S.settings.speedLimit || (S.limitAsks || 0) >= 3) return;
   S.limitAsks = (S.limitAsks || 0) + 1;
   const ctrl = new AbortController();
   S.limitsCtrl = ctrl;
@@ -4230,7 +4555,7 @@ function jamWords(near, lang) {
 
 function renderJam(st) {
   const box = $('jam-alert');
-  const near = S.settings.traffic && st.onRoute && S.mode !== 'walk' ? jamAhead(S.traffic, st.s) : null;
+  const near = S.settings.traffic && st.onRoute && !onFoot() ? jamAhead(S.traffic, st.s) : null;
   box.hidden = !near;
   if (!near) return;
   const lang = getLang();
@@ -4257,7 +4582,7 @@ function renderJam(st) {
 
 function loadTolls(route) {
   S.tollCtrl?.abort();
-  if (S.mode === 'walk' || !route.hasToll) return;
+  if (onFoot() || !route.hasToll) return;
   const ctrl = new AbortController();
   S.tollCtrl = ctrl;
   S.tollFetchedAt = Date.now();
@@ -4271,7 +4596,7 @@ function loadTolls(route) {
 
 function renderCamera(st, fix) {
   const box = $('camera-alert');
-  const near = S.settings.speedCameras && st.onRoute && S.mode !== 'walk' ? cameraAhead(S.cameras, st.s, fix.speed ?? 0) : null;
+  const near = S.settings.speedCameras && st.onRoute && !onFoot() ? cameraAhead(S.cameras, st.s, fix.speed ?? 0) : null;
   box.hidden = !near;
   if (!near) return;
   S.cameraNear = near.camera;
@@ -4300,7 +4625,7 @@ const ROAD_ICONS_AHEAD = { light: () => UI.signal, bump: () => UI.bump, rail: ()
 // Lights, bumps, crossings and places to rest, for a route the plan didn't ask about.
 function loadFeatures(route) {
   S.featureCtrl?.abort();
-  if (S.mode === 'walk') return;
+  if (onFoot()) return;
   const ctrl = new AbortController();
   S.featureCtrl = ctrl;
   S.featureFetchedAt = Date.now();
@@ -4318,7 +4643,7 @@ function loadFeatures(route) {
 
 function renderRoadFeature(st, fix) {
   const box = $('road-alert');
-  const on = S.settings.roadWarnings && st.onRoute && S.mode !== 'walk';
+  const on = S.settings.roadWarnings && st.onRoute && !onFoot();
   const near = on ? featureAhead(S.features, st.s, fix.speed ?? 0) : null;
   box.hidden = !near;
   if (!near) {
@@ -4421,7 +4746,7 @@ function answerNotHere(gone) {
 
 // Where a real drive stops like at a red light.
 function noteStop(st, fix) {
-  if (!S.stopWatch || !st.onRoute || S.mode === 'walk') return;
+  if (!S.stopWatch || !st.onRoute || onFoot()) return;
   if (st.s < 200 || st.remainingDistance < 200) return;
   const m = S.route.maneuvers[st.currentIndex];
   const stop = S.stopWatch.note({ time: fix.time, speed: fix.speed, lng: fix.lng, lat: fix.lat, road: m ? roadNames(m).name || roadNames(m).ref || '' : '' });
@@ -4459,7 +4784,7 @@ const REST_OFFER_MS = 90000;
 const restName = (r) => r.name || t(r.kind === 'rnr' ? 'nameRest' : 'nameLayby');
 
 function offerRest(st) {
-  if (S.mode === 'walk' || !S.route) return;
+  if (onFoot() || !S.route) return;
   const lang = getLang();
   const target = nextRest(restsOnRoute(S.route, S.restPool || []), st.s);
   S.restTarget = target;
@@ -4797,7 +5122,7 @@ async function reroute(fix, { added = false } = {}) {
 // A new route mid-trip: everything that follows the route starts again on it.
 function useRoute(route) {
   S.route = route;
-  S.guidance = new Guidance(route, { walking: S.mode === 'walk' });
+  S.guidance = new Guidance(route, { walking: onFoot() });
   motion.setRoute(route);
   startScene(route);
   S.cameras = placeCameras(route);
@@ -4909,7 +5234,7 @@ function keepVehicleLevel() {
 
 // A line for the monthly summary, kept on this phone.
 function keepTripSummary() {
-  if (S.sim || !S.guidance || S.mode === 'walk' || !S.settings.keepTrips) return;
+  if (S.sim || !S.guidance || onFoot() || !S.settings.keepTrips) return;
   const plan = tripPlan(pricedVehicle(), S.tripKm);
   const v = pricedVehicle();
   const report = driveReport();
@@ -5010,7 +5335,7 @@ function arrivalStats() {
 function finishTrip() {
   S.driveLog?.event('arrived');
   const place = S.dest;
-  const onFoot = S.mode === 'walk';
+  const walked = onFoot();
   const simulated = !!S.sim;
   $('arrival-stats').textContent = arrivalStats();
   renderDriveReport(driveReport());
@@ -5026,7 +5351,7 @@ function finishTrip() {
   $('arrival-place').textContent = place ? place.name : '';
   S.arrivedAt = place;
   // A drive that ended here left the car here.
-  const drove = !onFoot && !simulated;
+  const drove = !walked && !simulated;
   if (drove) {
     const spot = S.fix || place;
     if (spot) saveCar(spot, place?.name || '');
@@ -5040,9 +5365,9 @@ function finishTrip() {
   work.hidden = !drove || !S.settings.keepTrips;
   work.setAttribute('aria-pressed', 'false');
   work.textContent = t('workMark');
-  if (onFoot && !simulated && place?.isCar) forgetCar();
+  if (walked && !simulated && place?.isCar) forgetCar();
   // Where the road ends isn't always where the door is.
-  $('arrival-walk').hidden = onFoot || simulated || !place;
+  $('arrival-walk').hidden = walked || simulated || !place;
   S.mall = mallFor(place);
   $('arrival-mall').hidden = !S.mall;
   if (S.mall) $('arrival-mall').textContent = t('mallOpen', { name: S.mall.name });
@@ -5121,7 +5446,7 @@ function walkToDoor() {
 
 // Walking was only for this last bit. Next time, you're back in the car.
 function backOnWheels() {
-  if (S.mode !== 'walk' || !S.returnMode) return;
+  if (!onFoot() || !S.returnMode) return;
   S.mode = S.returnMode;
   S.returnMode = null;
   S.carDirty = true;
@@ -5193,7 +5518,7 @@ function renderShops() {
 /* ---------- Rain and floods ---------- */
 
 async function loadWeather(route, fromS = 0) {
-  if (!S.settings.weather || S.mode === 'walk') {
+  if (!S.settings.weather || onFoot()) {
     S.weather = null;
     return;
   }
@@ -5215,7 +5540,7 @@ async function loadWeather(route, fromS = 0) {
 }
 
 function keepWeatherFresh(st) {
-  if (!S.settings.weather || S.mode === 'walk' || S.simScrub) return;
+  if (!S.settings.weather || onFoot() || S.simScrub) return;
   const stale = S.weather?.routeId !== S.route.id || Date.now() - S.weather.at > WEATHER_REFRESH_MS;
   if (stale) loadWeather(S.route, st.s);
 }
@@ -5251,7 +5576,7 @@ function warnWhere(warn, entries) {
 function renderPlanWarning(route) {
   const row = $('plan-warn');
   const w = S.weather;
-  const warn = S.settings.weather && S.mode !== 'walk' && route && w?.routeId === route.id && !w.pending ? mainWarning(w.warnings) : null;
+  const warn = S.settings.weather && !onFoot() && route && w?.routeId === route.id && !w.pending ? mainWarning(w.warnings) : null;
   row.hidden = !warn;
   if (!warn) return;
   const lang = getLang();
@@ -5272,7 +5597,7 @@ function renderPlanWeather(route) {
   if (S.view === 'preview') renderMapWarnings();
   const row = $('plan-weather');
   const w = S.weather;
-  row.hidden = !S.settings.weather || S.mode === 'walk';
+  row.hidden = !S.settings.weather || onFoot();
   if (row.hidden) return;
   if (route && w?.routeId !== route.id) {
     loadWeather(route);
@@ -5533,16 +5858,16 @@ function renderHud(st, fix) {
   rest.textContent = fmtClock(new Date(Date.now() + left * 1000), lang);
   $('hm-eta').append(rest);
 
-  const lanes = S.mode === 'walk' ? null : lanesNow(st);
+  const lanes = onFoot() ? null : lanesNow(st);
   $('hm-lanes').hidden = !lanes;
   $('hm-face').classList.toggle('has-lanes', !!lanes);
   if (lanes) fillLanes($('hm-lanes'), lanes);
   else $('hm-lanes').dataset.key = '';
 
-  const toll = st.onRoute && S.mode !== 'walk' ? tollAhead(S.tolls, st.s) : null;
+  const toll = st.onRoute && !onFoot() ? tollAhead(S.tolls, st.s) : null;
   $('hm-toll').hidden = !toll;
   if (toll) $('hm-toll-distance').textContent = fmtDistance(Math.max(toll.ahead, 10));
-  const jam = S.settings.traffic && st.onRoute && S.mode !== 'walk' ? jamAhead(S.traffic, st.s) : null;
+  const jam = S.settings.traffic && st.onRoute && !onFoot() ? jamAhead(S.traffic, st.s) : null;
   $('hm-jam').hidden = !jam;
   if (jam) {
     $('hm-jam-icon').innerHTML = UI[JAM_ICONS[jam.jam.kind]];
@@ -5552,7 +5877,7 @@ function renderHud(st, fix) {
       : jam.inside ? t('jamLeft', { distance: fmtDistance(Math.max(jam.left, 10)) }) : t('jamDelay', { time: fmtDuration(jam.delay, lang) });
   }
 
-  const tired = !!(S.watch?.tired && S.mode !== 'walk');
+  const tired = !!(S.watch?.tired && !onFoot());
   $('hm-rest').hidden = !tired;
   // Upright there's only room for one, so the most pressing goes first.
   const first = [['hm-toll', toll], ['hm-jam', jam], ['hm-rest', tired]].find(([, on]) => on)?.[0];
@@ -6023,6 +6348,12 @@ function wire() {
   $('mode-car').addEventListener('click', () => setMode('car'));
   $('mode-moto').addEventListener('click', () => setMode('motorcycle'));
   $('mode-walk').addEventListener('click', () => setMode('walk'));
+  $('mode-transit').addEventListener('click', () => setMode('transit'));
+  $('journey-when-kind').addEventListener('change', setJourneyWhen);
+  $('journey-when-time').addEventListener('change', setJourneyWhen);
+  $('journey-earlier').addEventListener('click', () => moreJourneys('earlier'));
+  $('journey-later').addEventListener('click', () => moreJourneys('later'));
+  $('journey-back').addEventListener('click', () => openJourneyTrip(null));
   $('search-paste').addEventListener('click', pasteLink);
   $('search-google').addEventListener('click', () => { S.googleAt = Date.now(); });
   $('plan-weather').addEventListener('click', openWeather);
@@ -6450,7 +6781,7 @@ function renderConvoy() {
 
 function renderPlanConvoy() {
   const row = $('plan-convoy');
-  row.hidden = !togetherReady() || S.mode === 'walk';
+  row.hidden = !togetherReady() || onFoot();
   if (row.hidden) return;
   $('plan-convoy-icon').innerHTML = UI.people;
   $('plan-convoy-chev').innerHTML = UI.chevron;
@@ -6618,7 +6949,7 @@ async function submitReport(kind) {
 }
 
 function loadRoadReports() {
-  if (!togetherReady() || S.mode === 'walk' || !S.route || S.roadCtrl) return;
+  if (!togetherReady() || onFoot() || !S.route || S.roadCtrl) return;
   const route = S.route;
   const ctrl = new AbortController();
   S.roadCtrl = ctrl;
@@ -6643,7 +6974,7 @@ function placeRoadReports() {
 
 function renderRoadReport(st, fix) {
   const box = $('report-alert');
-  const near = st.onRoute && S.mode !== 'walk' ? reportAhead(S.roadPlaced, st.s, fix.speed ?? 0) : null;
+  const near = st.onRoute && !onFoot() ? reportAhead(S.roadPlaced, st.s, fix.speed ?? 0) : null;
   box.hidden = !near;
   if (near) {
     const { report, ahead } = near;
@@ -7216,7 +7547,7 @@ function setMode(mode) {
   S.mode = mode;
   S.returnMode = null;
   // You won't want to open Pintu on foot next time just because you did today.
-  if (mode !== 'walk') save('mode', mode);
+  if (mode !== 'walk' && mode !== 'transit') save('mode', mode);
   S.carDirty = true;
   renderSegments();
   renderRangePill();

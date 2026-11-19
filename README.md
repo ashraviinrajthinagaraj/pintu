@@ -26,6 +26,7 @@ folder as it is.
 | Satellite photos (if chosen) | Maxar's, through [TomTom's Map Display API](https://docs.tomtom.com/map-display-api/documentation/raster/satellite-tile), via Pintu's server | TomTom's key. 200,000 tiles a month free, no card. See Satellite map |
 | Traffic lights, bumps and railway crossings | The [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), asked after the tolls, in small boxes along the routes | Too many to keep with the app. No more than two requests at a time |
 | Singapore crossing photos | [data.gov.sg](https://data.gov.sg/datasets/354/view) traffic images (LTA) | Singapore Open Data Licence; credited under the photos |
+| Trips by bus and train | [Transitous](https://transitous.org/sources/), a free community journey planner fed with the operators' timetables (Prasarana, KTMB, BAS.MY, Rapid Penang, Singapore's LTA and more) and OpenStreetMap, asked through Pintu's server | For open-source, non-commercial apps; each request names Pintu and links here; no more than 600 searches a day from the server. Credited under the trips |
 | Buses and trains (if shown) | Lines, stations and route names in `data/transit.json`, from the [GTFS timetables](https://developer.data.gov.my/realtime-api/gtfs-static) on data.gov.my, refreshed every Monday (`scripts/transit-data.mjs`); live positions from the [GTFS Realtime feeds](https://developer.data.gov.my/realtime-api/gtfs-realtime), asked for by the phone | Prasarana, KTMB and BAS.MY, CC BY 4.0, credited on the map. 4 requests a minute, so no more than one every 16 s |
 | Solat times | [Waktu Solat API](https://api.waktusolat.app/), from JAKIM e-Solat | Not run by JAKIM. If it's down, Pintu shows no times |
 
@@ -220,6 +221,39 @@ The plan now has a line for each crossing (`js/ferries.js`): its name and the ti
 ("Feri Wantas RoRo: 2 j 21 min di atas air"), that the arrival time doesn't count waiting for
 the ferry, and a "Jadual" link that searches the web for when it sails. No open timetable for
 Malaysia's ferries exists to read the times from.
+
+## By bus, train and on foot
+
+The **Transit** choice next to Kereta, Motor and Jalan plans the trip by public transport,
+as Google Maps does: several ways there, each with when it leaves and arrives, how long
+it takes, and a row of signs for the walks and every bus and train on the way, each in
+its line's colour (the Kelana Jaya Line red, ETS yellow, Rapid KL's buses blue). Under each
+is where and when the first one leaves, and, where the operator says, whether it's running
+late. The trip chosen is drawn on the map: each ride in its colour, the walks dotted, and
+a ringed dot wherever you get on or off.
+
+Tapping one shows it step by step: the walk to the first stop (how long and how far), then
+for each ride its number and line, which way it's going, where to get on (with the
+platform, when known), how many stops and how long, and where and when to get off, down to
+the last walk to the door. **Lebih awal** and **Lebih lewat** add earlier and later trips,
+and the time can be **Bertolak pada** (leaving at) or **Tiba sebelum** (arriving by) a time
+and day instead of now. Stops added for driving aren't part of these trips, which says so.
+
+The trips come from [Transitous](https://transitous.org), run by volunteers on the MOTIS
+journey planner with the operators' own timetables: in Malaysia Rapid KL's LRT, MRT,
+monorail, BRT and buses, the MRT feeders, KTM's Komuter, ETS and intercity trains, BAS.MY
+Seremban and Kuching, and Rapid Penang and Kuantan; across the Causeway, Singapore's buses
+and MRT; and much of the world besides. So Seremban to Marina Bay comes back as the ETS to
+JB Sentral, a walk to the checkpoint, bus 160 to Kranji and the North-South Line, with each
+walk between. Pintu's server asks for them (`server/transit.js`, `/transit`), so every
+request says it's Pintu and where to find it, as Transitous asks, the phone's address stays
+with Pintu, and the answer (nearly 300 KB for a long trip) is cut to what's shown. Each
+phone may ask twelve times a minute, and the server no more than 600 times a day, within
+the 720 Transitous allows without arranging more. Transitous keeps its logs for two days.
+
+Transitous is free for open-source, non-commercial apps; that's why Pintu is under the MIT
+licence (`LICENSE`). Places the timetables don't reach (BAS.MY in most towns, for now) get
+no trips, and say so.
 
 ## Buses and trains
 
@@ -805,3 +839,6 @@ library and real style files from a local folder, with stand-in map data and ser
 Neither talks to the real servers.
 
 Fonts are [Barlow](https://github.com/jpt/barlow), under the licence in `fonts/OFL.txt`.
+
+Pintu's own code is under the MIT licence (`LICENSE`). The data in `data/`, the fonts and the
+services listed above keep their own licences and terms.

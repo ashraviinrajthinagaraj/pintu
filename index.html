@@ -135,6 +135,7 @@
       <button id="mode-car" type="button" role="radio"></button>
       <button id="mode-moto" type="button" role="radio"></button>
       <button id="mode-walk" type="button" role="radio"></button>
+      <button id="mode-transit" type="button" role="radio"></button>
     </div>
     <label class="switch" id="toll-wrap">
       <input id="avoid-tolls" type="checkbox">
@@ -144,6 +145,27 @@
   </div>
   <div id="route-status" class="route-status" role="status"></div>
   <ul id="route-list" class="route-list"></ul>
+  <!-- By bus, train and on foot: the trips there, and each one step by step -->
+  <div id="journey" class="journey" hidden>
+    <div id="journey-when" class="journey-when">
+      <select id="journey-when-kind" class="journey-select">
+        <option value="now"></option>
+        <option value="leave"></option>
+        <option value="arrive"></option>
+      </select>
+      <input id="journey-when-time" class="journey-time" type="datetime-local" hidden>
+    </div>
+    <p id="journey-note" class="tip tip-note" hidden></p>
+    <button id="journey-earlier" class="link-btn journey-page" type="button" hidden></button>
+    <ol id="journey-list" class="journey-list"></ol>
+    <button id="journey-later" class="link-btn journey-page" type="button" hidden></button>
+    <div id="journey-detail" class="journey-detail" hidden>
+      <button id="journey-back" class="link-btn journey-back" type="button"></button>
+      <p id="journey-head" class="journey-head"></p>
+      <ol id="journey-steps" class="journey-steps"></ol>
+    </div>
+    <p class="journey-credit"><span id="journey-credit-text"></span> <a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a></p>
+  </div>
   <div id="preview-strip" class="strip strip-preview" aria-hidden="true" hidden></div>
 
   <div id="plan" class="plan" hidden>

@@ -115,8 +115,21 @@
       const num = (v, d) => (typeof v === 'number' ? v : Array.isArray(v) ? v[v.length - 1] : d);
       // A fixed value, a feature's own (['get', key]), or the far end of a zoom curve.
       const val = (v, f, d) => (Array.isArray(v) ? (v[0] === 'get' ? f.properties[v[1]] ?? d : num(v, d)) : v ?? d);
-      for (const l of this.layers) {
-        const src = this.sources[l.source];
+      // Filters, for the layers of a bus and train trip only: walks and rides drawn apart.
+      const test = (e, f) => {
+        if (!Array.isArray(e)) return e;
+        const [op, ...a] = e;
+        if (op === 'all') return a.every((x) => test(x, f));
+        if (op === '!') return !test(a[0], f);
+        if (op === '==') return test(a[0], f) === test(a[1], f);
+        if (op === 'get') return f.properties[a[0]];
+        if (op === 'geometry-type') return f.geometry.type;
+        return true;
+      };
+      for (const l0 of this.layers) {
+        const src0 = this.sources[l0.source];
+        const l = l0;
+        const src = src0 && l.filter && l.id.startsWith('pintu-journey') ? { ...src0, data: { ...src0.data, features: (src0.data?.features || []).filter((f) => test(l.filter, f)) } } : src0;
         if (!src || !src.data || !src.data.features || l.id.startsWith('pintu-lane')) continue;
         if (this.layout[l.id] === 'none') continue;
         g.save();
