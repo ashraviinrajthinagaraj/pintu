@@ -1,0 +1,43 @@
+# Builds data/wildlife.json: the roads where wild elephants are known to cross,
+# as lines along each road from the public routing server. Roads do not move, so
+# it runs when the list in scripts/wildlife-data.mjs changes, or by hand.
+name: Wildlife crossing data
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/wildlife-data.mjs'
+      - '.github/workflows/wildlife-data.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wildlife-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Find the roads
+        run: node scripts/wildlife-data.mjs
+      - name: Save if changed
+        run: |
+          if git diff --quiet -- data/wildlife.json && git ls-files --error-unmatch data/wildlife.json >/dev/null 2>&1; then
+            echo "No change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/wildlife.json
+          git commit -m "Update the wildlife crossing roads"
+          git pull --rebase origin main
+          git push origin HEAD:main
