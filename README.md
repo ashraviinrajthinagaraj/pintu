@@ -63,6 +63,15 @@ arrive. If the map shows, this works.
 - A whole search ends within about 22 seconds whatever the network does, with what it found,
   or an offer to try again.
 
+### The best order for errands
+
+With two to eight stops you chose yourself, the plan asks the route server how long the drive is
+between every pair of places (Valhalla's `sources_to_targets`), then tries every order of the
+stops, keeping your start and the destination where they are (`js/errands.js`). If another order
+saves at least 2 minutes and 5% of the drive, the plan offers it above the stops, with the new
+order, and "Susun" puts them in it. A stop added later goes in its place along the new route.
+Charging stops planned for an electric car keep their own order.
+
 ## Choosing where to start
 
 The route screen has a start and a destination, either of which can be changed, or swapped.

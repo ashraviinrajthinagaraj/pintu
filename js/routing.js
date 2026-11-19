@@ -117,6 +117,34 @@ export async function fetchRoutes(opts, { fetchImpl = (...a) => fetch(...a), pro
   throw lastError;
 }
 
+// Seconds of driving from each of `points` to each other one, as rows and
+// columns in the same order: null where there's no way through.
+export async function fetchDriveTimes(points, { fetchImpl = (...a) => fetch(...a), providers = CONFIG.routing, signal, mode = 'car', avoidTolls = false } = {}) {
+  const locations = points.map((p) => ({ lat: p.lat, lon: p.lng }));
+  const body = { sources: locations, targets: locations, costing: COSTING[mode] || 'auto' };
+  if (mode === 'car' && avoidTolls) body.costing_options = { auto: { use_tolls: 0 } };
+  for (const provider of providers) {
+    if (skipped.has(provider.name) || !provider.matrixUrl) continue;
+    let res;
+    try {
+      res = await call(provider, body, signal, fetchImpl, provider.matrixUrl);
+    } catch (err) {
+      if (signal?.aborted) throw new RouteError('cancelled');
+      continue;
+    }
+    if (res.status === 401 || res.status === 403) { skipped.add(provider.name); continue; }
+    if (!res.ok) continue;
+    const json = await res.json();
+    const rows = json.sources_to_targets;
+    if (!Array.isArray(rows) || rows.length !== points.length) continue;
+    return rows.map((row) => points.map((_, j) => {
+      const t = (row.find((c) => c.to_index === j) ?? row[j])?.time;
+      return Number.isFinite(t) ? t : null;
+    }));
+  }
+  throw new RouteError('offline');
+}
+
 // How many lanes each stretch of road has, for the next part of the route.
 // A route only carries lane arrows at junctions that have them mapped. The road's
 // lane count is mapped far more often, as is its speed limit, and asking for them

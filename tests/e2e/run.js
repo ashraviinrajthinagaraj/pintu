@@ -87,7 +87,7 @@ async function pickPlace(page, n = 0) {
 
 async function newApp(browser, { humanVoices = true, realAudio = false, tiles, hangAll = false, forecast, warnings, appServer, photonFeatures, url: startUrl, viewport = { width: 390, height: 844 }, stadia = 401, voices = [{ lang: 'ms-MY', name: 'Malay' }, { lang: 'en-GB', name: 'British' }], routeResponse, storage, mapFail, sw = 'block', scale = 1, locale = 'ms-MY', overpass = OVERPASS, alongData, solat, traffic, tomtom, fuel, init, hub } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, hasTouch: true, serviceWorkers: sw, locale, timezoneId: 'Asia/Kuala_Lumpur' });
-  const log = { stadia: 0, alongData: 0, fossgis: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
+  const log = { stadia: 0, alongData: 0, fossgis: [], matrix: [], compare: [], photon: [], overpass: [], solat: [], trace: [], tiles: [], forecast: [], warnings: 0, server: [], traffic: [], tomtom: [], fuel: [], hub: [], errors: [], external: new Set() };
   // Never the real server: a stand-in if the test wants one, and otherwise as if there were none.
   await ctx.route('**/js/config.js', async (route) => {
     const original = await readFile(path.join(root, 'js/config.js'), 'utf8');
@@ -194,6 +194,16 @@ async function newApp(browser, { humanVoices = true, realAudio = false, tiles, h
     if (host === 'valhalla1.openstreetmap.de' && url.includes('/trace_attributes')) {
       log.trace.push(url);
       return route.fulfill({ json: log.laneCounts || { edges: [] }, headers: CORS });
+    }
+    if (host === 'valhalla1.openstreetmap.de' && url.includes('/sources_to_targets')) {
+      // Drive times between places: by `log.matrixAt` (a position along a line
+      // for each place) if a test gives one, else as the crow flies at 60 km/h.
+      const body = JSON.parse(new URL(url).searchParams.get('json'));
+      log.matrix.push(body);
+      const at = log.matrixAt || ((p) => [p.lon * 111, p.lat * 111]);
+      const where = body.sources.map((p, i) => [].concat(at(p, i, body)));
+      const rows = where.map((a) => where.map((b, j) => ({ to_index: j, time: Math.hypot(...a.map((v, k) => v - (b[k] ?? 0))) * 60 })));
+      return route.fulfill({ json: { sources_to_targets: rows }, headers: CORS });
     }
     if (host === 'valhalla1.openstreetmap.de') {
       const body = JSON.parse(new URL(url).searchParams.get('json'));
@@ -1307,6 +1317,53 @@ await check('no lane data at all leaves the normal view untouched', async () => 
   assert.equal(await page.evaluate(() => window.__map.getSource('pintu-lanes').data.features.length), 0);
   assert.ok(await page.evaluate(() => window.__map.lastJump.zoom) < 18);
   assert.equal(await page.evaluate(() => localStorage.getItem('pintu.laneNoteSeen')), null);
+  assert.deepEqual(log.errors, []);
+  await ctx.close();
+});
+
+await check('errands: several stops in a slow order are offered a quicker one, and reordered', async () => {
+  const { ctx, page, log } = await newApp(browser, {
+    ...quiet,
+    routeResponse: (b) => (b.locations.length > 2 ? { trip: multiLeg() } : { trip: cityTrip(), alternates: b.alternates ? [{ trip: altTrip() }] : [] }),
+  });
+  // Drive times as if along one road: the start at 0, the end at 10, the stop
+  // that comes first now at 7 and the other at 3, so the other way round is quicker.
+  const xs = new Map();
+  log.matrixAt = (p, i, body) => {
+    if (i === 0) return 0;
+    if (i === body.sources.length - 1) return 10;
+    if (!xs.has(p.lat)) xs.set(p.lat, xs.size ? 3 : 7);
+    return xs.get(p.lat);
+  };
+  await toPreview(page);
+  for (const n of [0, 1]) {
+    await page.click('#add-stop');
+    await page.waitForSelector('#stops-list .place');
+    await page.locator('#stops-list .place').nth(n).click();
+    await page.waitForFunction((k) => document.querySelectorAll('.stop-row').length === k, n + 1);
+    await page.waitForSelector('.route-opt');
+  }
+  const names = () => page.evaluate(() => [...document.querySelectorAll('.stop-row strong')].map((e) => e.textContent));
+  const [first, second] = await names();
+  await page.waitForSelector('#plan-order:not([hidden])', { timeout: 8000 });
+  assert.equal(log.matrix.length, 1, 'drive times asked for once, with both stops');
+  assert.equal(log.matrix[0].sources.length, 4);
+  assert.match(await text(page, '#plan-order-title'), /jimat [\d ]*min/);
+  assert.equal(await text(page, '#plan-order-detail'), `${second} → ${first}`);
+  await page.screenshot({ path: `${shots}/13b-errands.png` });
+  await noOverflow(page, 'errands');
+  const firstLat = log.matrix[0].sources[1].lat;
+  await page.click('#plan-order-go');
+  await page.waitForFunction((want) => document.querySelector('.stop-row strong')?.textContent === want, second);
+  await page.waitForSelector('.route-opt');
+  const asked = log.fossgis.at(-1);
+  assert.notEqual(asked.locations[1].lat, firstLat, 'the other stop first now');
+  assert.equal(asked.locations[2].lat, firstLat);
+  assert.deepEqual(await names(), [second, first]);
+  await page.waitForFunction(() => true);
+  await page.waitForTimeout(2000);
+  assert.equal(await vis(page, '#plan-order'), false, 'nothing more to offer');
+  assert.equal(log.matrix.length, 2, 'checked again in the new order');
   assert.deepEqual(log.errors, []);
   await ctx.close();
 });
